@@ -1,10 +1,20 @@
-{ lib, stdenvNoCC }:
+{ lib, stdenvNoCC, fetchFromGitHub, scdoc }:
 
 stdenvNoCC.mkDerivation rec {
   pname = "ndrop";
-  version = "vendored-${builtins.substring 0 7 (builtins.readFile ./src/upstream/.git/HEAD or "unknown")}";
+  version = "0feb899-unstable";
 
-  src = ./src/upstream;
+  src = fetchFromGitHub {
+    owner = "schweber";
+    repo = "ndrop";
+    rev = "0feb899f34609e4afc0ec166de4f309e2b9c9f02";
+    hash = "sha256-hh0mrLsp0qj1IqBERqV9fS/KCsTi++seFNmy2Ej9Vpg=";
+  };
+
+  nativeBuildInputs = [ scdoc ];
+
+  # Only unpack + install, no build
+  phases = [ "unpackPhase" "installPhase" ];
 
   installPhase = ''
     runHook preInstall
@@ -12,21 +22,16 @@ stdenvNoCC.mkDerivation rec {
     mkdir -p $out/bin
     install -m755 ndrop $out/bin/ndrop
 
-    # Optional: install man page if you want it available via man ndrop
     if [ -f ndrop.1.scd ]; then
       mkdir -p $out/share/man/man1
-      # If you have scdoc available, you could convert; otherwise, install as-is
-      # nixpkgs has scdoc; you can add it to nativeBuildInputs and generate:
-      # scdoc < ndrop.1.scd > $out/share/man/man1/ndrop.1
-      # For now, just drop the source manpage
-      install -m644 ndrop.1.scd $out/share/man/man1/ndrop.1.scd
+      scdoc < ndrop.1.scd > $out/share/man/man1/ndrop.1
     fi
 
     runHook postInstall
   '';
 
   meta = with lib; {
-    description = "Scratchpad-like toggle helper for Wayland compositors (prebuilt binary)";
+    description = "Scratchpad-like toggle helper for Wayland compositors";
     homepage = "https://github.com/schweber/ndrop";
     license = licenses.mit;
     platforms = platforms.linux;
