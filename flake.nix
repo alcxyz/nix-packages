@@ -14,6 +14,7 @@
       {
         packages = {
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
+          carapace = pkgs.callPackage ./pkgs/carapace { };
           # Add more custom packages here
           # other-app = pkgs.callPackage ./pkgs/other-app { };
         };
