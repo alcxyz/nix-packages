@@ -15,6 +15,7 @@
         packages = {
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           carapace = pkgs.callPackage ./pkgs/carapace { };
+          carapace-bridge = pkgs.callPackage ./pkgs/carapace-bridge { };
           # Add more custom packages here
           # other-app = pkgs.callPackage ./pkgs/other-app { };
         };
