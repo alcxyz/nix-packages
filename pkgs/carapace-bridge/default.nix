@@ -15,7 +15,7 @@ let
       hash = lib.fakeHash;
     } else if lib.hasPrefix "aarch64-darwin" system then {
       url = "https://github.com/carapace-sh/carapace-bin/releases/download/v${version}/carapace-bin_${version}_darwin_arm64.tar.gz";
-      hash = lib.fakeHash;
+      hash = "sha256-oz8xMbykiPwZNBB/f3iTCbqiTDkIH63hnncnT9O/vnc=";
     } else
       throw "Unsupported system ${system}";
 in
