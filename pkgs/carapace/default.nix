@@ -9,7 +9,7 @@ let
       sha256 = "sha256-NorhxTzBcolhb8dHWxIIYD246giriUI61xYfVUgDASY=";
     } else if lib.hasPrefix "aarch64-linux" system then {
       url = "https://github.com/carapace-sh/carapace-bin/releases/download/v${version}/carapace-bin_${version}_linux_arm64.tar.gz";
-      sha256 = sha256-yJV5uqdqSmnXPa5jjiwNdbNMxwi05Pma6w9qgEPSu4U=;
+      sha256 = "sha256-yJV5uqdqSmnXPa5jjiwNdbNMxwi05Pma6w9qgEPSu4U=";
     } else if lib.hasPrefix "x86_64-darwin" system then {
       url = "https://github.com/carapace-sh/carapace-bin/releases/download/v${version}/carapace-bin_${version}_darwin_amd64.tar.gz";
       sha256 = lib.fakeHash;
