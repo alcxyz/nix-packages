@@ -206,4 +206,14 @@ func main() {
 	if hadErr {
 		os.Exit(1)
 	}
+
+	// All pools unlocked successfully; ensure all datasets are mounted.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := runCmd(ctx, "zfs", "mount", "-a"); err != nil {
+		log.Printf("WARNING: 'zfs mount -a' failed: %v", err)
+	} else {
+		log.Printf("'zfs mount -a' completed successfully")
+	}
 }
