@@ -19,6 +19,7 @@
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
           helium = pkgs.callPackage ./pkgs/helium { };
+          t3code = pkgs.callPackage ./pkgs/t3code { };
           # Add more custom packages here
           # other-app = pkgs.callPackage ./pkgs/other-app { };
         };
