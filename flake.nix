@@ -20,8 +20,7 @@
           pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
           helium = pkgs.callPackage ./pkgs/helium { };
           t3code = pkgs.callPackage ./pkgs/t3code { };
-          # Add more custom packages here
-          # other-app = pkgs.callPackage ./pkgs/other-app { };
+          claude-code = pkgs.callPackage ./pkgs/claude-code { };
         };
 
         defaultPackage = self.packages.${system}.ndrop;
