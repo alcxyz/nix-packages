@@ -13,21 +13,29 @@
           inherit system;
           config.allowUnfree = true;
         };
-      in
-      {
-        packages = {
+        lib = pkgs.lib;
+        isLinux = pkgs.stdenv.hostPlatform.isLinux;
+
+        # All packages — some are platform-specific
+        allPackages = {
+          pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
+          helium = pkgs.callPackage ./pkgs/helium { };
+          claude-code = pkgs.callPackage ./pkgs/claude-code { };
+        }
+        // lib.optionalAttrs (isLinux || system == "aarch64-darwin") {
+          t3code = pkgs.callPackage ./pkgs/t3code { };
+        }
+        // lib.optionalAttrs isLinux {
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           carapace = pkgs.callPackage ./pkgs/carapace { };
           carapace-bridge = pkgs.callPackage ./pkgs/carapace-bridge { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
-          pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
-          helium = pkgs.callPackage ./pkgs/helium { };
-          t3code = pkgs.callPackage ./pkgs/t3code { };
-          claude-code = pkgs.callPackage ./pkgs/claude-code { };
           paperless-review = pkgs.callPackage ./tools/paperless-review { };
         };
-
-        defaultPackage = self.packages.${system}.ndrop;
+      in
+      {
+        packages = allPackages;
+        defaultPackage = allPackages.helium or allPackages.pihole-sync;
       }
     );
 }
