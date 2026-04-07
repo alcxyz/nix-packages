@@ -24,6 +24,7 @@
           helium = pkgs.callPackage ./pkgs/helium { };
           t3code = pkgs.callPackage ./pkgs/t3code { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
+          paperless-review = pkgs.callPackage ./tools/paperless-review { };
         };
 
         defaultPackage = self.packages.${system}.ndrop;
