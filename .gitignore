@@ -2,3 +2,6 @@
 .direnv/
 result
 result-*
+
+# Compiled binaries (Nix builds these from source)
+tools/paperless-review/paperless-review
