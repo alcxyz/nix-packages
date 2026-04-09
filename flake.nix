@@ -32,6 +32,7 @@
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           paperless-review = pkgs.callPackage ./tools/paperless-review { };
           paperless-filetype-index = pkgs.callPackage ./tools/paperless-filetype-index { };
+          leantime-tidy = pkgs.callPackage ./tools/leantime-tidy { };
         };
       in
       {
