@@ -65,8 +65,9 @@ else if lib.hasPrefix "aarch64-darwin" system then
     '';
 
     installPhase = ''
-      mkdir -p "$out/Applications"
+      mkdir -p "$out/Applications" "$out/bin"
       cp -r *.app "$out/Applications/"
+      ln -s "$out/Applications/T3 Code.app/Contents/MacOS/T3 Code" "$out/bin/t3code"
     '';
 
     meta = with lib; {
