@@ -20,6 +20,7 @@
         allPackages = {
           pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
           helium = pkgs.callPackage ./pkgs/helium { };
+          ghostty = pkgs.callPackage ./pkgs/ghostty { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
         }
         // lib.optionalAttrs (isLinux || system == "aarch64-darwin") {

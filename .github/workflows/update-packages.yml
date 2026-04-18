@@ -100,3 +100,34 @@ jobs:
             - https://github.com/imputnet/helium-macos/releases/tag/${{ steps.update.outputs.version }}
           labels: automated,packages
           reviewers: alcxyz
+
+  # ── ghostty ─────────────────────────────────────────────────────────────────
+  update-ghostty:
+    name: Update ghostty
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and update ghostty
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/update-ghostty.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/ghostty-${{ steps.update.outputs.version }}
+          commit-message: "chore(ghostty): update to ${{ steps.update.outputs.version }}"
+          title: "chore(ghostty): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **ghostty** to `${{ steps.update.outputs.version }}`.
+
+            Upstream release: https://github.com/ghostty-org/ghostty/releases/tag/v${{ steps.update.outputs.version }}
+          labels: automated,packages
+          reviewers: alcxyz

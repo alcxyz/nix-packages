@@ -15,6 +15,7 @@ Then reference packages as `inputs.nix-packages.packages.${system}.<name>`.
 
 | Package | Description | Platforms |
 |---------|-------------|-----------|
+| [ghostty](https://ghostty.org) | Ghostty terminal emulator | `aarch64-darwin` `x86_64-darwin` |
 | [helium](https://github.com/imputnet/helium) | Helium browser | `x86_64-linux` `aarch64-linux` `aarch64-darwin` `x86_64-darwin` |
 | [t3code](https://github.com/pingdotgg/t3code) | T3 Code — AI coding assistant desktop app | `x86_64-linux` `aarch64-darwin` |
 | [claude-code](https://github.com/anthropics/claude-code) | Agentic coding tool that lives in your terminal | all |
