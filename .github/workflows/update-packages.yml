@@ -37,6 +37,37 @@ jobs:
           labels: automated,packages
           reviewers: alcxyz
 
+  # ── omniwm ──────────────────────────────────────────────────────────────────
+  update-omniwm:
+    name: Update omniwm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and update omniwm
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/update-omniwm.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/omniwm-${{ steps.update.outputs.version }}
+          commit-message: "chore(omniwm): update to ${{ steps.update.outputs.version }}"
+          title: "chore(omniwm): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **OmniWM** to `${{ steps.update.outputs.version }}`.
+
+            Upstream release: https://github.com/BarutSRB/OmniWM/releases/tag/v${{ steps.update.outputs.version }}
+          labels: automated,packages
+          reviewers: alcxyz
+
   # ── helium ──────────────────────────────────────────────────────────────────
   update-helium:
     name: Update helium
