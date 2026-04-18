@@ -1,0 +1,69 @@
+name: Update packages
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:        # allow manual runs
+
+jobs:
+  # ── t3code ──────────────────────────────────────────────────────────────────
+  update-t3code:
+    name: Update t3code
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and update t3code
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/update-t3code.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/t3code-${{ steps.update.outputs.version }}
+          commit-message: "chore(t3code): update to ${{ steps.update.outputs.version }}"
+          title: "chore(t3code): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **t3code** to `${{ steps.update.outputs.version }}`.
+
+            Upstream release: https://github.com/pingdotgg/t3code/releases/tag/v${{ steps.update.outputs.version }}
+          labels: automated,packages
+
+  # ── helium ──────────────────────────────────────────────────────────────────
+  update-helium:
+    name: Update helium
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and update helium
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/update-helium.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/helium-${{ steps.update.outputs.version }}
+          commit-message: "chore(helium): update to ${{ steps.update.outputs.version }}"
+          title: "chore(helium): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **helium** to `${{ steps.update.outputs.version }}`.
+
+            Upstream releases:
+            - https://github.com/imputnet/helium-linux/releases/tag/${{ steps.update.outputs.version }}
+            - https://github.com/imputnet/helium-macos/releases/tag/${{ steps.update.outputs.version }}
+          labels: automated,packages
