@@ -66,8 +66,22 @@ else if lib.hasPrefix "aarch64-darwin" system then
 
     installPhase = ''
       mkdir -p "$out/Applications" "$out/bin"
-      cp -r *.app "$out/Applications/"
-      ln -s "$out/Applications/T3 Code.app/Contents/MacOS/T3 Code" "$out/bin/t3code"
+
+      app="$(find . -maxdepth 3 -name '*.app' -print -quit)"
+      if [ -z "$app" ]; then
+        echo "Could not find .app inside dmg"
+        exit 1
+      fi
+      cp -r "$app" "$out/Applications/"
+
+      appName="$(basename "$app")"
+      exe="$(find "$out/Applications/$appName/Contents/MacOS" \
+        -maxdepth 1 -type f -perm -111 -print -quit)"
+      if [ -z "$exe" ]; then
+        echo "Could not find executable in $appName/Contents/MacOS"
+        exit 1
+      fi
+      ln -s "$exe" "$out/bin/t3code"
     '';
 
     meta = with lib; {
