@@ -35,6 +35,7 @@ jobs:
 
             Upstream release: https://github.com/pingdotgg/t3code/releases/tag/v${{ steps.update.outputs.version }}
           labels: automated,packages
+          reviewers: alcxyz
 
   # ── helium ──────────────────────────────────────────────────────────────────
   update-helium:
@@ -67,3 +68,4 @@ jobs:
             - https://github.com/imputnet/helium-linux/releases/tag/${{ steps.update.outputs.version }}
             - https://github.com/imputnet/helium-macos/releases/tag/${{ steps.update.outputs.version }}
           labels: automated,packages
+          reviewers: alcxyz
