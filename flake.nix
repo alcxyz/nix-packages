@@ -25,6 +25,9 @@
         // lib.optionalAttrs (isLinux || system == "aarch64-darwin") {
           t3code = pkgs.callPackage ./pkgs/t3code { };
         }
+        // lib.optionalAttrs (system == "aarch64-darwin") {
+          omniwm = pkgs.callPackage ./pkgs/omniwm { };
+        }
         // lib.optionalAttrs isLinux {
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           carapace = pkgs.callPackage ./pkgs/carapace { };
