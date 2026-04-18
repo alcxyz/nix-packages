@@ -12,12 +12,13 @@ current_version=$(grep -m1 'version = ' "$PKG_FILE" | grep -oP '"\K[^"]+')
 echo "Current: $current_version"
 
 # ── latest release ─────────────────────────────────────────────────────────────
+# Ghostty uses git tags only — no GitHub Releases — so use the tags API.
 api_response=$(curl -fsSL \
   -H "Accept: application/vnd.github+json" \
   ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
-  "https://api.github.com/repos/ghostty-org/ghostty/releases/latest")
+  "https://api.github.com/repos/ghostty-org/ghostty/tags?per_page=1")
 
-latest_tag=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read())['tag_name'])" <<< "$api_response")
+latest_tag=$(python3 -c "import sys,json; print(json.loads(sys.stdin.read())[0]['name'])" <<< "$api_response")
 latest_version="${latest_tag#v}"
 echo "Latest:  $latest_version"
 
