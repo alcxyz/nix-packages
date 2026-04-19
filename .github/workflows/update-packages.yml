@@ -27,7 +27,7 @@ jobs:
         if: steps.update.outputs.updated == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          branch: update/t3code-${{ steps.update.outputs.version }}
+          branch: update/t3code
           commit-message: "chore(t3code): update to ${{ steps.update.outputs.version }}"
           title: "chore(t3code): update to ${{ steps.update.outputs.version }}"
           body: |
@@ -58,7 +58,7 @@ jobs:
         if: steps.update.outputs.updated == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          branch: update/omniwm-${{ steps.update.outputs.version }}
+          branch: update/omniwm
           commit-message: "chore(omniwm): update to ${{ steps.update.outputs.version }}"
           title: "chore(omniwm): update to ${{ steps.update.outputs.version }}"
           body: |
@@ -89,7 +89,7 @@ jobs:
         if: steps.update.outputs.updated == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          branch: update/helium-${{ steps.update.outputs.version }}
+          branch: update/helium
           commit-message: "chore(helium): update to ${{ steps.update.outputs.version }}"
           title: "chore(helium): update to ${{ steps.update.outputs.version }}"
           body: |
@@ -122,7 +122,7 @@ jobs:
         if: steps.update.outputs.updated == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          branch: update/ghostty-${{ steps.update.outputs.version }}
+          branch: update/ghostty
           commit-message: "chore(ghostty): update to ${{ steps.update.outputs.version }}"
           title: "chore(ghostty): update to ${{ steps.update.outputs.version }}"
           body: |
