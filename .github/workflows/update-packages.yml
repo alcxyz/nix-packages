@@ -132,6 +132,39 @@ jobs:
           labels: automated,packages
           reviewers: alcxyz
 
+  # ── ndrop ──────────────────────────────────────────────────────────────────
+  update-ndrop:
+    name: Update ndrop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+
+      - name: Check and update ndrop
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/update-ndrop.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/ndrop
+          commit-message: "chore(ndrop): update to ${{ steps.update.outputs.version }}"
+          title: "chore(ndrop): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **ndrop** to `${{ steps.update.outputs.version }}`.
+
+            Upstream commit: https://github.com/Schweber/ndrop/commit/${{ steps.update.outputs.version }}
+          labels: automated,packages
+          reviewers: alcxyz
+
   # ── zen-browser ────────────────────────────────────────────────────────────
   update-zen-browser:
     name: Update zen-browser

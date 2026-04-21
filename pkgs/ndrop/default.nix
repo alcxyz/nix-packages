@@ -2,13 +2,13 @@
 
 stdenvNoCC.mkDerivation rec {
   pname = "ndrop";
-  version = "0feb899-unstable";
+  version = "f2fb1c6-unstable";
 
   src = fetchFromGitHub {
     owner = "schweber";
     repo = "ndrop";
-    rev = "0feb899f34609e4afc0ec166de4f309e2b9c9f02";
-    hash = "sha256-hh0mrLsp0qj1IqBERqV9fS/KCsTi++seFNmy2Ej9Vpg=";
+    rev = "f2fb1c611811c48b48cd0f0fecab4f3f935e7405";
+    hash = "sha256-/Xco1sr76+F3mAIGq29yp5Y6FPcXS/AVXDpwZ1+rLQk=";
   };
 
   nativeBuildInputs = [ scdoc ];
