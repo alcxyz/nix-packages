@@ -131,3 +131,34 @@ jobs:
             Upstream release: https://github.com/ghostty-org/ghostty/releases/tag/v${{ steps.update.outputs.version }}
           labels: automated,packages
           reviewers: alcxyz
+
+  # ── zen-browser ────────────────────────────────────────────────────────────
+  update-zen-browser:
+    name: Update zen-browser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and update zen-browser
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/update-zen-browser.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/zen-browser
+          commit-message: "chore(zen-browser): update to ${{ steps.update.outputs.version }}"
+          title: "chore(zen-browser): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **Zen Browser** to `${{ steps.update.outputs.version }}`.
+
+            Upstream release: https://github.com/zen-browser/desktop/releases/tag/${{ steps.update.outputs.version }}
+          labels: automated,packages
+          reviewers: alcxyz
