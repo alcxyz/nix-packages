@@ -165,6 +165,35 @@ jobs:
           labels: automated,packages
           reviewers: alcxyz
 
+  # ── ledger-live ─────────────────────────────────────────────────────────────
+  update-ledger-live:
+    name: Update ledger-live
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check and update ledger-live
+        id: update
+        run: bash .github/scripts/update-ledger-live.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/ledger-live
+          commit-message: "chore(ledger-live): update to ${{ steps.update.outputs.version }}"
+          title: "chore(ledger-live): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **Ledger Live** to `${{ steps.update.outputs.version }}`.
+
+            Upstream release: https://github.com/LedgerHQ/ledger-live/releases/tag/%40ledgerhq/live-desktop%40${{ steps.update.outputs.version }}
+          labels: automated,packages
+          reviewers: alcxyz
+
   # ── zen-browser ────────────────────────────────────────────────────────────
   update-zen-browser:
     name: Update zen-browser

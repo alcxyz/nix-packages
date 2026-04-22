@@ -30,6 +30,7 @@
           omniwm = pkgs.callPackage ./pkgs/omniwm { };
         }
         // lib.optionalAttrs isLinux {
+          ledger-live = pkgs.callPackage ./pkgs/ledger-live { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           zen-browser = pkgs.callPackage ./pkgs/zen-browser { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
