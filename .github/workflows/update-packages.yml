@@ -194,6 +194,37 @@ jobs:
           labels: automated,packages
           reviewers: alcxyz
 
+  # ── claude-code ─────────────────────────────────────────────────────────────
+  update-claude-code:
+    name: Update claude-code
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+
+      - name: Check and update claude-code
+        id: update
+        run: bash .github/scripts/update-claude-code.sh
+
+      - name: Open / refresh PR
+        if: steps.update.outputs.updated == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update/claude-code
+          commit-message: "chore(claude-code): update to ${{ steps.update.outputs.version }}"
+          title: "chore(claude-code): update to ${{ steps.update.outputs.version }}"
+          body: |
+            Automated update of **claude-code** to `${{ steps.update.outputs.version }}`.
+
+            Upstream release: https://www.npmjs.com/package/@anthropic-ai/claude-code/v/${{ steps.update.outputs.version }}
+          labels: automated,packages
+          reviewers: alcxyz
+
   # ── zen-browser ────────────────────────────────────────────────────────────
   update-zen-browser:
     name: Update zen-browser
