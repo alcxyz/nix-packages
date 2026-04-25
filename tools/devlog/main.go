@@ -276,6 +276,34 @@ func runWeekly(args []string) int {
 			fmt.Fprintf(os.Stderr, "error running claude: %v\n", err)
 			return 1
 		}
+
+		// Append raw daily entries below the summary
+		summary, err := os.ReadFile(outfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading summary: %v\n", err)
+			return 1
+		}
+
+		var stitched strings.Builder
+		stitched.Write(summary)
+		stitched.WriteString("\n\n---\n\n# Daily entries\n")
+
+		for d := monday; !d.After(sunday); d = d.AddDate(0, 0, 1) {
+			ds := d.Format("2006-01-02")
+			daily := filepath.Join(*repoPath, "devlog", ds+".md")
+			data, err := os.ReadFile(daily)
+			if err != nil {
+				continue
+			}
+			stitched.WriteString("\n")
+			stitched.Write(data)
+			stitched.WriteString("\n\n---\n")
+		}
+
+		if err := os.WriteFile(outfile, []byte(stitched.String()), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing stitched file: %v\n", err)
+			return 1
+		}
 	}
 
 	// Post to HedgeDoc
@@ -297,7 +325,7 @@ func runWeekly(args []string) int {
 func buildWeeklyPrompt(monday, friday, sunday, week, weekdayEntries, weekendEntries string) string {
 	return fmt.Sprintf(`You are writing a weekly devlog summary. You are given daily devlog entries for the week, split into weekday (Mon-Fri) and weekend (Sat-Sun) sections.
 
-Your job is to synthesize a higher-level weekly narrative — NOT to repeat the daily details.
+Your job is to synthesize TWO separate summaries — one for weekdays and one for the weekend. Do NOT repeat daily details; the raw entries will be appended below your summary.
 
 Output ONLY the raw markdown — no code fences, no commentary, no preamble.
 
@@ -309,25 +337,22 @@ tags: alcxyz, devlog, weekly
 ---
 # Week %s — %s to %s
 
-## Themes
-(2-4 key themes or threads that ran through the week. Each theme gets a short paragraph explaining what was accomplished and why it matters.)
-
-## Highlights
-- Bullet list of the most significant individual accomplishments (shipped features, completed milestones, resolved blockers)
-
-## Projects touched
-(Brief status line for each project/repo that saw activity this week — one line each, focus on net progress not daily details)
+## Weekdays
+(Synthesized narrative of Monday through Friday. 2-4 key themes or threads, what was accomplished, what progressed. Focus on outcomes, not activity.)
 
 ## Weekend
-(Summary of weekend work — what was done, how it differs from the weekday focus. If no weekend activity, write "No weekend activity." and nothing else in this section.)
+(Synthesized narrative of Saturday-Sunday work — what was done, how it relates to or differs from the weekday focus. If no weekend activity, write "No weekend activity." and nothing else in this section.)
+
+## Highlights
+- Bullet list of the most significant accomplishments across the whole week (shipped features, completed milestones, resolved blockers)
 
 ## Patterns & observations
 (Optional — any meta-observations about work patterns, recurring issues, or strategic direction. Omit this section entirely if nothing meaningful to say.)
 
 Rules:
 - Output starts with --- (the frontmatter delimiter), nothing before it
-- This is a SYNTHESIS, not a concatenation — find the narrative arc of the week
-- Do not repeat daily-level commit details; those live in the daily entries
+- This is a SYNTHESIS, not a concatenation — find the narrative arc
+- Do not repeat daily-level commit details; the raw daily entries are appended after your summary
 - Focus on outcomes and progress, not activity
 - Keep the total length under 400 words
 - The tags line in frontmatter is mandatory
