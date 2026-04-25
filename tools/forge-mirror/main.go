@@ -121,11 +121,6 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 		return nil // graceful skip when offline
 	}
 
-	// Also set up git credential helper for Forgejo if token is available
-	if err := ensureCredentialHelper(forgejoURL); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: credential helper setup failed: %v\n", err)
-	}
-
 	mirrorNames := make(map[string]string) // repo name → https clone url
 	for _, r := range mirrors {
 		mirrorNames[r.Name] = r.CloneURL
@@ -355,24 +350,6 @@ func ensurePushURL(repoPath, forgejoHTTPS string) (bool, error) {
 
 	return true, nil
 }
-
-// ensureCredentialHelper sets up a git credential helper for Forgejo that
-// reads the API token from FORGEJO_TOKEN_FILE. This is configured globally
-// so all repos pushing to git.alc.xyz authenticate automatically.
-func ensureCredentialHelper(forgejoURL string) error {
-	// Check if already configured
-	out, _ := exec.Command("git", "config", "--global", "--get-all",
-		"credential."+forgejoURL+".helper").Output()
-	if strings.Contains(string(out), "forge-mirror") {
-		return nil
-	}
-
-	// Set the credential helper: forge-mirror itself acts as the helper
-	return exec.Command("git", "config", "--global",
-		"credential."+forgejoURL+".helper",
-		"!forge-mirror credential-helper").Run()
-}
-
 
 // getExplicitPushURLs reads pushurl entries directly from git config,
 // avoiding the implicit fallback that git-remote-get-url --push uses.
