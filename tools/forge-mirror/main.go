@@ -227,6 +227,8 @@ func cmdCreate(forgejoURL, forgejoUser, token, repoName string) error {
 // --- convert command ---
 
 func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
+	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
+
 	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser)
 	if err != nil {
 		return fmt.Errorf("fetching repos: %w", err)
@@ -247,30 +249,56 @@ func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
 			continue
 		}
 
-		// PATCH /api/v1/repos/{owner}/{repo} with mirror=false
-		payload, _ := json.Marshal(map[string]interface{}{
-			"mirror": false,
-		})
-		req, _ := http.NewRequest("PATCH",
+		// Forgejo API doesn't support PATCH mirror=false, so we delete and
+		// re-import as a non-mirror repo using the migrate endpoint.
+		fmt.Printf("  %s: deleting mirror...\n", r.Name)
+
+		req, _ := http.NewRequest("DELETE",
 			fmt.Sprintf("%s/api/v1/repos/%s/%s", forgejoURL, forgejoUser, r.Name),
-			bytes.NewReader(payload))
-		req.Header.Set("Content-Type", "application/json")
+			nil)
 		req.Header.Set("Authorization", "token "+token)
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", r.Name, err)
+			fmt.Fprintf(os.Stderr, "  %s: delete error: %v\n", r.Name, err)
 			continue
 		}
-		defer resp.Body.Close()
+		resp.Body.Close()
 
 		if resp.StatusCode >= 300 {
-			respBody, _ := io.ReadAll(resp.Body)
-			fmt.Fprintf(os.Stderr, "  %s: API error %d: %s\n", r.Name, resp.StatusCode, string(respBody))
+			fmt.Fprintf(os.Stderr, "  %s: delete failed (HTTP %d)\n", r.Name, resp.StatusCode)
 			continue
 		}
 
-		fmt.Printf("  %s: converted from mirror to regular repo\n", r.Name)
+		// Re-create as regular repo via migrate (without mirror flag)
+		cloneAddr := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, r.Name)
+		payload, _ := json.Marshal(map[string]interface{}{
+			"clone_addr": cloneAddr,
+			"repo_name":  r.Name,
+			"repo_owner": forgejoUser,
+			"mirror":     false,
+			"service":    "github",
+		})
+
+		req, _ = http.NewRequest("POST",
+			fmt.Sprintf("%s/api/v1/repos/migrate", forgejoURL),
+			bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "token "+token)
+
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: recreate error: %v\n", r.Name, err)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			fmt.Fprintf(os.Stderr, "  %s: recreate failed (HTTP %d)\n", r.Name, resp.StatusCode)
+			continue
+		}
+
+		fmt.Printf("  %s: converted to regular repo\n", r.Name)
 		converted++
 	}
 
