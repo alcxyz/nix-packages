@@ -66,6 +66,24 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "convert":
+		if token == "" {
+			token = readTokenFile()
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for convert")
+			os.Exit(1)
+		}
+		// Optional: convert specific repos by name, or all mirrors
+		var names []string
+		if len(os.Args) > 2 {
+			names = os.Args[2:]
+		}
+		if err := cmdConvert(forgejoURL, forgejoUser, token, names); err != nil {
+			fmt.Fprintf(os.Stderr, "convert: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "status":
 		scanPaths := defaultScanPaths()
 		if len(os.Args) > 2 {
@@ -100,9 +118,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `forge-mirror — manage GitHub→Forgejo mirrors and dual-push
 
 Commands:
-  sync   [paths...]   Configure dual-push for local repos that have Forgejo mirrors
-  create <repo-name>  Create a new pull mirror on Forgejo for a GitHub repo
-  status [paths...]   Show mirror and push-url status for local repos
+  sync    [paths...]    Configure dual-push for local repos that have Forgejo repos
+  create  <repo-name>   Create a new pull mirror on Forgejo for a GitHub repo
+  convert [repo-names]  Convert pull mirrors to regular repos (enables push)
+  status  [paths...]    Show mirror and push-url status for local repos
 
 Environment:
   FORGEJO_TOKEN        API token (required for create, takes precedence)
@@ -205,24 +224,88 @@ func cmdCreate(forgejoURL, forgejoUser, token, repoName string) error {
 	return nil
 }
 
-// --- status command ---
+// --- convert command ---
 
-func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
-	mirrors, err := fetchForgejoRepos(forgejoURL, forgejoUser)
+func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
+	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser)
 	if err != nil {
 		return fmt.Errorf("fetching repos: %w", err)
 	}
 
-	mirrorNames := make(map[string]string)
-	for _, r := range mirrors {
-		mirrorNames[r.Name] = r.CloneURL
+	// Build filter set (empty = convert all mirrors)
+	filter := make(map[string]bool)
+	for _, n := range names {
+		filter[n] = true
+	}
+
+	converted := 0
+	for _, r := range repos {
+		if !r.Mirror {
+			continue
+		}
+		if len(filter) > 0 && !filter[r.Name] {
+			continue
+		}
+
+		// PATCH /api/v1/repos/{owner}/{repo} with mirror=false
+		payload, _ := json.Marshal(map[string]interface{}{
+			"mirror": false,
+		})
+		req, _ := http.NewRequest("PATCH",
+			fmt.Sprintf("%s/api/v1/repos/%s/%s", forgejoURL, forgejoUser, r.Name),
+			bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "token "+token)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", r.Name, err)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			respBody, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "  %s: API error %d: %s\n", r.Name, resp.StatusCode, string(respBody))
+			continue
+		}
+
+		fmt.Printf("  %s: converted from mirror to regular repo\n", r.Name)
+		converted++
+	}
+
+	if converted > 0 {
+		fmt.Printf("convert: %d repo(s) converted\n", converted)
+	} else if len(filter) == 0 {
+		fmt.Println("convert: no mirror repos found")
+	} else {
+		fmt.Println("convert: no matching mirror repos found")
+	}
+	return nil
+}
+
+// --- status command ---
+
+func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
+	remoteRepos, err := fetchForgejoRepos(forgejoURL, forgejoUser)
+	if err != nil {
+		return fmt.Errorf("fetching repos: %w", err)
+	}
+
+	type repoInfo struct {
+		cloneURL string
+		mirror   bool
+	}
+	repoMap := make(map[string]repoInfo)
+	for _, r := range remoteRepos {
+		repoMap[r.Name] = repoInfo{cloneURL: r.CloneURL, mirror: r.Mirror}
 	}
 
 	repos := findLocalRepos(scanPaths)
 	for _, repoPath := range repos {
 		name := filepath.Base(repoPath)
-		cloneURL, mirrored := mirrorNames[name]
-		if !mirrored {
+		info, found := repoMap[name]
+		if !found {
 			continue
 		}
 
@@ -235,11 +318,18 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 			}
 		}
 
-		status := "no push-url"
-		if hasForgejo {
-			status = "dual-push"
+		repoType := "regular"
+		if info.mirror {
+			repoType = "mirror "
 		}
-		fmt.Printf("  %-30s  mirrored  %-12s  %s\n", name, status, cloneURL)
+
+		pushStatus := "no push-url"
+		if hasForgejo && info.mirror {
+			pushStatus = "push-blocked"
+		} else if hasForgejo {
+			pushStatus = "dual-push"
+		}
+		fmt.Printf("  %-30s  %s  %-13s  %s\n", name, repoType, pushStatus, info.cloneURL)
 	}
 
 	return nil
