@@ -16,15 +16,15 @@ const (
 	defaultForgejoURL  = "https://git.alc.xyz"
 	defaultForgejoUser = "alc"
 	defaultGitHubUser  = "alcxyz"
-	defaultSSHBase     = "ssh://git@git.alc.xyz:2222"
 )
 
 type forgejoRepo struct {
-	Name          string `json:"name"`
-	Mirror        bool   `json:"mirror"`
-	SSHURL        string `json:"ssh_url"`
-	OriginalURL   string `json:"original_url"`
-	FullName      string `json:"full_name"`
+	Name           string `json:"name"`
+	Mirror         bool   `json:"mirror"`
+	CloneURL       string `json:"clone_url"`
+	SSHURL         string `json:"ssh_url"`
+	OriginalURL    string `json:"original_url"`
+	FullName       string `json:"full_name"`
 	MirrorInterval string `json:"mirror_interval"`
 }
 
@@ -76,6 +76,20 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "credential-helper":
+		// Git credential helper protocol: git calls us with "get" on stdin.
+		// We respond with username + password (the Forgejo API token).
+		if len(os.Args) >= 3 && os.Args[2] == "get" {
+			tok := os.Getenv("FORGEJO_TOKEN")
+			if tok == "" {
+				tok = readTokenFile()
+			}
+			if tok != "" {
+				fmt.Printf("username=%s\n", forgejoUser)
+				fmt.Printf("password=%s\n", tok)
+			}
+		}
+
 	default:
 		usage()
 		os.Exit(1)
@@ -107,20 +121,25 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 		return nil // graceful skip when offline
 	}
 
-	mirrorNames := make(map[string]string) // repo name → ssh url
+	// Also set up git credential helper for Forgejo if token is available
+	if err := ensureCredentialHelper(forgejoURL); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: credential helper setup failed: %v\n", err)
+	}
+
+	mirrorNames := make(map[string]string) // repo name → https clone url
 	for _, r := range mirrors {
-		mirrorNames[r.Name] = r.SSHURL
+		mirrorNames[r.Name] = r.CloneURL
 	}
 
 	repos := findLocalRepos(scanPaths)
 	configured := 0
 	for _, repoPath := range repos {
 		name := filepath.Base(repoPath)
-		sshURL, ok := mirrorNames[name]
+		cloneURL, ok := mirrorNames[name]
 		if !ok {
 			continue
 		}
-		changed, err := ensurePushURL(repoPath, sshURL)
+		changed, err := ensurePushURL(repoPath, cloneURL)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", name, err)
 			continue
@@ -201,13 +220,13 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 
 	mirrorNames := make(map[string]string)
 	for _, r := range mirrors {
-		mirrorNames[r.Name] = r.SSHURL
+		mirrorNames[r.Name] = r.CloneURL
 	}
 
 	repos := findLocalRepos(scanPaths)
 	for _, repoPath := range repos {
 		name := filepath.Base(repoPath)
-		sshURL, mirrored := mirrorNames[name]
+		cloneURL, mirrored := mirrorNames[name]
 		if !mirrored {
 			continue
 		}
@@ -225,7 +244,7 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 		if hasForgejo {
 			status = "dual-push"
 		}
-		fmt.Printf("  %-30s  mirrored  %-12s  %s\n", name, status, sshURL)
+		fmt.Printf("  %-30s  mirrored  %-12s  %s\n", name, status, cloneURL)
 	}
 
 	return nil
@@ -285,15 +304,32 @@ func isGitRepo(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func ensurePushURL(repoPath, forgejoSSH string) (bool, error) {
+func ensurePushURL(repoPath, forgejoHTTPS string) (bool, error) {
 	// Check if pushurl is explicitly configured in git config (not just
 	// the implicit fallback from the fetch url).
 	explicitPushURLs := getExplicitPushURLs(repoPath)
 
-	// Already has Forgejo push URL
+	// Migrate: remove any old SSH push URLs for Forgejo
+	migrated := false
 	for _, u := range explicitPushURLs {
-		if u == forgejoSSH {
-			return false, nil
+		if strings.Contains(u, "git.alc.xyz") && strings.HasPrefix(u, "ssh://") {
+			gitCmd(repoPath, "remote", "set-url", "--delete", "--push", "origin", u)
+			migrated = true
+		}
+	}
+	if migrated {
+		// Re-read after cleanup
+		explicitPushURLs = getExplicitPushURLs(repoPath)
+		// If we removed all push URLs (only had SSH), reset to clean state
+		if len(explicitPushURLs) == 0 {
+			// No explicit URLs left — git falls back to fetch URL, which is fine
+		}
+	}
+
+	// Already has the correct HTTPS push URL
+	for _, u := range explicitPushURLs {
+		if u == forgejoHTTPS {
+			return migrated, nil
 		}
 	}
 
@@ -312,13 +348,31 @@ func ensurePushURL(repoPath, forgejoSSH string) (bool, error) {
 		}
 	}
 
-	// Add Forgejo push URL
-	if err := gitCmd(repoPath, "remote", "set-url", "--add", "--push", "origin", forgejoSSH); err != nil {
+	// Add Forgejo HTTPS push URL
+	if err := gitCmd(repoPath, "remote", "set-url", "--add", "--push", "origin", forgejoHTTPS); err != nil {
 		return false, err
 	}
 
 	return true, nil
 }
+
+// ensureCredentialHelper sets up a git credential helper for Forgejo that
+// reads the API token from FORGEJO_TOKEN_FILE. This is configured globally
+// so all repos pushing to git.alc.xyz authenticate automatically.
+func ensureCredentialHelper(forgejoURL string) error {
+	// Check if already configured
+	out, _ := exec.Command("git", "config", "--global", "--get-all",
+		"credential."+forgejoURL+".helper").Output()
+	if strings.Contains(string(out), "forge-mirror") {
+		return nil
+	}
+
+	// Set the credential helper: forge-mirror itself acts as the helper
+	return exec.Command("git", "config", "--global",
+		"credential."+forgejoURL+".helper",
+		"!forge-mirror credential-helper").Run()
+}
+
 
 // getExplicitPushURLs reads pushurl entries directly from git config,
 // avoiding the implicit fallback that git-remote-get-url --push uses.
@@ -326,20 +380,6 @@ func getExplicitPushURLs(repoPath string) []string {
 	out, err := exec.Command("git", "-C", repoPath, "config", "--get-all", "remote.origin.pushurl").Output()
 	if err != nil {
 		return nil // no explicit pushurl set
-	}
-	var urls []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line != "" {
-			urls = append(urls, line)
-		}
-	}
-	return urls
-}
-
-func getGitPushURLs(repoPath string) []string {
-	out, err := exec.Command("git", "-C", repoPath, "remote", "get-url", "--push", "--all", "origin").Output()
-	if err != nil {
-		return nil
 	}
 	var urls []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
