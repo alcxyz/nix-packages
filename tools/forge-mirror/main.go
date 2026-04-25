@@ -413,8 +413,8 @@ func findLocalRepos(scanPaths []string) []string {
 }
 
 func isGitRepo(path string) bool {
-	info, err := os.Stat(filepath.Join(path, ".git"))
-	return err == nil && info.IsDir()
+	_, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil // .git can be a directory (regular) or file (submodule/worktree)
 }
 
 func ensurePushURL(repoPath, forgejoHTTPS string) (bool, error) {
