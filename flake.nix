@@ -18,6 +18,7 @@
 
         # All packages — some are platform-specific
         allPackages = {
+          forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
           pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
           helium = pkgs.callPackage ./pkgs/helium { };
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
