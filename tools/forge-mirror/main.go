@@ -106,6 +106,23 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "pull":
+		if token == "" {
+			token = readTokenFile()
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for pull")
+			os.Exit(1)
+		}
+		var names []string
+		if len(os.Args) > 2 {
+			names = os.Args[2:]
+		}
+		if err := cmdPull(forgejoURL, forgejoUser, token, names); err != nil {
+			fmt.Fprintf(os.Stderr, "pull: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "status":
 		scanPaths := defaultScanPaths()
 		if len(os.Args) > 2 {
@@ -144,6 +161,7 @@ Commands:
   create    <repo-name>   Create a new pull mirror on Forgejo for a GitHub repo
   convert   [repo-names]  Convert pull mirrors to regular repos (enables push)
   recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
+  pull      [names...]    Fetch from GitHub and push to Forgejo (all repos if no names)
   status    [paths...]    Show mirror and push-url status for local repos
 
 Environment:
@@ -435,6 +453,89 @@ func getGitHubPAT() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// --- pull command ---
+
+func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
+	ghToken := getGitHubPAT()
+
+	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
+	if err != nil {
+		return fmt.Errorf("fetching repos: %w", err)
+	}
+
+	// Build filter set (empty = pull all)
+	filter := make(map[string]bool)
+	for _, n := range names {
+		filter[n] = true
+	}
+
+	tmpBase, err := os.MkdirTemp("", "forge-mirror-pull-")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpBase)
+
+	pulled := 0
+	skipped := 0
+	failed := 0
+	for _, r := range repos {
+		if r.OriginalURL == "" || !strings.Contains(r.OriginalURL, "github.com") {
+			continue
+		}
+		if len(filter) > 0 && !filter[r.Name] {
+			continue
+		}
+
+		cloneURL := r.OriginalURL
+		if ghToken != "" {
+			// Inject token for private repos: https://TOKEN@github.com/...
+			cloneURL = strings.Replace(cloneURL, "https://github.com/", fmt.Sprintf("https://%s@github.com/", ghToken), 1)
+		}
+
+		tmpDir := filepath.Join(tmpBase, r.Name)
+
+		// Bare clone from GitHub
+		cmd := exec.Command("git", "clone", "--bare", "--quiet", cloneURL, tmpDir)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: clone failed: %v\n", r.Name, err)
+			failed++
+			continue
+		}
+
+		// Push to Forgejo (non-force: only fast-forwards)
+		pushCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", r.CloneURL, "--all")
+		pushCmd.Stderr = os.Stderr
+		pushErr := pushCmd.Run()
+
+		tagCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", r.CloneURL, "--tags")
+		tagCmd.Stderr = os.Stderr
+		tagErr := tagCmd.Run()
+
+		if pushErr != nil || tagErr != nil {
+			fmt.Fprintf(os.Stderr, "  %s: push failed (branches: %v, tags: %v)\n", r.Name, pushErr, tagErr)
+			failed++
+			continue
+		}
+
+		fmt.Printf("  %s: synced\n", r.Name)
+		pulled++
+
+		// Clean up each repo as we go to save disk space
+		os.RemoveAll(tmpDir)
+	}
+
+	if pulled > 0 || skipped > 0 || failed > 0 {
+		fmt.Printf("pull: %d synced, %d failed\n", pulled, failed)
+	} else {
+		fmt.Println("pull: nothing to sync")
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d repo(s) failed", failed)
+	}
+	return nil
 }
 
 // --- status command ---
