@@ -474,7 +474,12 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 	// Build authenticated Forgejo push URL
 	forgejoAuthURL := forgejoURL
 	if token != "" {
-		forgejoAuthURL = strings.Replace(forgejoURL, "https://", fmt.Sprintf("https://%s:%s@", forgejoUser, token), 1)
+		for _, scheme := range []string{"https://", "http://"} {
+			if strings.HasPrefix(forgejoURL, scheme) {
+				forgejoAuthURL = strings.Replace(forgejoURL, scheme, fmt.Sprintf("%s%s:%s@", scheme, forgejoUser, token), 1)
+				break
+			}
+		}
 	}
 
 	tmpBase, err := os.MkdirTemp("", "forge-mirror-pull-")
