@@ -471,6 +471,12 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 		filter[n] = true
 	}
 
+	// Build authenticated Forgejo push URL
+	forgejoAuthURL := forgejoURL
+	if token != "" {
+		forgejoAuthURL = strings.Replace(forgejoURL, "https://", fmt.Sprintf("https://%s:%s@", forgejoUser, token), 1)
+	}
+
 	tmpBase, err := os.MkdirTemp("", "forge-mirror-pull-")
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
@@ -478,7 +484,6 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 	defer os.RemoveAll(tmpBase)
 
 	pulled := 0
-	skipped := 0
 	failed := 0
 	for _, r := range repos {
 		if r.OriginalURL == "" || !strings.Contains(r.OriginalURL, "github.com") {
@@ -488,11 +493,14 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 			continue
 		}
 
+		// GitHub clone URL with auth (fine-grained PATs use x-access-token as username)
 		cloneURL := r.OriginalURL
 		if ghToken != "" {
-			// Inject token for private repos: https://TOKEN@github.com/...
-			cloneURL = strings.Replace(cloneURL, "https://github.com/", fmt.Sprintf("https://%s@github.com/", ghToken), 1)
+			cloneURL = strings.Replace(cloneURL, "https://github.com/", fmt.Sprintf("https://x-access-token:%s@github.com/", ghToken), 1)
 		}
+
+		// Forgejo push URL with auth
+		pushURL := fmt.Sprintf("%s/%s/%s.git", forgejoAuthURL, forgejoUser, r.Name)
 
 		tmpDir := filepath.Join(tmpBase, r.Name)
 
@@ -506,11 +514,11 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 		}
 
 		// Push to Forgejo (non-force: only fast-forwards)
-		pushCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", r.CloneURL, "--all")
+		pushCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", pushURL, "--all")
 		pushCmd.Stderr = os.Stderr
 		pushErr := pushCmd.Run()
 
-		tagCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", r.CloneURL, "--tags")
+		tagCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", pushURL, "--tags")
 		tagCmd.Stderr = os.Stderr
 		tagErr := tagCmd.Run()
 
@@ -527,7 +535,7 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 		os.RemoveAll(tmpDir)
 	}
 
-	if pulled > 0 || skipped > 0 || failed > 0 {
+	if pulled > 0 || failed > 0 {
 		fmt.Printf("pull: %d synced, %d failed\n", pulled, failed)
 	} else {
 		fmt.Println("pull: nothing to sync")
