@@ -540,9 +540,7 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 	} else {
 		fmt.Println("pull: nothing to sync")
 	}
-	if failed > 0 {
-		return fmt.Errorf("%d repo(s) failed", failed)
-	}
+	// Best-effort: don't fail the service for partial sync failures
 	return nil
 }
 
