@@ -23,6 +23,7 @@
           helium = pkgs.callPackage ./pkgs/helium { };
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
+          nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
         }
         // lib.optionalAttrs (isLinux || system == "aarch64-darwin") {
           t3code = pkgs.callPackage ./pkgs/t3code { };

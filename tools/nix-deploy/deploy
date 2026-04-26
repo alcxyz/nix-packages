@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF="$(hostname)"
+KNOWN_HOSTS=(xyz nux rpi0 mac)
+REMOTE_HOSTS=(nux rpi0)
+
+usage() {
+  cat <<EOF
+Usage: deploy [<host>]          Full rebuild (system + home-manager)
+       deploy --all             Parallel rebuild of all hosts (from xyz)
+       deploy --nixos [<host>]  System rebuild only
+       deploy --hm [<host>]     Home Manager only
+
+When <host> is omitted, deploys to the current machine.
+When <host> differs from the current machine, deploys remotely via SSH.
+--all runs parallel deploys to xyz, nux, and rpi0 (must be run from xyz).
+EOF
+  exit 1
+}
+
+is_known() {
+  local h="$1"
+  for k in "${KNOWN_HOSTS[@]}"; do [[ "$k" == "$h" ]] && return 0; done
+  return 1
+}
+
+is_darwin() {
+  [[ "$(uname)" == "Darwin" ]]
+}
+
+# --- build actions ---
+
+nixos_local() {
+  local host="$1"
+  if is_darwin; then
+    sudo /run/current-system/sw/bin/darwin-rebuild switch --flake ".#${host}"
+  else
+    sudo nixos-rebuild switch --flake ".#${host}"
+  fi
+}
+
+nixos_remote() {
+  local host="$1"
+  nixos-rebuild switch --flake ".#${host}" --target-host "root@${host}"
+}
+
+hm_local() {
+  local host="$1"
+  home-manager switch --flake ".#alc-${host}"
+}
+
+hm_remote() {
+  local host="$1"
+  local result
+  result=$(nix build --no-link --print-out-paths ".#homeConfigurations.alc-${host}.activationPackage")
+  nix copy --to "ssh://alc@${host}" "$result"
+  ssh "alc@${host}" "$result/activate"
+}
+
+do_deploy() {
+  local host="$1" mode="$2"
+
+  if ! is_known "$host"; then
+    echo "deploy: unknown host '$host'" >&2
+    echo "Known hosts: ${KNOWN_HOSTS[*]}" >&2
+    exit 1
+  fi
+
+  local is_local=false
+  [[ "$host" == "$SELF" ]] && is_local=true
+
+  if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+    echo "=== system rebuild: ${host} ==="
+    if $is_local; then
+      nixos_local "$host"
+    else
+      nixos_remote "$host"
+    fi
+  fi
+
+  if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
+    echo "=== home-manager: ${host} ==="
+    if $is_local; then
+      hm_local "$host"
+    else
+      hm_remote "$host"
+    fi
+  fi
+}
+
+do_deploy_all() {
+  local mode="$1"
+
+  if [[ "$SELF" != "xyz" ]]; then
+    echo "deploy --all must be run from xyz" >&2
+    exit 1
+  fi
+
+  if ! command -v parallel &>/dev/null; then
+    echo "deploy: GNU parallel not found" >&2
+    exit 1
+  fi
+
+  if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+    echo "=== system rebuild (parallel) ==="
+    parallel --tag --line-buffer ::: \
+      "sudo nixos-rebuild switch --flake .#xyz" \
+      "nixos-rebuild switch --flake .#nux --target-host root@nux" \
+      "nixos-rebuild switch --flake .#rpi0 --target-host root@rpi0"
+  fi
+
+  if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
+    echo "=== home-manager (parallel) ==="
+    parallel --tag --line-buffer ::: \
+      "home-manager switch --flake .#alc-xyz" \
+      "deploy --hm nux" \
+      "deploy --hm rpi0"
+  fi
+}
+
+# --- arg parsing ---
+
+mode="full"
+target=""
+all=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --nixos) mode="nixos"; shift ;;
+    --hm)    mode="hm"; shift ;;
+    --all)   all=true; shift ;;
+    --help|-h) usage ;;
+    -*)      echo "deploy: unknown option '$1'" >&2; usage ;;
+    *)       target="$1"; shift ;;
+  esac
+done
+
+if $all; then
+  do_deploy_all "$mode"
+else
+  do_deploy "${target:-$SELF}" "$mode"
+fi
