@@ -84,6 +84,28 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "recreate":
+		if token == "" {
+			token = readTokenFile()
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for recreate")
+			os.Exit(1)
+		}
+		var names []string
+		if len(os.Args) > 2 {
+			names = os.Args[2:]
+		}
+		if len(names) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: forge-mirror recreate <repo-name> [repo-name...]")
+			fmt.Fprintln(os.Stderr, "       forge-mirror recreate --all")
+			os.Exit(1)
+		}
+		if err := cmdRecreate(forgejoURL, forgejoUser, token, names); err != nil {
+			fmt.Fprintf(os.Stderr, "recreate: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "status":
 		scanPaths := defaultScanPaths()
 		if len(os.Args) > 2 {
@@ -118,17 +140,19 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `forge-mirror — manage GitHub→Forgejo mirrors and dual-push
 
 Commands:
-  sync    [paths...]    Configure dual-push for local repos that have Forgejo repos
-  create  <repo-name>   Create a new pull mirror on Forgejo for a GitHub repo
-  convert [repo-names]  Convert pull mirrors to regular repos (enables push)
-  status  [paths...]    Show mirror and push-url status for local repos
+  sync      [paths...]    Configure dual-push for local repos that have Forgejo repos
+  create    <repo-name>   Create a new pull mirror on Forgejo for a GitHub repo
+  convert   [repo-names]  Convert pull mirrors to regular repos (enables push)
+  recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
+  status    [paths...]    Show mirror and push-url status for local repos
 
 Environment:
-  FORGEJO_TOKEN        API token (required for create, takes precedence)
+  FORGEJO_TOKEN        API token (required for create/convert/recreate, takes precedence)
   FORGEJO_TOKEN_FILE   Path to file containing API token (alternative to FORGEJO_TOKEN)
   FORGEJO_URL          Forgejo instance URL (default: https://git.alc.xyz)
   FORGEJO_USER         Forgejo username (default: alc)
-  GITHUB_USER          GitHub username (default: alcxyz)`)
+  GITHUB_USER          GitHub username (default: alcxyz)
+  GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)`)
 }
 
 // --- sync command ---
@@ -228,8 +252,9 @@ func cmdCreate(forgejoURL, forgejoUser, token, repoName string) error {
 
 func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
 	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
+	ghToken := getGitHubPAT()
 
-	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser)
+	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
 	if err != nil {
 		return fmt.Errorf("fetching repos: %w", err)
 	}
@@ -249,52 +274,8 @@ func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
 			continue
 		}
 
-		// Forgejo API doesn't support PATCH mirror=false, so we delete and
-		// re-import as a non-mirror repo using the migrate endpoint.
-		fmt.Printf("  %s: deleting mirror...\n", r.Name)
-
-		req, _ := http.NewRequest("DELETE",
-			fmt.Sprintf("%s/api/v1/repos/%s/%s", forgejoURL, forgejoUser, r.Name),
-			nil)
-		req.Header.Set("Authorization", "token "+token)
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  %s: delete error: %v\n", r.Name, err)
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode >= 300 {
-			fmt.Fprintf(os.Stderr, "  %s: delete failed (HTTP %d)\n", r.Name, resp.StatusCode)
-			continue
-		}
-
-		// Re-create as regular repo via migrate (without mirror flag)
-		cloneAddr := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, r.Name)
-		payload, _ := json.Marshal(map[string]interface{}{
-			"clone_addr": cloneAddr,
-			"repo_name":  r.Name,
-			"repo_owner": forgejoUser,
-			"mirror":     false,
-			"service":    "github",
-		})
-
-		req, _ = http.NewRequest("POST",
-			fmt.Sprintf("%s/api/v1/repos/migrate", forgejoURL),
-			bytes.NewReader(payload))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "token "+token)
-
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  %s: recreate error: %v\n", r.Name, err)
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode >= 300 {
-			fmt.Fprintf(os.Stderr, "  %s: recreate failed (HTTP %d)\n", r.Name, resp.StatusCode)
+		if err := deleteAndRecreate(forgejoURL, forgejoUser, githubUser, token, ghToken, r.Name); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: %v\n", r.Name, err)
 			continue
 		}
 
@@ -310,6 +291,150 @@ func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
 		fmt.Println("convert: no matching mirror repos found")
 	}
 	return nil
+}
+
+// --- recreate command ---
+
+func cmdRecreate(forgejoURL, forgejoUser, token string, names []string) error {
+	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
+	ghToken := getGitHubPAT()
+
+	// --all: fetch all repos from GitHub via gh CLI
+	if len(names) == 1 && names[0] == "--all" {
+		out, err := exec.Command("gh", "repo", "list", githubUser,
+			"--limit", "200", "--json", "name,isArchived",
+			"--jq", ".[] | select(.isArchived == false) | .name").Output()
+		if err != nil {
+			return fmt.Errorf("listing GitHub repos: %w", err)
+		}
+		names = nil
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line != "" {
+				names = append(names, line)
+			}
+		}
+		fmt.Printf("recreate: found %d non-archived GitHub repos\n", len(names))
+	}
+
+	// Fetch existing Forgejo repos (authenticated to see private repos)
+	existing := make(map[string]bool)
+	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot list Forgejo repos: %v\n", err)
+	}
+	for _, r := range repos {
+		existing[r.Name] = true
+	}
+
+	succeeded := 0
+	failed := 0
+	for _, name := range names {
+		action := "creating"
+		if existing[name] {
+			action = "recreating"
+		}
+		fmt.Printf("  %s: %s...\n", name, action)
+
+		if existing[name] {
+			if err := deleteForgejoRepo(forgejoURL, forgejoUser, token, name); err != nil {
+				fmt.Fprintf(os.Stderr, "  %s: delete failed: %v\n", name, err)
+				failed++
+				continue
+			}
+		}
+
+		if err := migrateAsRegular(forgejoURL, forgejoUser, githubUser, token, ghToken, name); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: migrate failed: %v\n", name, err)
+			failed++
+			continue
+		}
+
+		fmt.Printf("  %s: done\n", name)
+		succeeded++
+	}
+
+	fmt.Printf("recreate: %d succeeded, %d failed\n", succeeded, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d repo(s) failed", failed)
+	}
+	return nil
+}
+
+// --- shared helpers for delete + migrate ---
+
+func deleteForgejoRepo(forgejoURL, forgejoUser, token, name string) error {
+	req, _ := http.NewRequest("DELETE",
+		fmt.Sprintf("%s/api/v1/repos/%s/%s", forgejoURL, forgejoUser, name),
+		nil)
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP error: %w", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func migrateAsRegular(forgejoURL, forgejoUser, githubUser, token, ghToken, name string) error {
+	cloneAddr := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, name)
+	payload := map[string]interface{}{
+		"clone_addr": cloneAddr,
+		"repo_name":  name,
+		"repo_owner": forgejoUser,
+		"mirror":     false,
+		"service":    "github",
+	}
+	if ghToken != "" {
+		payload["auth_token"] = ghToken
+	}
+
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST",
+		fmt.Sprintf("%s/api/v1/repos/migrate", forgejoURL),
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+func deleteAndRecreate(forgejoURL, forgejoUser, githubUser, token, ghToken, name string) error {
+	fmt.Printf("  %s: deleting...\n", name)
+	if err := deleteForgejoRepo(forgejoURL, forgejoUser, token, name); err != nil {
+		return fmt.Errorf("delete: %w", err)
+	}
+	if err := migrateAsRegular(forgejoURL, forgejoUser, githubUser, token, ghToken, name); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return nil
+}
+
+// getGitHubPAT returns a GitHub token for cloning private repos.
+// Checks GITHUB_MIRROR_PAT env var first, then falls back to gh auth token.
+func getGitHubPAT() string {
+	if pat := os.Getenv("GITHUB_MIRROR_PAT"); pat != "" {
+		return pat
+	}
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // --- status command ---
@@ -365,12 +490,16 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 
 // --- helpers ---
 
-func fetchForgejoRepos(forgejoURL, user string) ([]forgejoRepo, error) {
+func fetchForgejoRepos(forgejoURL, user string, authTokens ...string) ([]forgejoRepo, error) {
 	var all []forgejoRepo
 	page := 1
 	for {
 		url := fmt.Sprintf("%s/api/v1/repos/search?owner=%s&limit=50&page=%d", forgejoURL, user, page)
-		resp, err := http.Get(url)
+		req, _ := http.NewRequest("GET", url, nil)
+		if len(authTokens) > 0 && authTokens[0] != "" {
+			req.Header.Set("Authorization", "token "+authTokens[0])
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return nil, err
 		}
@@ -502,6 +631,7 @@ func gitCmd(repoPath string, args ...string) error {
 func defaultScanPaths() []string {
 	home := os.Getenv("HOME")
 	return []string{
+		home, // catches ~/gitops, ~/obsidian-vault, etc.
 		filepath.Join(home, "gitops"),
 		filepath.Join(home, "git"),
 		filepath.Join(home, "nix"),
