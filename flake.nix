@@ -36,7 +36,6 @@
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           zen-browser = pkgs.callPackage ./pkgs/zen-browser { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
-          leantime-tidy = pkgs.callPackage ./tools/leantime-tidy { };
           devlog = pkgs.callPackage ./tools/devlog { };
         };
       in
