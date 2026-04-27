@@ -29,8 +29,6 @@ Internal tools built from source, tracked in this repo.
 |------|-------------|-----------|
 | pihole-sync | Sync Pi-hole config between instances | all |
 | zfs-auto-unlock | Automatic ZFS dataset unlocking | all |
-| paperless-review | AI review tool for Paperless-NGX inbox | `x86_64-linux` |
-| paperless-filetype-index | Symlink index of non-PDF Paperless files by type | `x86_64-linux` |
 
 ## Automated updates
 
