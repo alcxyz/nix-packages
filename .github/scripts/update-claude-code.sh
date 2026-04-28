@@ -37,7 +37,7 @@ trap 'rm -rf "$tmp"' EXIT
 curl -fsSL -o "$tmp/package.tgz" "$tgz_url"
 tar xzf "$tmp/package.tgz" -C "$tmp"
 cd "$tmp/package"
-npm install --package-lock-only 2>/dev/null
+npm install --package-lock-only --ignore-scripts 2>/dev/null
 cp package-lock.json "$OLDPWD/$PKG_DIR/package-lock.json"
 cd "$OLDPWD"
 echo "Regenerated package-lock.json"
