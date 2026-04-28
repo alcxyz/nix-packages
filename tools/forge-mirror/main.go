@@ -743,14 +743,12 @@ func gitCmd(repoPath string, args ...string) error {
 func defaultScanPaths() []string {
 	home := os.Getenv("HOME")
 	return []string{
-		home, // catches ~/gitops, ~/obsidian-vault, etc.
-		filepath.Join(home, "gitops"),
-		filepath.Join(home, "git"),
-		filepath.Join(home, "nix"),
-		filepath.Join(home, "dev", "git", "alcxyz", "apps"),
-		filepath.Join(home, "dev", "git", "alcxyz", "dms_plugins"),
-		filepath.Join(home, "dev", "git", "alcxyz", "pages"),
-		filepath.Join(home, "dev", "git", "alcxyz", "forks"),
+		filepath.Join(home, "src", "infra"),
+		filepath.Join(home, "src", "apps"),
+		filepath.Join(home, "src", "tools"),
+		filepath.Join(home, "src", "forks"),
+		filepath.Join(home, "src", "personal"),
+		filepath.Join(home, "src", "sites"),
 	}
 }
 

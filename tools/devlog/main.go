@@ -197,7 +197,7 @@ func runWeekly(args []string) int {
 	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
 	dateStr := fs.String("date", sevenDaysAgo(), "Any date in the target week (YYYY-MM-DD)")
 	hedgedocPost := fs.Bool("hedgedoc", envBool("HEDGEDOC_POST"), "Post to HedgeDoc")
-	hedgedocBin := fs.String("hedgedoc-bin", envOr("HEDGEDOC_BIN", "/home/alc/gitops/tools/hedgedoc/hedgedoc"), "Path to hedgedoc binary")
+	hedgedocBin := fs.String("hedgedoc-bin", envOr("HEDGEDOC_BIN", "/home/alc/src/infra/gitops/tools/hedgedoc/hedgedoc"), "Path to hedgedoc binary")
 	hedgedocSecrets := fs.String("hedgedoc-secrets", os.Getenv("HEDGEDOC_SECRETS_FILE"), "Path to sops-encrypted HedgeDoc secrets.env")
 	fs.Parse(args)
 
