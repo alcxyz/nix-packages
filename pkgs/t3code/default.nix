@@ -42,6 +42,19 @@ if lib.hasPrefix "x86_64-linux" system then
         install -Dm444 "$icon" \
           "$out/share/icons/hicolor/$size/apps/${pname}.png"
       fi
+
+      # Expose the headless CLI (t3 serve, t3 start, etc.) by running the
+      # Electron binary in Node-only mode against the server entry point
+      # bundled inside the app.asar.
+      cat > "$out/bin/t3" <<'WRAPPER'
+      #!/usr/bin/env bash
+      export ELECTRON_RUN_AS_NODE=1
+      exec "@out@/bin/t3code" "@appimageContents@/resources/app.asar/apps/server/dist/bin.mjs" "$@"
+      WRAPPER
+      substituteInPlace "$out/bin/t3" \
+        --replace-warn '@out@' "$out" \
+        --replace-warn '@appimageContents@' '${appimageContents}'
+      chmod +x "$out/bin/t3"
     '';
 
     meta = with lib; {
