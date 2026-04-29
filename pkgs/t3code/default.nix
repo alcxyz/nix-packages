@@ -4,6 +4,8 @@
   fetchurl,
   appimageTools,
   undmg,
+  bun,
+  asar,
   system ? stdenv.hostPlatform.system,
 }:
 
@@ -43,17 +45,22 @@ if lib.hasPrefix "x86_64-linux" system then
           "$out/share/icons/hicolor/$size/apps/${pname}.png"
       fi
 
-      # Expose the headless CLI (t3 serve, t3 start, etc.) by running the
-      # Electron binary in Node-only mode against the server entry point
-      # bundled inside the app.asar.
+      # Extract app.asar so the headless server can run under Bun
+      # without needing Electron's asar support.
+      ${asar}/bin/asar extract \
+        ${appimageContents}/resources/app.asar \
+        $out/lib/t3code-server
+      cp -r ${appimageContents}/resources/app.asar.unpacked/* \
+        $out/lib/t3code-server/
+
+      # Headless CLI (t3 serve, t3 start, etc.) via Bun.
       cat > "$out/bin/t3" <<'WRAPPER'
       #!/usr/bin/env bash
-      export ELECTRON_RUN_AS_NODE=1
-      exec "@out@/bin/t3code" "@appimageContents@/resources/app.asar/apps/server/dist/bin.mjs" "$@"
+      exec "@bun@" "@out@/lib/t3code-server/apps/server/dist/bin.mjs" "$@"
       WRAPPER
       substituteInPlace "$out/bin/t3" \
-        --replace-warn '@out@' "$out" \
-        --replace-warn '@appimageContents@' '${appimageContents}'
+        --replace-warn '@bun@' '${bun}/bin/bun' \
+        --replace-warn '@out@' "$out"
       chmod +x "$out/bin/t3"
     '';
 
