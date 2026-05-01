@@ -37,6 +37,7 @@
           zen-browser = pkgs.callPackage ./pkgs/zen-browser { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           devlog = pkgs.callPackage ./tools/devlog { };
+          wcap = pkgs.callPackage ./tools/wcap { };
         };
       in
       {
