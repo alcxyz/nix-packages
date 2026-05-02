@@ -18,8 +18,34 @@ const (
 	defaultGitHubUser     = "alcxyz"
 	defaultForgejoSSHHost = "git-ssh.alc.xyz"
 	defaultCodebergURL    = "https://codeberg.org"
-	defaultCodebergUser   = "alc"
+	defaultCodebergUser   = "alcxyz"
 )
+
+var codebergAllowlist = map[string]bool{
+	"DankCalendar":          true,
+	"DankDiskUsage":         true,
+	"DankQuickSearch":       true,
+	"DankSpotify":           true,
+	"DankTranslate":         true,
+	"DankVault":             true,
+	"alcxyz":                true,
+	"alcxyz.github.io":      true,
+	"annaetattoo.github.io": true,
+	"arkade-lvlup":          true,
+	"canopy":                true,
+	"cooking":               true,
+	"dms-plugins":           true,
+	"grove":                 true,
+	"homebrew-tap":          true,
+	"keymap":                true,
+	"madideal.github.io":    true,
+	"my-awesome-stars":      true,
+	"nix-config":            true,
+	"nix-packages":          true,
+	"nvim":                  true,
+	"paperflow":             true,
+	"tmux":                  true,
+}
 
 type forgejoRepo struct {
 	Name           string `json:"name"`
@@ -265,7 +291,7 @@ Commands:
   recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
   pull      [names...]    Fetch from GitHub and push to Forgejo (all repos if no names)
   mirror-github [names...] Configure Forgejo push mirrors to GitHub (all repos if no names)
-  mirror-codeberg [names...] Configure Forgejo push mirrors to Codeberg (all repos if no names)
+  mirror-codeberg [names...] Configure Forgejo push mirrors to Codeberg (allowlisted repos only)
   status    [paths...]    Show mirror and push-url status for local repos
 
 Environment:
@@ -277,7 +303,7 @@ Environment:
   GITHUB_USER          GitHub username (default: alcxyz)
   GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)
   CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
-  CODEBERG_USER        Codeberg username (default: alc)
+  CODEBERG_USER        Codeberg username (default: alcxyz)
   CODEBERG_MIRROR_PAT  Codeberg PAT for Forgejo push mirrors
   CODEBERG_MIRROR_PAT_FILE Path to file containing Codeberg PAT`)
 }
@@ -655,18 +681,49 @@ func cmdMirrorCodeberg(forgejoURL, forgejoUser, token string, names []string) er
 		return fmt.Errorf("fetching repos: %w", err)
 	}
 
+	filteredNames, err := filterCodebergRepoNames(names)
+	if err != nil {
+		return err
+	}
+	filteredRepos := filterCodebergRepos(repos)
+
 	return cmdMirrorRemote(
 		forgejoURL,
 		forgejoUser,
 		token,
-		repos,
-		names,
+		filteredRepos,
+		filteredNames,
 		"mirror-codeberg",
 		"Codeberg",
 		codebergMirrorTarget(envOr("CODEBERG_URL", defaultCodebergURL), codebergUser),
 		codebergUser,
 		codebergToken,
 	)
+}
+
+func filterCodebergRepoNames(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if !codebergAllowlist[name] {
+			return nil, fmt.Errorf("repo %q is not allowlisted for Codeberg", name)
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered, nil
+}
+
+func filterCodebergRepos(repos []forgejoRepo) []forgejoRepo {
+	filtered := make([]forgejoRepo, 0, len(repos))
+	for _, repo := range repos {
+		if codebergAllowlist[repo.Name] {
+			filtered = append(filtered, repo)
+		}
+	}
+	return filtered
 }
 
 func cmdMirrorRemote(forgejoURL, forgejoUser, token string, repos []forgejoRepo, names []string, commandName, label string, targetForRepo func(string) string, remoteUsername, remotePassword string) error {
