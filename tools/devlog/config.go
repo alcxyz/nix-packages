@@ -41,18 +41,18 @@ func loadConfig() (Config, error) {
 		return Config{Model: *shared}, nil
 	}
 
-	cfg := defaultConfig()
 	configDir, err := os.UserConfigDir()
 	if err != nil {
-		return cfg, nil
+		return defaultConfig(), nil
 	}
 
 	path := filepath.Join(configDir, "devlog", "config.toml")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return cfg, nil
+		return defaultConfig(), nil
 	}
 
+	var cfg Config
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return defaultConfig(), nil
 	}
