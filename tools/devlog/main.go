@@ -403,18 +403,19 @@ func postToHedgeDoc(file, bin, secretsFile string) error {
 // --- shared helpers ---
 
 func runLLM(prompt, outfile string) error {
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
 
-	apiKey := resolveAPIKey(cfg.Model.APIKeyEnv)
-	out, err := callProvider(cfg.Model.Provider, cfg.Model.Model, apiKey, prompt)
+	out, err := callProvider(cfg.Model, prompt)
 	if err != nil {
 		if cfg.Model.Backup == nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "primary provider failed (%s/%s): %v — trying backup\n",
 			cfg.Model.Provider, cfg.Model.Model, err)
-		backupKey := resolveAPIKey(cfg.Model.Backup.APIKeyEnv)
-		out, err = callProvider(cfg.Model.Backup.Provider, cfg.Model.Backup.Model, backupKey, prompt)
+		out, err = callProvider(*cfg.Model.Backup, prompt)
 		if err != nil {
 			return fmt.Errorf("backup provider also failed (%s/%s): %w",
 				cfg.Model.Backup.Provider, cfg.Model.Backup.Model, err)
@@ -441,20 +442,45 @@ func resolveAPIKey(envName string) string {
 	return ""
 }
 
-func callProvider(provider, model, apiKey, prompt string) ([]byte, error) {
-	switch provider {
+func callProvider(cfg ModelConfig, prompt string) ([]byte, error) {
+	apiKey := resolveAPIKey(cfg.APIKeyEnv)
+
+	switch cfg.Provider {
 	case "anthropic":
-		if apiKey == "" {
-			return callAnthropicCLI(model, prompt)
-		}
-		return callAnthropicAPI(model, apiKey, prompt)
+		return callWithTransport(cfg.Transport, apiKey != "", func() ([]byte, error) {
+			return callAnthropicCLI(cfg.Model, prompt)
+		}, func() ([]byte, error) {
+			return callAnthropicAPI(cfg.Model, apiKey, prompt)
+		})
 	case "openai":
-		if apiKey == "" {
-			return nil, fmt.Errorf("openai provider requires api_key_env to be set and the env var (or _FILE variant) to resolve")
-		}
-		return callOpenAIAPI(model, apiKey, prompt)
+		return callWithTransport(cfg.Transport, apiKey != "", func() ([]byte, error) {
+			return callOpenAICLI(cfg.Model, prompt)
+		}, func() ([]byte, error) {
+			return callOpenAIAPI(cfg.Model, apiKey, prompt)
+		})
 	default:
-		return nil, fmt.Errorf("unsupported provider: %s", provider)
+		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+}
+
+func callWithTransport(transport string, apiAvailable bool, cliFn, apiFn func() ([]byte, error)) ([]byte, error) {
+	switch transport {
+	case "cli":
+		return cliFn()
+	case "api":
+		if !apiAvailable {
+			return nil, fmt.Errorf("transport api requires api_key_env to resolve")
+		}
+		return apiFn()
+	case "prefer-cli":
+		return cliFn()
+	case "prefer-api":
+		if apiAvailable {
+			return apiFn()
+		}
+		return cliFn()
+	default:
+		return nil, fmt.Errorf("unsupported transport: %s", transport)
 	}
 }
 
@@ -567,6 +593,42 @@ func callOpenAIAPI(model, apiKey, prompt string) ([]byte, error) {
 		return nil, fmt.Errorf("openai API returned no choices")
 	}
 	return []byte(result.Choices[0].Message.Content), nil
+}
+
+func callOpenAICLI(model, prompt string) ([]byte, error) {
+	outFile, err := os.CreateTemp("", "devlog-codex-*.txt")
+	if err != nil {
+		return nil, fmt.Errorf("create codex output file: %w", err)
+	}
+	outPath := outFile.Name()
+	outFile.Close()
+	defer os.Remove(outPath)
+
+	cmd := exec.Command("codex", "exec",
+		"--skip-git-repo-check",
+		"--ignore-rules",
+		"--ephemeral",
+		"-C", os.TempDir(),
+		"-m", model,
+		"-o", outPath,
+		"-",
+	)
+	cmd.Stdin = strings.NewReader(prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("codex exited %d\nstderr: %s\nstdout: %s", ee.ExitCode(), stderr.String(), stdout.String())
+		}
+		return nil, fmt.Errorf("run codex: %w", err)
+	}
+
+	out, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("read codex output: %w", err)
+	}
+	return bytes.TrimSpace(out), nil
 }
 
 func gitCommitAndPush(repoPath, relPath, message string) error {
