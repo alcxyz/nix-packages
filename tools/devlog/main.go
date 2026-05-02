@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -401,20 +405,168 @@ func postToHedgeDoc(file, bin, secretsFile string) error {
 func runLLM(prompt, outfile string) error {
 	cfg := loadConfig()
 
-	if cfg.Model.Provider != "anthropic" {
-		return fmt.Errorf("unsupported provider: %s", cfg.Model.Provider)
+	apiKey := resolveAPIKey(cfg.Model.APIKeyEnv)
+	out, err := callProvider(cfg.Model.Provider, cfg.Model.Model, apiKey, prompt)
+	if err != nil {
+		if cfg.Model.Backup == nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "primary provider failed (%s/%s): %v — trying backup\n",
+			cfg.Model.Provider, cfg.Model.Model, err)
+		backupKey := resolveAPIKey(cfg.Model.Backup.APIKeyEnv)
+		out, err = callProvider(cfg.Model.Backup.Provider, cfg.Model.Backup.Model, backupKey, prompt)
+		if err != nil {
+			return fmt.Errorf("backup provider also failed (%s/%s): %w",
+				cfg.Model.Backup.Provider, cfg.Model.Backup.Model, err)
+		}
 	}
 
-	cmd := exec.Command("claude", "-p", "--model", cfg.Model.Model)
+	return os.WriteFile(outfile, out, 0644)
+}
+
+func resolveAPIKey(envName string) string {
+	if envName == "" {
+		return ""
+	}
+	if v := os.Getenv(envName); v != "" {
+		return v
+	}
+	fileEnv := envName + "_FILE"
+	if path := os.Getenv(fileEnv); path != "" {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
+}
+
+func callProvider(provider, model, apiKey, prompt string) ([]byte, error) {
+	switch provider {
+	case "anthropic":
+		if apiKey == "" {
+			return callAnthropicCLI(model, prompt)
+		}
+		return callAnthropicAPI(model, apiKey, prompt)
+	case "openai":
+		if apiKey == "" {
+			return nil, fmt.Errorf("openai provider requires api_key_env to be set and the env var (or _FILE variant) to resolve")
+		}
+		return callOpenAIAPI(model, apiKey, prompt)
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", provider)
+	}
+}
+
+func callAnthropicCLI(model, prompt string) ([]byte, error) {
+	cmd := exec.Command("claude", "-p", "--model", model)
 	cmd.Stdin = strings.NewReader(prompt)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("claude exited %d: %s", ee.ExitCode(), string(ee.Stderr))
+			return nil, fmt.Errorf("claude exited %d: %s", ee.ExitCode(), string(ee.Stderr))
 		}
-		return err
+		return nil, err
 	}
-	return os.WriteFile(outfile, out, 0644)
+	return out, nil
+}
+
+func callAnthropicAPI(model, apiKey, prompt string) ([]byte, error) {
+	reqBody := map[string]interface{}{
+		"model":      model,
+		"max_tokens": 8192,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic API request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("anthropic API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	if len(result.Content) == 0 {
+		return nil, fmt.Errorf("anthropic API returned empty content")
+	}
+	return []byte(result.Content[0].Text), nil
+}
+
+func callOpenAIAPI(model, apiKey, prompt string) ([]byte, error) {
+	reqBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai API request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openai API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	if len(result.Choices) == 0 {
+		return nil, fmt.Errorf("openai API returned no choices")
+	}
+	return []byte(result.Choices[0].Message.Content), nil
 }
 
 func gitCommitAndPush(repoPath, relPath, message string) error {

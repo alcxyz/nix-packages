@@ -12,9 +12,10 @@ type Config struct {
 }
 
 type ModelConfig struct {
-	Provider string       `toml:"provider"`
-	Model    string       `toml:"model"`
-	Backup   *BackupModel `toml:"backup"`
+	Provider  string       `toml:"provider"`
+	Model     string       `toml:"model"`
+	APIKeyEnv string       `toml:"api_key_env"`
+	Backup    *BackupModel `toml:"backup"`
 }
 
 type BackupModel struct {
