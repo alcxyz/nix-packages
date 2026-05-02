@@ -17,6 +17,8 @@ const (
 	defaultForgejoUser    = "alc"
 	defaultGitHubUser     = "alcxyz"
 	defaultForgejoSSHHost = "git-ssh.alc.xyz"
+	defaultCodebergURL    = "https://codeberg.org"
+	defaultCodebergUser   = "alc"
 )
 
 type forgejoRepo struct {
@@ -187,6 +189,23 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "mirror-codeberg":
+		if token == "" {
+			token = readTokenFile()
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for mirror-codeberg")
+			os.Exit(1)
+		}
+		var names []string
+		if len(os.Args) > 2 {
+			names = os.Args[2:]
+		}
+		if err := cmdMirrorCodeberg(forgejoURL, forgejoUser, token, names); err != nil {
+			fmt.Fprintf(os.Stderr, "mirror-codeberg: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "status":
 		scanPaths := defaultScanPaths()
 		if len(os.Args) > 2 {
@@ -246,6 +265,7 @@ Commands:
   recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
   pull      [names...]    Fetch from GitHub and push to Forgejo (all repos if no names)
   mirror-github [names...] Configure Forgejo push mirrors to GitHub (all repos if no names)
+  mirror-codeberg [names...] Configure Forgejo push mirrors to Codeberg (all repos if no names)
   status    [paths...]    Show mirror and push-url status for local repos
 
 Environment:
@@ -255,7 +275,11 @@ Environment:
   FORGEJO_USER         Forgejo username (default: alc)
   FORGEJO_SSH_HOST     Forgejo SSH hostname for local origin URLs (default: git-ssh.alc.xyz)
   GITHUB_USER          GitHub username (default: alcxyz)
-  GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)`)
+  GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)
+  CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
+  CODEBERG_USER        Codeberg username (default: alc)
+  CODEBERG_MIRROR_PAT  Codeberg PAT for Forgejo push mirrors
+  CODEBERG_MIRROR_PAT_FILE Path to file containing Codeberg PAT`)
 }
 
 // --- sync command ---
@@ -587,6 +611,10 @@ func getGitHubPAT() string {
 	return strings.TrimSpace(string(out))
 }
 
+func getCodebergPAT() string {
+	return readSecretEnv("CODEBERG_MIRROR_PAT", "CODEBERG_MIRROR_PAT_FILE")
+}
+
 // --- mirror-github command ---
 
 func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string) error {
@@ -601,6 +629,51 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string) erro
 		return fmt.Errorf("fetching repos: %w", err)
 	}
 
+	return cmdMirrorRemote(
+		forgejoURL,
+		forgejoUser,
+		token,
+		repos,
+		names,
+		"mirror-github",
+		"GitHub",
+		githubMirrorTarget(githubUser),
+		githubUser,
+		ghToken,
+	)
+}
+
+func cmdMirrorCodeberg(forgejoURL, forgejoUser, token string, names []string) error {
+	codebergUser := envOr("CODEBERG_USER", defaultCodebergUser)
+	codebergToken := getCodebergPAT()
+	if codebergToken == "" {
+		return fmt.Errorf("CODEBERG_MIRROR_PAT or CODEBERG_MIRROR_PAT_FILE is required")
+	}
+
+	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
+	if err != nil {
+		return fmt.Errorf("fetching repos: %w", err)
+	}
+
+	return cmdMirrorRemote(
+		forgejoURL,
+		forgejoUser,
+		token,
+		repos,
+		names,
+		"mirror-codeberg",
+		"Codeberg",
+		codebergMirrorTarget(envOr("CODEBERG_URL", defaultCodebergURL), codebergUser),
+		codebergUser,
+		codebergToken,
+	)
+}
+
+func cmdMirrorRemote(forgejoURL, forgejoUser, token string, repos []forgejoRepo, names []string, commandName, label string, targetForRepo func(string) string, remoteUsername, remotePassword string) error {
+	if remotePassword == "" {
+		return fmt.Errorf("%s credentials are required", label)
+	}
+
 	filter := make(map[string]bool)
 	for _, n := range names {
 		filter[n] = true
@@ -613,7 +686,7 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string) erro
 			continue
 		}
 
-		target := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, r.Name)
+		target := targetForRepo(r.Name)
 		exists, err := hasPushMirror(forgejoURL, forgejoUser, token, r.Name, target)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: list mirrors failed: %v\n", r.Name, err)
@@ -621,19 +694,19 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string) erro
 		}
 		if exists {
 			skipped++
-			fmt.Printf("  %s: GitHub push mirror already exists\n", r.Name)
+			fmt.Printf("  %s: %s push mirror already exists\n", r.Name, label)
 			continue
 		}
 
-		if err := createPushMirror(forgejoURL, forgejoUser, token, r.Name, target, githubUser, ghToken); err != nil {
+		if err := createPushMirror(forgejoURL, forgejoUser, token, r.Name, target, remoteUsername, remotePassword); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: create push mirror failed: %v\n", r.Name, err)
 			continue
 		}
-		fmt.Printf("  %s: GitHub push mirror created\n", r.Name)
+		fmt.Printf("  %s: %s push mirror created\n", r.Name, label)
 		created++
 	}
 
-	fmt.Printf("mirror-github: %d created, %d already present\n", created, skipped)
+	fmt.Printf("%s: %d created, %d already present\n", commandName, created, skipped)
 	return nil
 }
 
@@ -1219,7 +1292,14 @@ func expandHome(path string) string {
 }
 
 func readTokenFile() string {
-	path := os.Getenv("FORGEJO_TOKEN_FILE")
+	return readSecretEnv("FORGEJO_TOKEN", "FORGEJO_TOKEN_FILE")
+}
+
+func readSecretEnv(valueKey, fileKey string) string {
+	if value := os.Getenv(valueKey); value != "" {
+		return strings.TrimSpace(value)
+	}
+	path := os.Getenv(fileKey)
 	if path == "" {
 		return ""
 	}
@@ -1235,6 +1315,19 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func githubMirrorTarget(githubUser string) func(string) string {
+	return func(repoName string) string {
+		return fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repoName)
+	}
+}
+
+func codebergMirrorTarget(codebergURL, codebergUser string) func(string) string {
+	base := strings.TrimSuffix(codebergURL, "/")
+	return func(repoName string) string {
+		return fmt.Sprintf("%s/%s/%s.git", base, codebergUser, repoName)
+	}
 }
 
 func fetchGitHubRepo(owner, repo, token string) (githubRepo, error) {
