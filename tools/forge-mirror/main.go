@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultForgejoURL     = "https://git.alc.xyz"
-	defaultForgejoUser    = "alc"
+	defaultForgejoUser    = "alcxyz"
 	defaultGitHubUser     = "alcxyz"
 	defaultForgejoSSHHost = "git-ssh.alc.xyz"
 	defaultCodebergURL    = "https://codeberg.org"
@@ -298,7 +298,7 @@ Environment:
   FORGEJO_TOKEN        API token (required for create/convert/recreate, takes precedence)
   FORGEJO_TOKEN_FILE   Path to file containing API token (alternative to FORGEJO_TOKEN)
   FORGEJO_URL          Forgejo instance URL (default: https://git.alc.xyz)
-  FORGEJO_USER         Forgejo username (default: alc)
+  FORGEJO_USER         Forgejo username (default: alcxyz)
   FORGEJO_SSH_HOST     Forgejo SSH hostname for local origin URLs (default: git-ssh.alc.xyz)
   GITHUB_USER          GitHub username (default: alcxyz)
   GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)
