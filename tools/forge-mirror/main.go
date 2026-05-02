@@ -226,7 +226,7 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 	repos := findLocalRepos(scanPaths)
 	configured := 0
 	for _, repoPath := range repos {
-		name := filepath.Base(repoPath)
+		name := inferRepoName(repoPath)
 		cloneURL, ok := mirrorNames[name]
 		if !ok {
 			continue
@@ -268,7 +268,7 @@ func cmdPrimary(forgejoUser string, scanPaths []string) error {
 
 	changedCount := 0
 	for _, repoPath := range repos {
-		name := filepath.Base(repoPath)
+		name := inferRepoName(repoPath)
 		if !forgejoRepos[name] {
 			continue
 		}
@@ -701,7 +701,7 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 
 	repos := findLocalRepos(scanPaths)
 	for _, repoPath := range repos {
-		name := filepath.Base(repoPath)
+		name := inferRepoName(repoPath)
 		info, found := repoMap[name]
 		if !found {
 			continue
@@ -865,6 +865,22 @@ func getGitOriginURL(repoPath string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func inferRepoName(repoPath string) string {
+	originURL := getGitOriginURL(repoPath)
+	if originURL == "" {
+		return filepath.Base(repoPath)
+	}
+
+	trimmed := strings.TrimSuffix(originURL, ".git")
+	if idx := strings.LastIndex(trimmed, "/"); idx >= 0 && idx+1 < len(trimmed) {
+		return trimmed[idx+1:]
+	}
+	if idx := strings.LastIndex(trimmed, ":"); idx >= 0 && idx+1 < len(trimmed) {
+		return trimmed[idx+1:]
+	}
+	return filepath.Base(repoPath)
 }
 
 func getGitRemoteURL(repoPath, remoteName string) string {
