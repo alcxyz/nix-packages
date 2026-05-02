@@ -27,6 +27,42 @@ type forgejoRepo struct {
 	OriginalURL    string `json:"original_url"`
 	FullName       string `json:"full_name"`
 	MirrorInterval string `json:"mirror_interval"`
+	DefaultBranch  string `json:"default_branch"`
+	Private        bool   `json:"private"`
+}
+
+type pushMirror struct {
+	RemoteAddress string `json:"remote_address"`
+	LastError     string `json:"last_error"`
+	LastUpdate    string `json:"last_update"`
+	SyncOnCommit  bool   `json:"sync_on_commit"`
+}
+
+type forgejoBranchProtection struct {
+	RuleName                string   `json:"rule_name"`
+	BranchName              string   `json:"branch_name"`
+	ApplyToAdmins           bool     `json:"apply_to_admins"`
+	EnablePush              bool     `json:"enable_push"`
+	EnableMergeWhitelist    bool     `json:"enable_merge_whitelist"`
+	MergeWhitelistUsernames []string `json:"merge_whitelist_usernames"`
+}
+
+type githubRepo struct {
+	DefaultBranch string `json:"default_branch"`
+}
+
+type forgejoBranch struct {
+	Name   string `json:"name"`
+	Commit struct {
+		ID string `json:"id"`
+	} `json:"commit"`
+}
+
+type githubBranch struct {
+	Name   string `json:"name"`
+	Commit struct {
+		SHA string `json:"sha"`
+	} `json:"commit"`
 }
 
 func main() {
@@ -161,6 +197,23 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "audit":
+		if token == "" {
+			token = readTokenFile()
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for audit")
+			os.Exit(1)
+		}
+		var names []string
+		if len(os.Args) > 2 {
+			names = os.Args[2:]
+		}
+		if err := cmdAudit(forgejoURL, forgejoUser, token, names); err != nil {
+			fmt.Fprintf(os.Stderr, "audit: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "credential-helper":
 		// Git credential helper protocol: git calls us with "get" on stdin.
 		// We respond with username + password (the Forgejo API token).
@@ -182,11 +235,12 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `forge-mirror — manage GitHub→Forgejo mirrors and dual-push
+	fmt.Fprintln(os.Stderr, `forge-mirror — manage Forgejo-first remotes, GitHub mirrors, and drift audits
 
 Commands:
   sync      [paths...]    Configure legacy dual-push for local repos that have Forgejo repos
   primary   [paths...]    Configure local repos to use Forgejo SSH as origin and GitHub as secondary remote
+  audit     [names...]    Audit Forgejo-first drift against GitHub mirrors and branch policy
   create    <repo-name>   Create a new pull mirror on Forgejo for a GitHub repo
   convert   [repo-names]  Convert pull mirrors to regular repos (enables push)
   recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
@@ -733,6 +787,140 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 	return nil
 }
 
+// --- audit command ---
+
+func cmdAudit(forgejoURL, forgejoUser, token string, names []string) error {
+	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
+	ghToken := getGitHubPAT()
+
+	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
+	if err != nil {
+		return fmt.Errorf("fetching repos: %w", err)
+	}
+
+	filter := make(map[string]bool)
+	for _, n := range names {
+		filter[n] = true
+	}
+
+	driftCount := 0
+	checked := 0
+	for _, repo := range repos {
+		if len(filter) > 0 && !filter[repo.Name] {
+			continue
+		}
+		target := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repo.Name)
+		if repo.OriginalURL != "" && strings.Contains(repo.OriginalURL, "github.com") {
+			target = repo.OriginalURL
+		}
+
+		result, err := auditRepo(forgejoURL, forgejoUser, token, ghToken, githubUser, repo, target)
+		if err != nil {
+			fmt.Printf("  %s: audit error: %v\n", repo.Name, err)
+			driftCount++
+			checked++
+			continue
+		}
+		checked++
+
+		if len(result.issues) == 0 {
+			fmt.Printf("  %s: ok\n", repo.Name)
+			continue
+		}
+
+		fmt.Printf("  %s:\n", repo.Name)
+		for _, issue := range result.issues {
+			fmt.Printf("    - %s\n", issue)
+		}
+		driftCount++
+	}
+
+	if checked == 0 {
+		fmt.Println("audit: no matching repos")
+		return nil
+	}
+	if driftCount == 0 {
+		fmt.Printf("audit: %d repo(s) checked, no drift\n", checked)
+		return nil
+	}
+	return fmt.Errorf("%d repo(s) with drift or policy violations", driftCount)
+}
+
+type auditResult struct {
+	issues []string
+}
+
+func auditRepo(forgejoURL, forgejoUser, forgejoToken, ghToken, githubUser string, repo forgejoRepo, githubCloneURL string) (auditResult, error) {
+	var result auditResult
+
+	ghMeta, err := fetchGitHubRepo(githubUser, repo.Name, ghToken)
+	if err != nil {
+		return result, fmt.Errorf("fetching GitHub repo: %w", err)
+	}
+	if repo.DefaultBranch != "dev" {
+		result.issues = append(result.issues, fmt.Sprintf("Forgejo default branch is %q, expected %q", repo.DefaultBranch, "dev"))
+	}
+	if ghMeta.DefaultBranch != "dev" {
+		result.issues = append(result.issues, fmt.Sprintf("GitHub default branch is %q, expected %q", ghMeta.DefaultBranch, "dev"))
+	}
+
+	protection, err := fetchForgejoMainProtection(forgejoURL, forgejoUser, forgejoToken, repo.Name)
+	if err != nil {
+		result.issues = append(result.issues, fmt.Sprintf("cannot read Forgejo branch protections: %v", err))
+	} else if protection == nil {
+		result.issues = append(result.issues, "Forgejo main branch protection missing")
+	} else {
+		if !protection.ApplyToAdmins {
+			result.issues = append(result.issues, "Forgejo main protection does not apply to admins")
+		}
+		if protection.EnablePush {
+			result.issues = append(result.issues, "Forgejo main protection still allows direct push")
+		}
+		if !protection.EnableMergeWhitelist || !containsString(protection.MergeWhitelistUsernames, forgejoUser) {
+			result.issues = append(result.issues, fmt.Sprintf("Forgejo main merge whitelist does not include %q", forgejoUser))
+		}
+	}
+
+	mirror, err := fetchGitHubPushMirror(forgejoURL, forgejoUser, forgejoToken, repo.Name, fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repo.Name))
+	if err != nil {
+		result.issues = append(result.issues, fmt.Sprintf("cannot read Forgejo push mirrors: %v", err))
+	} else if mirror == nil {
+		result.issues = append(result.issues, "Forgejo GitHub push mirror missing")
+	} else {
+		if !mirror.SyncOnCommit {
+			result.issues = append(result.issues, "Forgejo GitHub push mirror does not sync on commit")
+		}
+		if strings.TrimSpace(mirror.LastUpdate) == "" {
+			result.issues = append(result.issues, "Forgejo GitHub push mirror has never completed a sync")
+		}
+	}
+
+	forgejoHeads, err := fetchForgejoBranchHeads(forgejoURL, forgejoUser, forgejoToken, repo.Name)
+	if err != nil {
+		return result, fmt.Errorf("listing Forgejo heads: %w", err)
+	}
+	githubHeads, err := fetchGitHubBranchHeads(githubUser, repo.Name, ghToken)
+	if err != nil {
+		return result, fmt.Errorf("listing GitHub heads: %w", err)
+	}
+
+	allBranches := unionKeys(forgejoHeads, githubHeads)
+	for _, branch := range allBranches {
+		fgSHA, fgOK := forgejoHeads[branch]
+		ghSHA, ghOK := githubHeads[branch]
+		switch {
+		case fgOK && !ghOK:
+			result.issues = append(result.issues, fmt.Sprintf("branch %q exists only on Forgejo", branch))
+		case !fgOK && ghOK:
+			result.issues = append(result.issues, fmt.Sprintf("branch %q exists only on GitHub", branch))
+		case fgSHA != ghSHA:
+			result.issues = append(result.issues, fmt.Sprintf("branch %q differs (Forgejo %s, GitHub %s)", branch, shortSHA(fgSHA), shortSHA(ghSHA)))
+		}
+	}
+
+	return result, nil
+}
+
 // --- helpers ---
 
 func fetchForgejoRepos(forgejoURL, user string, authTokens ...string) ([]forgejoRepo, error) {
@@ -944,6 +1132,11 @@ func clearOriginPushURLs(repoPath string) error {
 }
 
 func hasPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress string) (bool, error) {
+	mirror, err := fetchGitHubPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress)
+	return mirror != nil, err
+}
+
+func fetchGitHubPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress string) (*pushMirror, error) {
 	req, _ := http.NewRequest("GET",
 		fmt.Sprintf("%s/api/v1/repos/%s/%s/push_mirrors", forgejoURL, forgejoUser, repoName),
 		nil)
@@ -951,26 +1144,24 @@ func hasPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress strin
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return false, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var mirrors []struct {
-		RemoteAddress string `json:"remote_address"`
-	}
+	var mirrors []pushMirror
 	if err := json.NewDecoder(resp.Body).Decode(&mirrors); err != nil {
-		return false, err
+		return nil, err
 	}
 	for _, m := range mirrors {
 		if m.RemoteAddress == remoteAddress {
-			return true, nil
+			return &m, nil
 		}
 	}
-	return false, nil
+	return nil, nil
 }
 
 func createPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress, remoteUsername, remotePassword string) error {
@@ -1044,4 +1235,159 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func fetchGitHubRepo(owner, repo, token string) (githubRepo, error) {
+	var out githubRepo
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo), nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return out, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func fetchForgejoMainProtection(forgejoURL, forgejoUser, token, repoName string) (*forgejoBranchProtection, error) {
+	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/repos/%s/%s/branch_protections", forgejoURL, forgejoUser, repoName), nil)
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var protections []forgejoBranchProtection
+	if err := json.NewDecoder(resp.Body).Decode(&protections); err != nil {
+		return nil, err
+	}
+	for _, protection := range protections {
+		if protection.RuleName == "main" || protection.BranchName == "main" {
+			return &protection, nil
+		}
+	}
+	return nil, nil
+}
+
+func fetchForgejoBranchHeads(forgejoURL, forgejoUser, token, repoName string) (map[string]string, error) {
+	heads := make(map[string]string)
+	page := 1
+	for {
+		req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/repos/%s/%s/branches?page=%d&limit=50", forgejoURL, forgejoUser, repoName, page), nil)
+		req.Header.Set("Authorization", "token "+token)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+
+		var branches []forgejoBranch
+		if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+			return nil, err
+		}
+		if len(branches) == 0 {
+			break
+		}
+		for _, branch := range branches {
+			heads[branch.Name] = branch.Commit.ID
+		}
+		page++
+	}
+	return heads, nil
+}
+
+func fetchGitHubBranchHeads(owner, repo, token string) (map[string]string, error) {
+	heads := make(map[string]string)
+	page := 1
+	for {
+		req, _ := http.NewRequest("GET", fmt.Sprintf("https://api.github.com/repos/%s/%s/branches?per_page=100&page=%d", owner, repo, page), nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+
+		var branches []githubBranch
+		if err := json.NewDecoder(resp.Body).Decode(&branches); err != nil {
+			return nil, err
+		}
+		if len(branches) == 0 {
+			break
+		}
+		for _, branch := range branches {
+			heads[branch.Name] = branch.Commit.SHA
+		}
+		page++
+	}
+	return heads, nil
+}
+
+func unionKeys(a, b map[string]string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for k := range a {
+		seen[k] = true
+		out = append(out, k)
+	}
+	for k := range b {
+		if !seen[k] {
+			out = append(out, k)
+		}
+	}
+	// Small sets; stable order is enough.
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j] < out[i] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
