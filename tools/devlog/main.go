@@ -74,8 +74,8 @@ func runDaily(args []string) int {
 
 		prompt := buildDailyPrompt(ds, diffs, prs, issues)
 		mustMkdir(filepath.Dir(outfile))
-		if err := runClaude(prompt, outfile); err != nil {
-			fmt.Fprintf(os.Stderr, "error running claude: %v\n", err)
+		if err := runLLM(prompt, outfile); err != nil {
+			fmt.Fprintf(os.Stderr, "error running LLM: %v\n", err)
 			return 1
 		}
 	}
@@ -272,8 +272,8 @@ func runWeekly(args []string) int {
 			weStr = "No weekend entries."
 		}
 		prompt := buildWeeklyPrompt(monStr, friStr, sunStr, weekStr, weekdayEntries.String(), weStr)
-		if err := runClaude(prompt, outfile); err != nil {
-			fmt.Fprintf(os.Stderr, "error running claude: %v\n", err)
+		if err := runLLM(prompt, outfile); err != nil {
+			fmt.Fprintf(os.Stderr, "error running LLM: %v\n", err)
 			return 1
 		}
 
@@ -398,8 +398,14 @@ func postToHedgeDoc(file, bin, secretsFile string) error {
 
 // --- shared helpers ---
 
-func runClaude(prompt, outfile string) error {
-	cmd := exec.Command("claude", "-p", "--model", "claude-sonnet-4-6")
+func runLLM(prompt, outfile string) error {
+	cfg := loadConfig()
+
+	if cfg.Model.Provider != "anthropic" {
+		return fmt.Errorf("unsupported provider: %s", cfg.Model.Provider)
+	}
+
+	cmd := exec.Command("claude", "-p", "--model", cfg.Model.Model)
 	cmd.Stdin = strings.NewReader(prompt)
 	out, err := cmd.Output()
 	if err != nil {
