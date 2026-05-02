@@ -9,7 +9,7 @@ buildGoModule {
   vendorHash = null;
 
   meta = {
-    description = "Manage GitHub→Forgejo mirrors and dual-push configuration";
+    description = "Manage Forgejo-first remotes, GitHub mirrors, and drift auditing";
     mainProgram = "forge-mirror";
   };
 }
