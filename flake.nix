@@ -18,6 +18,7 @@
 
         # All packages — some are platform-specific
         allPackages = {
+          agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
           pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
           helium = pkgs.callPackage ./pkgs/helium { };

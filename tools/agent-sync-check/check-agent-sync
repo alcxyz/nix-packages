@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${1:-${HOME}/src/infra/nix-secrets}"
+agents_file="$repo_root/shared/AGENTS.md"
+claude_file="$repo_root/shared/claude/CLAUDE.md"
+
+if [[ ! -f "$agents_file" ]]; then
+  echo "missing file: $agents_file" >&2
+  exit 1
+fi
+
+if [[ ! -f "$claude_file" ]]; then
+  echo "missing file: $claude_file" >&2
+  exit 1
+fi
+
+normalize_common() {
+  awk '
+    NR == 1 && /^#/ { next }
+    /^<!--/ { in_comment = 1 }
+    in_comment {
+      if (/-->$/) {
+        in_comment = 0
+      }
+      next
+    }
+    { print }
+  ' "$1"
+}
+
+collapse_blank_lines() {
+  awk '
+    NF {
+      blank = 0
+      print
+      next
+    }
+    !blank {
+      print
+      blank = 1
+    }
+  '
+}
+
+normalize_agents() {
+  normalize_common "$agents_file" | collapse_blank_lines
+}
+
+normalize_claude() {
+  normalize_common "$claude_file" \
+    | awk '
+        /^## Agents$/ { skip = 1; next }
+        skip && /^## / { skip = 0 }
+        skip { next }
+        { print }
+      ' \
+    | sed \
+        -e 's/is transmitted to Anthropic/may be transmitted to a third-party AI provider/' \
+        -e "s/Claude will see/the agent will see/g" \
+        -e "s/Claude's context/the agent's context/g" \
+        -e "s/Claude's output/agent output/g" \
+        -e "s/not through Claude's context/not through the agent's context/g" \
+        -e '/^Do not add a `Co-Authored-By` trailer to commit messages\.$/d' \
+    | collapse_blank_lines
+}
+
+left="$(mktemp)"
+right="$(mktemp)"
+trap 'rm -f "$left" "$right"' EXIT
+
+normalize_agents > "$left"
+normalize_claude > "$right"
+
+if diff -u "$left" "$right"; then
+  echo "AGENTS.md and CLAUDE.md are in sync within the allowed Claude-only delta."
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+AGENTS.md and CLAUDE.md have drifted outside the allowed Claude-only delta.
+
+Allowed Claude-only differences:
+- Anthropic-specific secrecy wording
+- the `## Agents` section
+- the `Do not add a Co-Authored-By trailer` rule
+
+If the drift is intentional, update this tool as part of the same change.
+EOF
+
+exit 1
