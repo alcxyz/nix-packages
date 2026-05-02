@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	defaultForgejoURL  = "https://git.alc.xyz"
-	defaultForgejoUser = "alc"
-	defaultGitHubUser  = "alcxyz"
+	defaultForgejoURL     = "https://git.alc.xyz"
+	defaultForgejoUser    = "alc"
+	defaultGitHubUser     = "alcxyz"
+	defaultForgejoSSHHost = "git-ssh.alc.xyz"
 )
 
 type forgejoRepo struct {
@@ -46,6 +47,16 @@ func main() {
 		}
 		if err := cmdSync(forgejoURL, forgejoUser, scanPaths); err != nil {
 			fmt.Fprintf(os.Stderr, "sync: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "primary":
+		scanPaths := defaultScanPaths()
+		if len(os.Args) > 2 {
+			scanPaths = os.Args[2:]
+		}
+		if err := cmdPrimary(forgejoUser, scanPaths); err != nil {
+			fmt.Fprintf(os.Stderr, "primary: %v\n", err)
 			os.Exit(1)
 		}
 
@@ -123,6 +134,23 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "mirror-github":
+		if token == "" {
+			token = readTokenFile()
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for mirror-github")
+			os.Exit(1)
+		}
+		var names []string
+		if len(os.Args) > 2 {
+			names = os.Args[2:]
+		}
+		if err := cmdMirrorGitHub(forgejoURL, forgejoUser, token, names); err != nil {
+			fmt.Fprintf(os.Stderr, "mirror-github: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "status":
 		scanPaths := defaultScanPaths()
 		if len(os.Args) > 2 {
@@ -157,11 +185,13 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `forge-mirror — manage GitHub→Forgejo mirrors and dual-push
 
 Commands:
-  sync      [paths...]    Configure dual-push for local repos that have Forgejo repos
+  sync      [paths...]    Configure legacy dual-push for local repos that have Forgejo repos
+  primary   [paths...]    Configure local repos to use Forgejo SSH as origin and GitHub as secondary remote
   create    <repo-name>   Create a new pull mirror on Forgejo for a GitHub repo
   convert   [repo-names]  Convert pull mirrors to regular repos (enables push)
   recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
   pull      [names...]    Fetch from GitHub and push to Forgejo (all repos if no names)
+  mirror-github [names...] Configure Forgejo push mirrors to GitHub (all repos if no names)
   status    [paths...]    Show mirror and push-url status for local repos
 
 Environment:
@@ -169,6 +199,7 @@ Environment:
   FORGEJO_TOKEN_FILE   Path to file containing API token (alternative to FORGEJO_TOKEN)
   FORGEJO_URL          Forgejo instance URL (default: https://git.alc.xyz)
   FORGEJO_USER         Forgejo username (default: alc)
+  FORGEJO_SSH_HOST     Forgejo SSH hostname for local origin URLs (default: git-ssh.alc.xyz)
   GITHUB_USER          GitHub username (default: alcxyz)
   GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)`)
 }
@@ -176,7 +207,12 @@ Environment:
 // --- sync command ---
 
 func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
-	mirrors, err := fetchForgejoRepos(forgejoURL, forgejoUser)
+	token := os.Getenv("FORGEJO_TOKEN")
+	if token == "" {
+		token = readTokenFile()
+	}
+
+	mirrors, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: cannot reach Forgejo (%v), skipping sync\n", err)
 		return nil // graceful skip when offline
@@ -208,6 +244,48 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 
 	if configured > 0 {
 		fmt.Printf("sync: configured %d repo(s)\n", configured)
+	}
+	return nil
+}
+
+// --- primary command ---
+
+func cmdPrimary(forgejoUser string, scanPaths []string) error {
+	token := os.Getenv("FORGEJO_TOKEN")
+	if token == "" {
+		token = readTokenFile()
+	}
+
+	repos := findLocalRepos(scanPaths)
+	forgejoRepos := make(map[string]bool)
+	remoteRepos, err := fetchForgejoRepos(defaultForgejoURL, forgejoUser, token)
+	if err != nil {
+		return fmt.Errorf("fetching Forgejo repos: %w", err)
+	}
+	for _, r := range remoteRepos {
+		forgejoRepos[r.Name] = true
+	}
+
+	changedCount := 0
+	for _, repoPath := range repos {
+		name := filepath.Base(repoPath)
+		if !forgejoRepos[name] {
+			continue
+		}
+
+		changed, err := ensureForgejoPrimary(repoPath, forgejoUser, name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", name, err)
+			continue
+		}
+		if changed {
+			fmt.Printf("  %s: set Forgejo as origin\n", name)
+			changedCount++
+		}
+	}
+
+	if changedCount > 0 {
+		fmt.Printf("primary: configured %d repo(s)\n", changedCount)
 	}
 	return nil
 }
@@ -455,6 +533,56 @@ func getGitHubPAT() string {
 	return strings.TrimSpace(string(out))
 }
 
+// --- mirror-github command ---
+
+func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string) error {
+	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
+	ghToken := getGitHubPAT()
+	if ghToken == "" {
+		return fmt.Errorf("GITHUB_MIRROR_PAT or gh auth token is required")
+	}
+
+	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
+	if err != nil {
+		return fmt.Errorf("fetching repos: %w", err)
+	}
+
+	filter := make(map[string]bool)
+	for _, n := range names {
+		filter[n] = true
+	}
+
+	created := 0
+	skipped := 0
+	for _, r := range repos {
+		if len(filter) > 0 && !filter[r.Name] {
+			continue
+		}
+
+		target := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, r.Name)
+		exists, err := hasPushMirror(forgejoURL, forgejoUser, token, r.Name, target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: list mirrors failed: %v\n", r.Name, err)
+			continue
+		}
+		if exists {
+			skipped++
+			fmt.Printf("  %s: GitHub push mirror already exists\n", r.Name)
+			continue
+		}
+
+		if err := createPushMirror(forgejoURL, forgejoUser, token, r.Name, target, githubUser, ghToken); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: create push mirror failed: %v\n", r.Name, err)
+			continue
+		}
+		fmt.Printf("  %s: GitHub push mirror created\n", r.Name)
+		created++
+	}
+
+	fmt.Printf("mirror-github: %d created, %d already present\n", created, skipped)
+	return nil
+}
+
 // --- pull command ---
 
 func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
@@ -552,7 +680,12 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 // --- status command ---
 
 func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
-	remoteRepos, err := fetchForgejoRepos(forgejoURL, forgejoUser)
+	token := os.Getenv("FORGEJO_TOKEN")
+	if token == "" {
+		token = readTokenFile()
+	}
+
+	remoteRepos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
 	if err != nil {
 		return fmt.Errorf("fetching repos: %w", err)
 	}
@@ -732,6 +865,124 @@ func getGitOriginURL(repoPath string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func getGitRemoteURL(repoPath, remoteName string) string {
+	out, err := exec.Command("git", "-C", repoPath, "remote", "get-url", remoteName).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func ensureForgejoPrimary(repoPath, forgejoUser, repoName string) (bool, error) {
+	sshHost := envOr("FORGEJO_SSH_HOST", defaultForgejoSSHHost)
+	forgejoSSH := fmt.Sprintf("git@%s:%s/%s.git", sshHost, forgejoUser, repoName)
+	originURL := getGitOriginURL(repoPath)
+	if originURL == "" {
+		return false, fmt.Errorf("no origin remote")
+	}
+
+	changed := false
+
+	if strings.Contains(originURL, "github.com") {
+		if err := ensureRemoteURL(repoPath, "github", originURL); err != nil {
+			return false, err
+		}
+	}
+
+	if originURL != forgejoSSH {
+		if err := gitCmd(repoPath, "remote", "set-url", "origin", forgejoSSH); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+
+	if err := clearOriginPushURLs(repoPath); err != nil {
+		return false, err
+	}
+
+	return changed, nil
+}
+
+func ensureRemoteURL(repoPath, remoteName, url string) error {
+	current := getGitRemoteURL(repoPath, remoteName)
+	if current == url {
+		return nil
+	}
+	if current == "" {
+		return gitCmd(repoPath, "remote", "add", remoteName, url)
+	}
+	return gitCmd(repoPath, "remote", "set-url", remoteName, url)
+}
+
+func clearOriginPushURLs(repoPath string) error {
+	cmd := exec.Command("git", "-C", repoPath, "config", "--unset-all", "remote.origin.pushurl")
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 5 {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func hasPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress string) (bool, error) {
+	req, _ := http.NewRequest("GET",
+		fmt.Sprintf("%s/api/v1/repos/%s/%s/push_mirrors", forgejoURL, forgejoUser, repoName),
+		nil)
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var mirrors []struct {
+		RemoteAddress string `json:"remote_address"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&mirrors); err != nil {
+		return false, err
+	}
+	for _, m := range mirrors {
+		if m.RemoteAddress == remoteAddress {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func createPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress, remoteUsername, remotePassword string) error {
+	payload := map[string]interface{}{
+		"remote_address":  remoteAddress,
+		"remote_username": remoteUsername,
+		"remote_password": remotePassword,
+		"interval":        "8h",
+		"sync_on_commit":  true,
+	}
+
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST",
+		fmt.Sprintf("%s/api/v1/repos/%s/%s/push_mirrors", forgejoURL, forgejoUser, repoName),
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 func gitCmd(repoPath string, args ...string) error {
