@@ -6,7 +6,7 @@ Personal Nix flake with packages and tools not in nixpkgs.
 
 ```nix
 # flake.nix
-inputs.nix-packages.url = "github:alcxyz/nix-packages";
+inputs.nix-packages.url = "git+https://git.alc.xyz/alcxyz/nix-packages.git";
 ```
 
 Then reference packages as `inputs.nix-packages.packages.${system}.<name>`.
@@ -32,6 +32,7 @@ Internal tools built from source, tracked in this repo.
 
 ## Automated updates
 
-`helium` and `t3code` are kept up to date by a daily GitHub Actions workflow
-(`.github/workflows/update-packages.yml`). When a new upstream release is
-detected the workflow computes fresh Nix SRI hashes and opens a pull request.
+Packages are kept up to date by a daily Forgejo Actions workflow
+(`.forgejo/workflows/update-packages.yml`). When a new upstream release is
+detected the workflow computes fresh Nix SRI hashes and opens a Forgejo pull
+request against `dev`.
