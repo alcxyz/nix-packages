@@ -126,11 +126,15 @@ PY
       --data @"$patch_payload" \
       "${pulls_url}/${pr_number}")
 
-    if [ "$patch_status" != "200" ]; then
+    case "$patch_status" in
+      200|201)
+        ;;
+      *)
       echo "Failed to refresh Forgejo PR #${pr_number}; HTTP ${patch_status}" >&2
       cat "$response" >&2
       exit 1
-    fi
+        ;;
+    esac
 
     echo "Refreshed Forgejo PR #${pr_number} for ${UPDATE_BRANCH}."
     ;;
