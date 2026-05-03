@@ -35,6 +35,11 @@ jobs:
         with:
           github-server-url: https://git.alc.xyz
 
+      - name: Install runner prerequisites
+        run: |
+          apt-get update
+          apt-get install -y sudo
+
       - uses: https://github.com/cachix/install-nix-action@v30
         with:
           extra_nix_config: |
