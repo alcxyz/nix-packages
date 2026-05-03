@@ -58,6 +58,7 @@ jobs:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: 0
+          github-server-url: https://git.alc.xyz
 
       - uses: https://github.com/cachix/install-nix-action@v30
         with:

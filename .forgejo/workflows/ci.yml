@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          github-server-url: https://git.alc.xyz
 
       - uses: https://github.com/actions/setup-go@v5
         with:
@@ -30,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          github-server-url: https://git.alc.xyz
 
       - uses: https://github.com/cachix/install-nix-action@v30
         with:
