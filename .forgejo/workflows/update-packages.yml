@@ -1,0 +1,87 @@
+name: Update packages
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Update ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: t3code
+            branch: update/t3code
+            title_prefix: "chore(t3code): update to"
+            body_name: t3code
+            upstream: "https://github.com/pingdotgg/t3code/releases/tag/v"
+          - package: omniwm
+            branch: update/omniwm
+            title_prefix: "chore(omniwm): update to"
+            body_name: OmniWM
+            upstream: "https://github.com/BarutSRB/OmniWM/releases/tag/v"
+          - package: helium
+            branch: update/helium
+            title_prefix: "chore(helium): update to"
+            body_name: helium
+            upstream: "https://github.com/imputnet/helium-linux/releases/tag/"
+          - package: ghostty
+            branch: update/ghostty
+            title_prefix: "chore(ghostty): update to"
+            body_name: ghostty
+            upstream: "https://github.com/ghostty-org/ghostty/releases/tag/v"
+          - package: ndrop
+            branch: update/ndrop
+            title_prefix: "chore(ndrop): update to"
+            body_name: ndrop
+            upstream: "https://github.com/Schweber/ndrop/commit/"
+          - package: ledger-live
+            branch: update/ledger-live
+            title_prefix: "chore(ledger-live): update to"
+            body_name: Ledger Live
+            upstream: "https://github.com/LedgerHQ/ledger-live/releases/tag/%40ledgerhq/live-desktop%40"
+          - package: claude-code
+            branch: update/claude-code
+            title_prefix: "chore(claude-code): update to"
+            body_name: claude-code
+            upstream: "https://www.npmjs.com/package/@anthropic-ai/claude-code/v/"
+          - package: zen-browser
+            branch: update/zen-browser
+            title_prefix: "chore(zen-browser): update to"
+            body_name: "Zen Browser"
+            upstream: "https://github.com/zen-browser/desktop/releases/tag/"
+
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check and update ${{ matrix.package }}
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
+        run: bash scripts/update-packages/update-${{ matrix.package }}.sh
+
+      - name: Open or refresh Forgejo PR
+        if: steps.update.outputs.updated == 'true'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_URL: https://git.alc.xyz
+          FORGEJO_OWNER: alcxyz
+          FORGEJO_REPO: nix-packages
+          BASE_BRANCH: dev
+          UPDATE_BRANCH: ${{ matrix.branch }}
+          COMMIT_MESSAGE: "${{ matrix.title_prefix }} ${{ steps.update.outputs.version }}"
+          PR_TITLE: "${{ matrix.title_prefix }} ${{ steps.update.outputs.version }}"
+          BODY_NAME: ${{ matrix.body_name }}
+          VERSION: ${{ steps.update.outputs.version }}
+          UPSTREAM_URL: "${{ matrix.upstream }}${{ steps.update.outputs.version }}"
+        run: scripts/forgejo/upsert-update-pr.sh

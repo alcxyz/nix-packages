@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# .github/scripts/update-claude-code.sh
+# scripts/update-packages/update-claude-code.sh
 # Checks for a new claude-code release on npm, regenerates package-lock.json,
 # computes Nix SRI hashes, and patches pkgs/claude-code/default.nix.
 # Sets GITHUB_OUTPUT: updated, version.
@@ -44,7 +44,7 @@ echo "Regenerated package-lock.json"
 
 # ── compute npmDepsHash ───────────────────────────────────────────────────────
 echo "Computing npm deps hash..."
-npm_deps_hash=$(nix-shell -p prefetch-npm-deps --run "prefetch-npm-deps $PKG_DIR/package-lock.json 2>/dev/null")
+npm_deps_hash=$(nix shell github:NixOS/nixpkgs/nixos-25.05#prefetch-npm-deps -c prefetch-npm-deps "$PKG_DIR/package-lock.json" 2>/dev/null)
 echo "npm deps hash: $npm_deps_hash"
 
 # ── patch default.nix ────────────────────────────────────────────────────────
