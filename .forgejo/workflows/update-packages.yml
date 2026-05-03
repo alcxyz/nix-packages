@@ -63,7 +63,7 @@ jobs:
       - name: Install runner prerequisites
         run: |
           apt-get update
-          apt-get install -y sudo
+          apt-get install -y sudo xxd
 
       - uses: https://github.com/cachix/install-nix-action@v30
         with:
@@ -74,7 +74,9 @@ jobs:
         id: update
         env:
           GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
-        run: bash scripts/update-packages/update-${{ matrix.package }}.sh
+        run: |
+          rm -rf /homeless-shelter
+          bash scripts/update-packages/update-${{ matrix.package }}.sh
 
       - name: Open or refresh Forgejo PR
         if: steps.update.outputs.updated == 'true'

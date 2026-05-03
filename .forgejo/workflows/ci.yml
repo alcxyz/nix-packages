@@ -47,6 +47,7 @@ jobs:
 
       - name: Build Go tools
         run: |
+          rm -rf /homeless-shelter
           nix build .#devlog
           nix build .#pihole-sync
           nix build .#zfs-auto-unlock
