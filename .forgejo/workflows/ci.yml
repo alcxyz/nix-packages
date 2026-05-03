@@ -52,5 +52,6 @@ jobs:
             nix build "$@"
           }
           nix_build .#devlog
+          nix_build .#pihole-sync.goModules
           nix_build .#pihole-sync
           nix_build .#zfs-auto-unlock
