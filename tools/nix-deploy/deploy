@@ -31,18 +31,49 @@ is_darwin() {
 
 # --- build actions ---
 
+run_with_boot_fallback() {
+  local label="$1" switch_cmd="$2" boot_cmd="$3"
+  shift 3
+
+  local output status
+  set +e
+  output="$(eval "$switch_cmd" 2>&1)"
+  status=$?
+  set -e
+
+  printf '%s\n' "$output"
+
+  if [[ $status -eq 0 ]]; then
+    return 0
+  fi
+
+  if grep -q "Pre-switch check 'switchInhibitors' failed" <<<"$output"; then
+    echo "${label}: switch inhibited, retrying with 'boot' so the change can take effect after reboot"
+    eval "$boot_cmd"
+    return 0
+  fi
+
+  return "$status"
+}
+
 nixos_local() {
   local host="$1"
   if is_darwin; then
     sudo /run/current-system/sw/bin/darwin-rebuild switch --flake ".#${host}"
   else
-    sudo nixos-rebuild switch --flake ".#${host}"
+    run_with_boot_fallback \
+      "deploy(${host})" \
+      "sudo nixos-rebuild switch --flake .#${host}" \
+      "sudo nixos-rebuild boot --flake .#${host}"
   fi
 }
 
 nixos_remote() {
   local host="$1"
-  nixos-rebuild switch --flake ".#${host}" --target-host "root@${host}"
+  run_with_boot_fallback \
+    "deploy(${host})" \
+    "nixos-rebuild switch --flake .#${host} --target-host root@${host}" \
+    "nixos-rebuild boot --flake .#${host} --target-host root@${host}"
 }
 
 hm_local() {
