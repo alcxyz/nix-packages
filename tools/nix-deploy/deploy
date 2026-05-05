@@ -155,7 +155,7 @@ do_deploy_all() {
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
     start_sudo_keepalive
-    trap stop_sudo_keepalive RETURN
+    trap stop_sudo_keepalive EXIT
     echo "=== system rebuild (parallel) ==="
     parallel --tag --line-buffer ::: \
       "sudo -n nixos-rebuild switch --flake .#xyz" \
