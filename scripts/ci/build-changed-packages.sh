@@ -12,12 +12,21 @@ for attr in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap
   echo "::endgroup::"
 done
 
-if [ -n "${GITHUB_BASE_REF:-}" ]; then
-  git fetch origin "${GITHUB_BASE_REF}"
-  base="origin/${GITHUB_BASE_REF}"
+base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
+ref_name="${GITHUB_REF_NAME:-${GITEA_REF_NAME:-${FORGEJO_REF_NAME:-}}}"
+
+if [ -n "$base_ref" ]; then
+  git fetch origin "$base_ref"
+  base="origin/${base_ref}"
+elif [ "$ref_name" = "main" ]; then
+  base="$(git rev-parse HEAD^)"
+elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+  base="origin/main"
 else
   base="$(git rev-parse HEAD^)"
 fi
+
+echo "Detecting changed packages against ${base}"
 
 changed_attrs="$(
   git diff --name-only "${base}"...HEAD \
