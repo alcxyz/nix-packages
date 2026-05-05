@@ -35,3 +35,7 @@ Packages are kept up to date by a daily Forgejo Actions workflow
 (`.forgejo/workflows/update-packages.yml`). When a new upstream release is
 detected the workflow computes fresh Nix SRI hashes and opens a Forgejo pull
 request against `dev`.
+
+Updater scripts must fail before committing invalid generated state. Empty SRI
+hashes such as `hash = "sha256-";` are rejected by both the updater scripts and
+CI; see [ADR-0003](docs/adr/0003-fail-loud-automated-package-updates.md).
