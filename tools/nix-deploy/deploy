@@ -2,19 +2,21 @@
 set -euo pipefail
 
 SELF="$(hostname)"
-KNOWN_HOSTS=(xyz nux rpi0 mac)
-REMOTE_HOSTS=(nux rpi0)
+KNOWN_HOSTS=(xyz nux nex rpi0 mac)
+REMOTE_HOSTS=(nux nex rpi0)
+DEPLOY_ALL_HOSTS=(xyz nux rpi0)
 
 usage() {
   cat <<EOF
 Usage: deploy [<host>]          Full rebuild (system + home-manager)
-       deploy --all             Parallel rebuild of all hosts (from xyz)
+       deploy --all             Parallel rebuild of provisioned hosts (from xyz)
        deploy --nixos [<host>]  System rebuild only
        deploy --hm [<host>]     Home Manager only
 
 When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.
---all runs parallel deploys to xyz, nux, and rpi0 (must be run from xyz).
+Known hosts: ${KNOWN_HOSTS[*]}
+--all runs parallel deploys to provisioned hosts: ${DEPLOY_ALL_HOSTS[*]} (must be run from xyz).
 EOF
   exit 1
 }
@@ -158,12 +160,27 @@ all=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --nixos) mode="nixos"; shift ;;
-    --hm)    mode="hm"; shift ;;
-    --all)   all=true; shift ;;
-    --help|-h) usage ;;
-    -*)      echo "deploy: unknown option '$1'" >&2; usage ;;
-    *)       target="$1"; shift ;;
+  --nixos)
+    mode="nixos"
+    shift
+    ;;
+  --hm)
+    mode="hm"
+    shift
+    ;;
+  --all)
+    all=true
+    shift
+    ;;
+  --help | -h) usage ;;
+  -*)
+    echo "deploy: unknown option '$1'" >&2
+    usage
+    ;;
+  *)
+    target="$1"
+    shift
+    ;;
   esac
 done
 
