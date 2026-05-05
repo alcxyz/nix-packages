@@ -52,6 +52,18 @@ compute_sri() {
   printf 'sha256-%s' "$(printf '%s' "$hex" | xxd -r -p | base64 -w0)"
 }
 
+validate_sri() {
+  local name="$1"
+  local hash="$2"
+  if [[ "$hash" == "lib.fakeHash" ]]; then
+    return
+  fi
+  if [[ "$hash" == "sha256-" || ! "$hash" =~ ^sha256-.+ ]]; then
+    echo "Invalid SRI hash for ${name}: ${hash}" >&2
+    exit 1
+  fi
+}
+
 # ── download & hash all four platform assets ──────────────────────────────────
 v="$latest_version"
 
@@ -63,6 +75,11 @@ hash_darwin_arm=$(compute_sri \
   "https://github.com/imputnet/helium-macos/releases/download/${v}/helium_${v}_arm64-macos.dmg")
 hash_darwin_x86=$(compute_sri \
   "https://github.com/imputnet/helium-macos/releases/download/${v}/helium_${v}_x86_64-macos.dmg")
+
+validate_sri "helium linux x86_64" "$hash_linux_x86"
+validate_sri "helium linux aarch64" "$hash_linux_arm"
+validate_sri "helium darwin aarch64" "$hash_darwin_arm"
+validate_sri "helium darwin x86_64" "$hash_darwin_x86"
 
 echo "Linux x86_64  hash: $hash_linux_x86"
 echo "Linux aarch64 hash: $hash_linux_arm"
