@@ -4,8 +4,13 @@ set -euo pipefail
 SELF="$(hostname)"
 KNOWN_HOSTS=(xyz nux nex rpi0 mac)
 REMOTE_HOSTS=(nux nex rpi0)
-DEPLOY_ALL_HOSTS=(xyz nux rpi0)
+DEPLOY_ALL_HOSTS=(xyz nux nex rpi0)
 SUDO_KEEPALIVE_PID=""
+COLOR_RESET=""
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  COLOR_RESET=$'\033[0m'
+fi
 
 usage() {
   cat <<EOF
@@ -30,6 +35,50 @@ is_known() {
 
 is_darwin() {
   [[ "$(uname)" == "Darwin" ]]
+}
+
+color() {
+  local rgb="$1" text="$2"
+
+  if [[ -z "$COLOR_RESET" ]]; then
+    printf '%s' "$text"
+    return
+  fi
+
+  printf '\033[38;2;%sm%s%s' "$rgb" "$text" "$COLOR_RESET"
+}
+
+phase_label() {
+  local phase="$1"
+
+  case "$phase" in
+  system) color "116;199;236" "[system]" ;; # Catppuccin sapphire
+  hm) color "203;166;247" "[hm]" ;;         # Catppuccin mauve
+  *) color "205;214;244" "[${phase}]" ;;    # Catppuccin text
+  esac
+}
+
+host_label() {
+  local host="$1"
+
+  case "$host" in
+  xyz) color "137;180;250" "[xyz]" ;;   # Catppuccin blue
+  nux) color "166;227;161" "[nux]" ;;   # Catppuccin green
+  nex) color "250;179;135" "[nex]" ;;   # Catppuccin peach
+  rpi0) color "235;160;172" "[rpi0]" ;; # Catppuccin maroon
+  mac) color "203;166;247" "[mac]" ;;   # Catppuccin mauve
+  *) color "205;214;244" "[${host}]" ;;
+  esac
+}
+
+section() {
+  local title="$1"
+  printf '\n%s %s\n' "$(color "180;190;254" "==>")" "$(color "205;214;244" "$title")"
+}
+
+run_parallel_jobs() {
+  local jobs=("$@")
+  parallel --colsep '\t' --tagstring '{1} {2}' --line-buffer '{3}' ::: "${jobs[@]}"
 }
 
 start_sudo_keepalive() {
@@ -122,7 +171,7 @@ do_deploy() {
   [[ "$host" == "$SELF" ]] && is_local=true
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
-    echo "=== system rebuild: ${host} ==="
+    section "$(phase_label system) $(host_label "$host") rebuild"
     if $is_local; then
       nixos_local "$host"
     else
@@ -131,7 +180,7 @@ do_deploy() {
   fi
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
-    echo "=== home-manager: ${host} ==="
+    section "$(phase_label hm) $(host_label "$host") switch"
     if $is_local; then
       hm_local "$host"
     else
@@ -154,21 +203,43 @@ do_deploy_all() {
   fi
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+    local system_jobs=()
+    local host cmd
+
     start_sudo_keepalive
     trap stop_sudo_keepalive EXIT
-    echo "=== system rebuild (parallel) ==="
-    parallel --tag --line-buffer ::: \
-      "sudo -n nixos-rebuild switch --flake .#xyz" \
-      "nixos-rebuild switch --flake .#nux --target-host root@nux" \
-      "nixos-rebuild switch --flake .#rpi0 --target-host root@rpi0"
+    section "system rebuilds"
+
+    for host in "${DEPLOY_ALL_HOSTS[@]}"; do
+      if [[ "$host" == "$SELF" ]]; then
+        cmd="sudo -n nixos-rebuild switch --flake .#${host}"
+      else
+        cmd="nixos-rebuild switch --flake .#${host} --target-host root@${host}"
+      fi
+
+      system_jobs+=("$(phase_label system)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
+    done
+
+    run_parallel_jobs "${system_jobs[@]}"
   fi
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
-    echo "=== home-manager (parallel) ==="
-    parallel --tag --line-buffer ::: \
-      "home-manager switch --flake .#alc-xyz" \
-      "deploy --hm nux" \
-      "deploy --hm rpi0"
+    local hm_jobs=()
+    local host cmd
+
+    section "home-manager switches"
+
+    for host in "${DEPLOY_ALL_HOSTS[@]}"; do
+      if [[ "$host" == "$SELF" ]]; then
+        cmd="home-manager switch --flake .#alc-${host}"
+      else
+        cmd="deploy --hm ${host}"
+      fi
+
+      hm_jobs+=("$(phase_label hm)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
+    done
+
+    run_parallel_jobs "${hm_jobs[@]}"
   fi
 }
 
