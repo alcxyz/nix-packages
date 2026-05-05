@@ -22,9 +22,6 @@ buildNpmPackage (finalAttrs: {
 
   postPatch = ''
     cp ${./package-lock.json} package-lock.json
-
-    substituteInPlace cli.js \
-          --replace-fail '#!/bin/sh' '#!/usr/bin/env sh'
   '';
 
   dontNpmBuild = true;
