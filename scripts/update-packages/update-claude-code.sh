@@ -36,6 +36,27 @@ trap 'rm -rf "$tmp"' EXIT
 
 curl -fsSL -o "$tmp/package.tgz" "$tgz_url"
 tar xzf "$tmp/package.tgz" -C "$tmp"
+
+PACKAGE_JSON="$tmp/package/package.json" python3 - <<'PYEOF'
+import json
+import os
+from pathlib import Path
+
+package_json = Path(os.environ["PACKAGE_JSON"])
+package_dir = package_json.parent
+metadata = json.loads(package_json.read_text())
+bin_entry = metadata.get("bin", {}).get("claude")
+
+if not bin_entry:
+    raise SystemExit("claude-code package.json does not define bin.claude")
+
+bin_path = package_dir / bin_entry
+if not bin_path.is_file():
+    raise SystemExit(f"claude-code bin.claude points to missing file: {bin_entry}")
+
+print(f"Validated claude-code package layout: bin.claude -> {bin_entry}")
+PYEOF
+
 cd "$tmp/package"
 npm install --package-lock-only --ignore-scripts 2>/dev/null
 cp package-lock.json "$OLDPWD/$PKG_DIR/package-lock.json"
@@ -77,6 +98,10 @@ content = re.sub(r'(npmDepsHash = )"[^"]+"', rf'\g<1>"{npm_deps_hash}"', content
 open(path, 'w').write(content)
 print(f"Patched {path} → {version}")
 PYEOF
+
+echo "Validating claude-code derivation build..."
+rm -rf /homeless-shelter
+nix build .#claude-code --no-link
 
 echo "updated=true"                >> "$GITHUB_OUTPUT"
 echo "version=$latest_version"     >> "$GITHUB_OUTPUT"
