@@ -39,10 +39,20 @@ compute_sri() {
   printf 'sha256-%s' "$(printf '%s' "$hex" | xxd -r -p | base64 -w0)"
 }
 
+validate_sri() {
+  local name="$1"
+  local hash="$2"
+  if [[ "$hash" == "sha256-" || ! "$hash" =~ ^sha256-.+ ]]; then
+    echo "Invalid SRI hash for ${name}: ${hash}" >&2
+    exit 1
+  fi
+}
+
 # ── download & hash ────────────────────────────────────────────────────────────
 v="$latest_version"
 darwin_hash=$(compute_sri \
   "https://github.com/BarutSRB/OmniWM/releases/download/v${v}/OmniWM-v${v}.zip")
+validate_sri "OmniWM" "$darwin_hash"
 
 echo "Darwin hash: $darwin_hash"
 
