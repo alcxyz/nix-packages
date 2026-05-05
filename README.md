@@ -27,7 +27,6 @@ Internal tools built from source, tracked in this repo.
 
 | Tool | Description | Platforms |
 |------|-------------|-----------|
-| pihole-sync | Sync Pi-hole config between instances | all |
 | zfs-auto-unlock | Automatic ZFS dataset unlocking | all |
 
 ## Automated updates
