@@ -17,15 +17,21 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
+          fetch-depth: 0
           github-server-url: https://git.alc.xyz
 
       - uses: https://github.com/actions/setup-go@v5
         with:
           go-version-file: tools/devlog/go.mod
 
-      - name: Test devlog
-        run: go test -v ./...
-        working-directory: tools/devlog
+      - name: Test Go tools
+        run: |
+          while IFS= read -r mod; do
+            dir="$(dirname "$mod")"
+            echo "::group::go test ${dir}"
+            (cd "$dir" && go test -v ./...)
+            echo "::endgroup::"
+          done < <(find tools -maxdepth 2 -name go.mod | sort)
 
   nix-build:
     name: Build packages
@@ -33,6 +39,7 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
+          fetch-depth: 0
           github-server-url: https://git.alc.xyz
 
       - name: Install runner prerequisites
@@ -45,13 +52,52 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build Go tools
+      - name: Validate package hashes
+        run: |
+          if grep -RInE 'hash = "sha256-";|hash = "sha256-"[[:space:]]*;' pkgs tools; then
+            echo "Found an empty SRI hash. Updater scripts must write complete sha256-<base64> hashes." >&2
+            exit 1
+          fi
+
+      - name: Build Go tools and changed packages
         run: |
           nix_build() {
             rm -rf /homeless-shelter
             nix build "$@"
           }
-          nix_build .#devlog
-          nix_build .#pihole-sync.goModules
-          nix_build .#pihole-sync
-          nix_build .#zfs-auto-unlock
+
+          for attr in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
+            echo "::group::nix build ${attr}"
+            nix_build ".#${attr}"
+            echo "::endgroup::"
+          done
+
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch origin "${GITHUB_BASE_REF}"
+            base="origin/${GITHUB_BASE_REF}"
+          else
+            base="$(git rev-parse HEAD^)"
+          fi
+
+          changed_attrs="$(
+            git diff --name-only "${base}"...HEAD \
+              | awk -F/ '/^(pkgs|tools)\/[^/]+\// { print $2 }' \
+              | sort -u
+          )"
+
+          for attr in $changed_attrs; do
+            echo "::group::changed package ${attr}"
+            if [ ! -e "pkgs/${attr}" ] && [ ! -e "tools/${attr}" ]; then
+              echo "${attr} was deleted in this change; skipping package build."
+              echo "::endgroup::"
+              continue
+            fi
+            if nix eval ".#packages.x86_64-linux.${attr}.drvPath" >/dev/null 2>&1; then
+              nix_build ".#${attr}"
+            else
+              echo "${attr} is not buildable on the x86_64-linux runner; validating Darwin package metadata."
+              nix eval ".#packages.aarch64-darwin.${attr}.meta.platforms" --json >/dev/null \
+                || nix eval ".#packages.x86_64-darwin.${attr}.meta.platforms" --json >/dev/null
+            fi
+            echo "::endgroup::"
+          done
