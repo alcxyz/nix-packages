@@ -2,19 +2,22 @@
 set -euo pipefail
 
 SELF="$(hostname)"
-KNOWN_HOSTS=(xyz nux rpi0 mac)
-REMOTE_HOSTS=(nux rpi0)
+KNOWN_HOSTS=(xyz nux nex rpi0 mac)
+REMOTE_HOSTS=(nux nex rpi0)
+DEPLOY_ALL_HOSTS=(xyz nux rpi0)
+SUDO_KEEPALIVE_PID=""
 
 usage() {
   cat <<EOF
 Usage: deploy [<host>]          Full rebuild (system + home-manager)
-       deploy --all             Parallel rebuild of all hosts (from xyz)
+       deploy --all             Parallel rebuild of provisioned hosts (from xyz)
        deploy --nixos [<host>]  System rebuild only
        deploy --hm [<host>]     Home Manager only
 
 When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.
---all runs parallel deploys to xyz, nux, and rpi0 (must be run from xyz).
+Known hosts: ${KNOWN_HOSTS[*]}
+--all runs parallel deploys to provisioned hosts: ${DEPLOY_ALL_HOSTS[*]} (must be run from xyz).
 EOF
   exit 1
 }
@@ -29,20 +32,68 @@ is_darwin() {
   [[ "$(uname)" == "Darwin" ]]
 }
 
+start_sudo_keepalive() {
+  sudo -v
+
+  while true; do
+    sleep 60
+    sudo -n -v || exit
+  done &
+
+  SUDO_KEEPALIVE_PID=$!
+}
+
+stop_sudo_keepalive() {
+  if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
+    kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  fi
+}
+
 # --- build actions ---
+
+run_with_boot_fallback() {
+  local label="$1" switch_cmd="$2" boot_cmd="$3"
+  shift 3
+
+  local output status
+  set +e
+  output="$(eval "$switch_cmd" 2>&1)"
+  status=$?
+  set -e
+
+  printf '%s\n' "$output"
+
+  if [[ $status -eq 0 ]]; then
+    return 0
+  fi
+
+  if grep -q "Pre-switch check 'switchInhibitors' failed" <<<"$output"; then
+    echo "${label}: switch inhibited, retrying with 'boot' so the change can take effect after reboot"
+    eval "$boot_cmd"
+    return 0
+  fi
+
+  return "$status"
+}
 
 nixos_local() {
   local host="$1"
   if is_darwin; then
     sudo /run/current-system/sw/bin/darwin-rebuild switch --flake ".#${host}"
   else
-    sudo nixos-rebuild switch --flake ".#${host}"
+    run_with_boot_fallback \
+      "deploy(${host})" \
+      "sudo nixos-rebuild switch --flake .#${host}" \
+      "sudo nixos-rebuild boot --flake .#${host}"
   fi
 }
 
 nixos_remote() {
   local host="$1"
-  nixos-rebuild switch --flake ".#${host}" --target-host "root@${host}"
+  run_with_boot_fallback \
+    "deploy(${host})" \
+    "nixos-rebuild switch --flake .#${host} --target-host root@${host}" \
+    "nixos-rebuild boot --flake .#${host} --target-host root@${host}"
 }
 
 hm_local() {
@@ -103,9 +154,11 @@ do_deploy_all() {
   fi
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+    start_sudo_keepalive
+    trap stop_sudo_keepalive EXIT
     echo "=== system rebuild (parallel) ==="
     parallel --tag --line-buffer ::: \
-      "sudo nixos-rebuild switch --flake .#xyz" \
+      "sudo -n nixos-rebuild switch --flake .#xyz" \
       "nixos-rebuild switch --flake .#nux --target-host root@nux" \
       "nixos-rebuild switch --flake .#rpi0 --target-host root@rpi0"
   fi
@@ -127,12 +180,27 @@ all=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --nixos) mode="nixos"; shift ;;
-    --hm)    mode="hm"; shift ;;
-    --all)   all=true; shift ;;
-    --help|-h) usage ;;
-    -*)      echo "deploy: unknown option '$1'" >&2; usage ;;
-    *)       target="$1"; shift ;;
+  --nixos)
+    mode="nixos"
+    shift
+    ;;
+  --hm)
+    mode="hm"
+    shift
+    ;;
+  --all)
+    all=true
+    shift
+    ;;
+  --help | -h) usage ;;
+  -*)
+    echo "deploy: unknown option '$1'" >&2
+    usage
+    ;;
+  *)
+    target="$1"
+    shift
+    ;;
   esac
 done
 

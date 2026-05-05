@@ -16,11 +16,13 @@ import (
 
 // State persists between start and stop across separate wcap invocations.
 type State struct {
-	RecorderPID  int    `json:"recorder_pid"`
-	StreamIndex  int    `json:"stream_index"`
-	OriginalSink int    `json:"original_sink"`
-	OutputFile   string `json:"output_file"`
-	LoopbackPID  int    `json:"loopback_pid,omitempty"`
+	RecorderPID     int    `json:"recorder_pid"`
+	StreamIndex     int    `json:"stream_index"`
+	OriginalSink    int    `json:"original_sink"`
+	OutputFile      string `json:"output_file"`
+	LoopbackPID     int    `json:"loopback_pid,omitempty"`
+	WcapSinkModule  int    `json:"wcap_sink_module,omitempty"`
+	CreatedWcapSink bool   `json:"created_wcap_sink,omitempty"`
 }
 
 // pactlSinkInput mirrors the JSON output of `pactl --format=json list sink-inputs`.
@@ -128,6 +130,44 @@ func findSinkIndex(name string) (int, error) {
 	return 0, fmt.Errorf("sink %q not found", name)
 }
 
+func ensureWcapSink() (sinkIndex int, moduleID int, created bool, err error) {
+	if sinkIndex, err = findSinkIndex("wcap-sink"); err == nil {
+		return sinkIndex, 0, false, nil
+	}
+
+	out, err := exec.Command(
+		"pactl",
+		"load-module",
+		"module-null-sink",
+		"sink_name=wcap-sink",
+		"sink_properties=device.description=wcap_recording_sink",
+		"channels=2",
+		"channel_map=front-left,front-right",
+	).Output()
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("creating wcap-sink: %w", err)
+	}
+
+	moduleID, err = strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, 0, true, fmt.Errorf("parsing wcap-sink module id %q: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	sinkIndex, err = findSinkIndex("wcap-sink")
+	if err != nil {
+		exec.Command("pactl", "unload-module", strconv.Itoa(moduleID)).Run()
+		return 0, 0, true, fmt.Errorf("created wcap-sink but cannot find it: %w", err)
+	}
+
+	return sinkIndex, moduleID, true, nil
+}
+
+func unloadModule(moduleID int) {
+	if moduleID > 0 {
+		exec.Command("pactl", "unload-module", strconv.Itoa(moduleID)).Run()
+	}
+}
+
 func moveSinkInput(streamIndex, sinkIndex int) error {
 	return exec.Command("pactl", "move-sink-input",
 		strconv.Itoa(streamIndex),
@@ -171,10 +211,9 @@ func runStart(args []string) int {
 		return 1
 	}
 
-	// Verify wcap-sink exists.
-	wcapIdx, err := findSinkIndex("wcap-sink")
+	wcapIdx, wcapModuleID, createdWcapSink, err := ensureWcapSink()
 	if err != nil {
-		log.Printf("wcap-sink not found — is the PipeWire null sink declared?\n  %v\n", err)
+		log.Printf("%v\n", err)
 		return 1
 	}
 
@@ -182,10 +221,16 @@ func runStart(args []string) int {
 	inputs, err := listSinkInputs()
 	if err != nil {
 		log.Printf("%v\n", err)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 	if len(inputs) == 0 {
 		log.Println("no active audio streams — start playing audio first, then retry")
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 
@@ -207,11 +252,17 @@ func runStart(args []string) int {
 	selected, err := fuzzelPick(lines, "Audio stream:")
 	if err != nil {
 		log.Printf("%v\n", err)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 	selectedIdx, err := strconv.Atoi(strings.Fields(selected)[0])
 	if err != nil {
 		log.Printf("bad selection: %v\n", err)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 
@@ -225,19 +276,29 @@ func runStart(args []string) int {
 	}
 	if target == nil {
 		log.Printf("stream #%d not found\n", selectedIdx)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 
 	// Move stream to wcap-sink.
 	if err := moveSinkInput(target.Index, wcapIdx); err != nil {
 		log.Printf("failed to move stream: %v\n", err)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 	log.Printf("routed stream #%d → wcap-sink\n", target.Index)
 
 	// Prepare output file.
 	if err := os.MkdirAll(*dir, 0755); err != nil {
+		moveSinkInput(target.Index, target.Sink)
 		log.Printf("creating output dir: %v\n", err)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 	outFile := filepath.Join(*dir, time.Now().Format("2006-01-02_150405")+".mp4")
@@ -256,6 +317,9 @@ func runStart(args []string) int {
 	if err := cmd.Start(); err != nil {
 		moveSinkInput(target.Index, target.Sink) // restore on failure
 		log.Printf("starting gpu-screen-recorder: %v\n", err)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 
@@ -265,14 +329,19 @@ func runStart(args []string) int {
 	if !processAlive(cmd.Process.Pid) {
 		moveSinkInput(target.Index, target.Sink)
 		log.Println("gpu-screen-recorder exited immediately — portal cancelled?")
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
 		return 1
 	}
 
 	state := &State{
-		RecorderPID:  cmd.Process.Pid,
-		StreamIndex:  target.Index,
-		OriginalSink: target.Sink,
-		OutputFile:   outFile,
+		RecorderPID:     cmd.Process.Pid,
+		StreamIndex:     target.Index,
+		OriginalSink:    target.Sink,
+		OutputFile:      outFile,
+		WcapSinkModule:  wcapModuleID,
+		CreatedWcapSink: createdWcapSink,
 	}
 	if err := saveState(state); err != nil {
 		log.Printf("warning: could not save state: %v\n", err)
@@ -319,6 +388,9 @@ func runStop(_ []string) int {
 
 	// Restore audio stream (best-effort).
 	moveSinkInput(state.StreamIndex, state.OriginalSink)
+	if state.CreatedWcapSink {
+		unloadModule(state.WcapSinkModule)
+	}
 
 	removeState()
 

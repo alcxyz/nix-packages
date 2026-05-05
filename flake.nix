@@ -20,7 +20,6 @@
         allPackages = {
           agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
-          pihole-sync = pkgs.callPackage ./tools/pihole-sync { };
           helium = pkgs.callPackage ./pkgs/helium { };
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
@@ -43,7 +42,7 @@
       in
       {
         packages = allPackages;
-        defaultPackage = allPackages.helium or allPackages.pihole-sync;
+        defaultPackage = allPackages.helium;
       }
     );
 }
