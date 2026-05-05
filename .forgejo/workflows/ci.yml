@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+    branches:
+      - dev
+      - main
+
+jobs:
+  go-test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          github-server-url: https://git.alc.xyz
+
+      - uses: https://github.com/actions/setup-go@v5
+        with:
+          go-version-file: tools/devlog/go.mod
+
+      - name: Test devlog
+        run: go test -v ./...
+        working-directory: tools/devlog
+
+  nix-build:
+    name: Build packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          github-server-url: https://git.alc.xyz
+
+      - name: Install runner prerequisites
+        run: |
+          apt-get update
+          apt-get install -y sudo
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Go tools
+        run: |
+          nix_build() {
+            rm -rf /homeless-shelter
+            nix build "$@"
+          }
+          nix_build .#devlog
+          nix_build .#pihole-sync.goModules
+          nix_build .#pihole-sync
+          nix_build .#zfs-auto-unlock
