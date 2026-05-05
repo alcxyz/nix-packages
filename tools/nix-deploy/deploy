@@ -5,6 +5,7 @@ SELF="$(hostname)"
 KNOWN_HOSTS=(xyz nux nex rpi0 mac)
 REMOTE_HOSTS=(nux nex rpi0)
 DEPLOY_ALL_HOSTS=(xyz nux rpi0)
+SUDO_KEEPALIVE_PID=""
 
 usage() {
   cat <<EOF
@@ -29,6 +30,23 @@ is_known() {
 
 is_darwin() {
   [[ "$(uname)" == "Darwin" ]]
+}
+
+start_sudo_keepalive() {
+  sudo -v
+
+  while true; do
+    sleep 60
+    sudo -n -v || exit
+  done &
+
+  SUDO_KEEPALIVE_PID=$!
+}
+
+stop_sudo_keepalive() {
+  if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
+    kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  fi
 }
 
 # --- build actions ---
@@ -136,9 +154,11 @@ do_deploy_all() {
   fi
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+    start_sudo_keepalive
+    trap stop_sudo_keepalive RETURN
     echo "=== system rebuild (parallel) ==="
     parallel --tag --line-buffer ::: \
-      "sudo nixos-rebuild switch --flake .#xyz" \
+      "sudo -n nixos-rebuild switch --flake .#xyz" \
       "nixos-rebuild switch --flake .#nux --target-host root@nux" \
       "nixos-rebuild switch --flake .#rpi0 --target-host root@rpi0"
   fi
