@@ -4,7 +4,7 @@ set -euo pipefail
 SELF="$(hostname)"
 KNOWN_HOSTS=(xyz nux nex rpi0 mac)
 REMOTE_HOSTS=(nux nex rpi0)
-DEPLOY_ALL_HOSTS=(xyz nux rpi0)
+DEPLOY_ALL_HOSTS=(xyz nux nex rpi0)
 SUDO_KEEPALIVE_PID=""
 
 usage() {
