@@ -29,6 +29,8 @@ Updater scripts must:
 
 - compute complete SRI hashes before patching package files
 - exit non-zero if a required hash is empty, malformed, or unavailable
+- validate upstream package layout assumptions before patching package files
+- build the changed derivation before opening or refreshing an update PR when the package has generated dependency state or native wrapper packaging
 - avoid committing or refreshing a PR when validation fails
 - use `lib.fakeHash` only as an explicit package-maintainer choice for an optional missing upstream asset, not as a fallback for failed required hashes
 
@@ -38,6 +40,7 @@ CI must:
 - test every Go tool module present under `tools/`
 - build the changed `x86_64-linux` package when the runner can evaluate it
 - validate Darwin-only package metadata when the Linux runner cannot build the package
+- compare pull request heads against the target branch, and use a conservative promotion baseline when the runner does not expose a target branch variable
 - avoid stale references to deleted or retired packages
 
 The scheduled updater may retry on the next scheduled run from a clean checkout. It must not silently carry invalid generated state forward.
@@ -52,6 +55,7 @@ The scheduled updater may retry on the next scheduled run from a clean checkout.
 ## Consequences
 
 - Bad generated hashes fail earlier and more clearly.
+- Upstream package layout changes fail before a generated update PR is refreshed.
 - Update PR checks are more relevant because they include the changed package.
 - Darwin-only packages still need occasional real Darwin builds for full confidence.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
