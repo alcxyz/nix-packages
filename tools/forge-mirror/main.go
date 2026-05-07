@@ -61,6 +61,7 @@ type forgejoRepo struct {
 
 type pushMirror struct {
 	RemoteAddress string `json:"remote_address"`
+	RemoteName    string `json:"remote_name"`
 	LastError     string `json:"last_error"`
 	LastUpdate    string `json:"last_update"`
 	SyncOnCommit  bool   `json:"sync_on_commit"`
@@ -206,11 +207,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for mirror-github")
 			os.Exit(1)
 		}
-		var names []string
-		if len(os.Args) > 2 {
-			names = os.Args[2:]
+		refreshExisting, names := parseMirrorArgs(os.Args[2:])
+		if refreshExisting && len(names) == 0 {
+			fmt.Fprintln(os.Stderr, "mirror-github: --refresh-existing requires explicit repo names or --all")
+			os.Exit(1)
 		}
-		if err := cmdMirrorGitHub(forgejoURL, forgejoUser, token, names); err != nil {
+		if len(names) == 1 && names[0] == "--all" {
+			names = nil
+		}
+		if err := cmdMirrorGitHub(forgejoURL, forgejoUser, token, names, refreshExisting); err != nil {
 			fmt.Fprintf(os.Stderr, "mirror-github: %v\n", err)
 			os.Exit(1)
 		}
@@ -290,7 +295,7 @@ Commands:
   convert   [repo-names]  Convert pull mirrors to regular repos (enables push)
   recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
   pull      [names...]    Fetch from GitHub and push to Forgejo (all repos if no names)
-  mirror-github [names...] Configure Forgejo push mirrors to GitHub (all repos if no names)
+  mirror-github [--refresh-existing] [names...|--all] Configure Forgejo push mirrors to GitHub (all repos if no names)
   mirror-codeberg [names...] Configure Forgejo push mirrors to Codeberg (allowlisted repos only)
   status    [paths...]    Show mirror and push-url status for local repos
 
@@ -302,6 +307,7 @@ Environment:
   FORGEJO_SSH_HOST     Forgejo SSH hostname for local origin URLs (default: git-ssh.alc.xyz)
   GITHUB_USER          GitHub username (default: alcxyz)
   GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)
+  GITHUB_MIRROR_PAT_FILE Path to file containing GitHub PAT
   CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
   CODEBERG_USER        Codeberg username (default: alcxyz)
   CODEBERG_MIRROR_PAT  Codeberg PAT for Forgejo push mirrors
@@ -625,9 +631,9 @@ func deleteAndRecreate(forgejoURL, forgejoUser, githubUser, token, ghToken, name
 }
 
 // getGitHubPAT returns a GitHub token for cloning private repos.
-// Checks GITHUB_MIRROR_PAT env var first, then falls back to gh auth token.
+// Checks GITHUB_MIRROR_PAT/GITHUB_MIRROR_PAT_FILE first, then falls back to gh auth token.
 func getGitHubPAT() string {
-	if pat := os.Getenv("GITHUB_MIRROR_PAT"); pat != "" {
+	if pat := readSecretEnv("GITHUB_MIRROR_PAT", "GITHUB_MIRROR_PAT_FILE"); pat != "" {
 		return pat
 	}
 	out, err := exec.Command("gh", "auth", "token").Output()
@@ -643,7 +649,21 @@ func getCodebergPAT() string {
 
 // --- mirror-github command ---
 
-func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string) error {
+func parseMirrorArgs(args []string) (bool, []string) {
+	refreshExisting := false
+	names := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--refresh-existing":
+			refreshExisting = true
+		default:
+			names = append(names, arg)
+		}
+	}
+	return refreshExisting, names
+}
+
+func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string, refreshExisting bool) error {
 	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
 	ghToken := getGitHubPAT()
 	if ghToken == "" {
@@ -666,6 +686,7 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string) erro
 		githubMirrorTarget(githubUser),
 		githubUser,
 		ghToken,
+		refreshExisting,
 	)
 }
 
@@ -698,6 +719,7 @@ func cmdMirrorCodeberg(forgejoURL, forgejoUser, token string, names []string) er
 		codebergMirrorTarget(envOr("CODEBERG_URL", defaultCodebergURL), codebergUser),
 		codebergUser,
 		codebergToken,
+		false,
 	)
 }
 
@@ -726,7 +748,7 @@ func filterCodebergRepos(repos []forgejoRepo) []forgejoRepo {
 	return filtered
 }
 
-func cmdMirrorRemote(forgejoURL, forgejoUser, token string, repos []forgejoRepo, names []string, commandName, label string, targetForRepo func(string) string, remoteUsername, remotePassword string) error {
+func cmdMirrorRemote(forgejoURL, forgejoUser, token string, repos []forgejoRepo, names []string, commandName, label string, targetForRepo func(string) string, remoteUsername, remotePassword string, refreshExisting bool) error {
 	if remotePassword == "" {
 		return fmt.Errorf("%s credentials are required", label)
 	}
@@ -738,32 +760,48 @@ func cmdMirrorRemote(forgejoURL, forgejoUser, token string, repos []forgejoRepo,
 
 	created := 0
 	skipped := 0
+	refreshed := 0
 	for _, r := range repos {
 		if len(filter) > 0 && !filter[r.Name] {
 			continue
 		}
 
 		target := targetForRepo(r.Name)
-		exists, err := hasPushMirror(forgejoURL, forgejoUser, token, r.Name, target)
+		mirror, err := fetchGitHubPushMirror(forgejoURL, forgejoUser, token, r.Name, target)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: list mirrors failed: %v\n", r.Name, err)
 			continue
 		}
-		if exists {
+		if mirror != nil && !refreshExisting {
 			skipped++
 			fmt.Printf("  %s: %s push mirror already exists\n", r.Name, label)
 			continue
+		}
+		if mirror != nil {
+			if mirror.RemoteName == "" {
+				fmt.Fprintf(os.Stderr, "  %s: existing %s mirror has no remote_name; refusing to refresh\n", r.Name, label)
+				continue
+			}
+			if err := deletePushMirror(forgejoURL, forgejoUser, token, r.Name, mirror.RemoteName); err != nil {
+				fmt.Fprintf(os.Stderr, "  %s: delete existing %s push mirror failed: %v\n", r.Name, label, err)
+				continue
+			}
+			refreshed++
 		}
 
 		if err := createPushMirror(forgejoURL, forgejoUser, token, r.Name, target, remoteUsername, remotePassword); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: create push mirror failed: %v\n", r.Name, err)
 			continue
 		}
-		fmt.Printf("  %s: %s push mirror created\n", r.Name, label)
-		created++
+		if mirror != nil {
+			fmt.Printf("  %s: %s push mirror refreshed\n", r.Name, label)
+		} else {
+			fmt.Printf("  %s: %s push mirror created\n", r.Name, label)
+			created++
+		}
 	}
 
-	fmt.Printf("%s: %d created, %d already present\n", commandName, created, skipped)
+	fmt.Printf("%s: %d created, %d refreshed, %d already present\n", commandName, created, refreshed, skipped)
 	return nil
 }
 
@@ -1292,6 +1330,24 @@ func fetchGitHubPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddre
 		}
 	}
 	return nil, nil
+}
+
+func deletePushMirror(forgejoURL, forgejoUser, token, repoName, remoteName string) error {
+	req, _ := http.NewRequest("DELETE",
+		fmt.Sprintf("%s/api/v1/repos/%s/%s/push_mirrors/%s", forgejoURL, forgejoUser, repoName, remoteName),
+		nil)
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 func createPushMirror(forgejoURL, forgejoUser, token, repoName, remoteAddress, remoteUsername, remotePassword string) error {
