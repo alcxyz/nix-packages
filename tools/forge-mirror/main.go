@@ -47,6 +47,13 @@ var codebergAllowlist = map[string]bool{
 	"tmux":                  true,
 }
 
+var githubMirrorDenylist = map[string]string{
+	"annaetattoo.github.io": "ADR-022: private-source Cloudflare Pages site",
+	"annaetattoo-site":      "ADR-022: private-source Cloudflare Pages site",
+	"madideal.github.io":    "ADR-022: private-source Cloudflare Pages site",
+	"madideal-site":         "ADR-022: private-source Cloudflare Pages site",
+}
+
 type forgejoRepo struct {
 	Name           string `json:"name"`
 	Mirror         bool   `json:"mirror"`
@@ -674,6 +681,10 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string, refr
 	if err != nil {
 		return fmt.Errorf("fetching repos: %w", err)
 	}
+	if err := rejectDeniedGitHubMirrorNames(names); err != nil {
+		return err
+	}
+	repos = filterGitHubMirrorRepos(repos)
 
 	return cmdMirrorRemote(
 		forgejoURL,
@@ -688,6 +699,27 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string, refr
 		ghToken,
 		refreshExisting,
 	)
+}
+
+func rejectDeniedGitHubMirrorNames(names []string) error {
+	for _, name := range names {
+		if reason, denied := githubMirrorDenylist[name]; denied {
+			return fmt.Errorf("GitHub mirror denied for %q (%s)", name, reason)
+		}
+	}
+	return nil
+}
+
+func filterGitHubMirrorRepos(repos []forgejoRepo) []forgejoRepo {
+	filtered := make([]forgejoRepo, 0, len(repos))
+	for _, repo := range repos {
+		if _, denied := githubMirrorDenylist[repo.Name]; denied {
+			fmt.Printf("  %s: GitHub mirror denied by policy\n", repo.Name)
+			continue
+		}
+		filtered = append(filtered, repo)
+	}
+	return filtered
 }
 
 func cmdMirrorCodeberg(forgejoURL, forgejoUser, token string, names []string) error {
@@ -977,6 +1009,26 @@ func cmdAudit(forgejoURL, forgejoUser, token string, names []string) error {
 		if len(filter) > 0 && !filter[repo.Name] {
 			continue
 		}
+		if reason, denied := githubMirrorDenylist[repo.Name]; denied {
+			result, err := auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, token, githubUser, repo, reason)
+			if err != nil {
+				fmt.Printf("  %s: audit error: %v\n", repo.Name, err)
+				driftCount++
+				checked++
+				continue
+			}
+			checked++
+			if len(result.issues) == 0 {
+				fmt.Printf("  %s: ok\n", repo.Name)
+				continue
+			}
+			fmt.Printf("  %s:\n", repo.Name)
+			for _, issue := range result.issues {
+				fmt.Printf("    - %s\n", issue)
+			}
+			driftCount++
+			continue
+		}
 		target := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repo.Name)
 		if repo.OriginalURL != "" && strings.Contains(repo.OriginalURL, "github.com") {
 			target = repo.OriginalURL
@@ -1016,6 +1068,25 @@ func cmdAudit(forgejoURL, forgejoUser, token string, names []string) error {
 
 type auditResult struct {
 	issues []string
+}
+
+func auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, forgejoToken, githubUser string, repo forgejoRepo, reason string) (auditResult, error) {
+	var result auditResult
+	if repo.Mirror && repo.OriginalURL != "" && strings.Contains(repo.OriginalURL, "github.com") {
+		result.issues = append(result.issues, fmt.Sprintf("Forgejo repo is still a GitHub pull mirror (%s)", reason))
+	}
+	mirror, err := fetchGitHubPushMirror(forgejoURL, forgejoUser, forgejoToken, repo.Name, fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repo.Name))
+	if err != nil {
+		result.issues = append(result.issues, fmt.Sprintf("cannot read Forgejo push mirrors: %v", err))
+		return result, nil
+	}
+	if mirror != nil {
+		result.issues = append(result.issues, fmt.Sprintf("Forgejo GitHub push mirror present but denied by policy (%s)", reason))
+	}
+	if !repo.Private {
+		result.issues = append(result.issues, fmt.Sprintf("Forgejo repo is public but should be private-source (%s)", reason))
+	}
+	return result, nil
 }
 
 func auditRepo(forgejoURL, forgejoUser, forgejoToken, ghToken, githubUser string, repo forgejoRepo, githubCloneURL string) (auditResult, error) {
