@@ -53,6 +53,11 @@ jobs:
             title_prefix: "chore(zen-browser): update to"
             body_name: "Zen Browser"
             upstream: "https://github.com/zen-browser/desktop/releases/tag/"
+          - package: stash
+            branch: update/stash
+            title_prefix: "chore(stash): update to"
+            body_name: Stash
+            upstream: "https://github.com/stashapp/stash/releases/tag/v"
 
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
