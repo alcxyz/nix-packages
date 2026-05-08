@@ -34,6 +34,7 @@
         // lib.optionalAttrs isLinux {
           ledger-live = pkgs.callPackage ./pkgs/ledger-live { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
+          stash = pkgs.callPackage ./pkgs/stash { };
           zen-browser = pkgs.callPackage ./pkgs/zen-browser { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           devlog = pkgs.callPackage ./tools/devlog { };
