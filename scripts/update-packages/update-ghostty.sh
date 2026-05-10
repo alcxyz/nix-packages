@@ -8,7 +8,7 @@ set -euo pipefail
 PKG_FILE="pkgs/ghostty/default.nix"
 
 # ── current version ────────────────────────────────────────────────────────────
-current_version=$(grep -m1 'version = ' "$PKG_FILE" | grep -oP '"\K[^"]+')
+current_version=$(sed -n 's/.*version = "\([^"]*\)".*/\1/p' "$PKG_FILE" | head -n1)
 echo "Current: $current_version"
 
 # ── latest release ─────────────────────────────────────────────────────────────
@@ -35,9 +35,16 @@ url="https://release.files.ghostty.org/${v}/Ghostty.dmg"
 echo "  fetching: $url"
 tmp=$(mktemp)
 curl -fsSL -o "$tmp" "$url"
-hex=$(sha256sum "$tmp" | awk '{print $1}')
+hash_darwin=$(python3 - "$tmp" <<'PYEOF'
+import base64
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as f:
+    print("sha256-" + base64.b64encode(hashlib.sha256(f.read()).digest()).decode())
+PYEOF
+)
 rm -f "$tmp"
-hash_darwin="sha256-$(printf '%s' "$hex" | xxd -r -p | base64 -w0)"
 
 echo "macOS universal hash: $hash_darwin"
 
