@@ -33,6 +33,11 @@ jobs:
             title_prefix: "chore(ghostty): update to"
             body_name: ghostty
             upstream: "https://github.com/ghostty-org/ghostty/releases/tag/v"
+          - package: kdash
+            branch: update/kdash
+            title_prefix: "chore(kdash): update to"
+            body_name: kdash
+            upstream: "https://github.com/kdash-rs/kdash/releases/tag/v"
           - package: ndrop
             branch: update/ndrop
             title_prefix: "chore(ndrop): update to"
