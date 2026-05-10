@@ -5,7 +5,7 @@
   lib,
   stdenvNoCC,
   fetchurl,
-  undmg,
+  _7zz,
   makeWrapper,
   system ? stdenvNoCC.hostPlatform.system,
 }:
@@ -26,13 +26,16 @@ if lib.hasPrefix "aarch64-darwin" system || lib.hasPrefix "x86_64-darwin" system
       hash = "sha256-GM/ysKbO6Q7q2cfTBk6AiiUqQLryFKp1LB7LeTuPX2k=";
     };
 
-    nativeBuildInputs = [ undmg makeWrapper ];
+    nativeBuildInputs = [
+      _7zz
+      makeWrapper
+    ];
     dontUnpack = true;
 
     installPhase = ''
       runHook preInstall
 
-      undmg "$src"
+      7zz x -bd -y -snld "$src"
 
       app="$(find . -maxdepth 3 -name '*.app' -print -quit)"
       if [ -z "$app" ]; then
@@ -60,7 +63,10 @@ if lib.hasPrefix "aarch64-darwin" system || lib.hasPrefix "x86_64-darwin" system
       description = "Ghostty terminal emulator";
       homepage = "https://ghostty.org";
       license = licenses.mit;
-      platforms = [ "aarch64-darwin" "x86_64-darwin" ];
+      platforms = [
+        "aarch64-darwin"
+        "x86_64-darwin"
+      ];
       mainProgram = "ghostty";
     };
   }
