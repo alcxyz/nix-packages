@@ -6,8 +6,14 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -21,24 +27,29 @@
           agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
           helium = pkgs.callPackage ./pkgs/helium { };
-          ghostty = pkgs.callPackage ./pkgs/ghostty { };
+          kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
           nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
         }
-        // lib.optionalAttrs (isLinux || system == "aarch64-darwin") {
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+          ghostty = pkgs.callPackage ./pkgs/ghostty { };
+        }
+        // lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
           t3code = pkgs.callPackage ./pkgs/t3code { };
         }
         // lib.optionalAttrs (system == "aarch64-darwin") {
           omniwm = pkgs.callPackage ./pkgs/omniwm { };
         }
-        // lib.optionalAttrs isLinux {
+        // lib.optionalAttrs (system == "x86_64-linux") {
           ledger-live = pkgs.callPackage ./pkgs/ledger-live { };
+          zen-browser = pkgs.callPackage ./pkgs/zen-browser { };
+          wcap = pkgs.callPackage ./tools/wcap { };
+        }
+        // lib.optionalAttrs isLinux {
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           stash = pkgs.callPackage ./pkgs/stash { };
-          zen-browser = pkgs.callPackage ./pkgs/zen-browser { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           devlog = pkgs.callPackage ./tools/devlog { };
-          wcap = pkgs.callPackage ./tools/wcap { };
         };
       in
       {
