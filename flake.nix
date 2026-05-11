@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -10,12 +11,17 @@
     {
       self,
       nixpkgs,
+      nixpkgs-unstable,
       flake-utils,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
+        unstablePkgs = import nixpkgs-unstable {
           inherit system;
           config.allowUnfree = true;
         };
@@ -33,6 +39,7 @@
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
+          paneru = unstablePkgs.callPackage ./pkgs/paneru { };
         }
         // lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
           t3code = pkgs.callPackage ./pkgs/t3code { };
