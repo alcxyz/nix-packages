@@ -8,3 +8,4 @@ Non-obvious decisions in this repo are documented here. Before changing tool des
 | [ADR-0001](0001-wcap-go-cli-window-capture.md) | wcap as a Go CLI wrapping gpu-screen-recorder | `tools/wcap` |
 | [ADR-0002](0002-model-agnostic-llm-config-for-devlog.md) | Model-Agnostic LLM Configuration for devlog | `tools/devlog/` |
 | [ADR-0003](0003-fail-loud-automated-package-updates.md) | Fail-Loud Automated Package Updates | package update CI |
+| [ADR-0004](0004-patched-paneru-package.md) | Patched Paneru Package | `pkgs/paneru/` |
