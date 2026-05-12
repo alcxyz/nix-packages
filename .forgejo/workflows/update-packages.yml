@@ -84,17 +84,56 @@ jobs:
           git fetch origin "${BASE_BRANCH}"
           git switch -C "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
 
+      - name: Decide update mode
+        id: update_gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_URL: https://git.alc.xyz
+          FORGEJO_OWNER: alcxyz
+          FORGEJO_REPO: nix-packages
+          UPDATE_BRANCH: ${{ matrix.branch }}
+        run: |
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          api_auth="$(mktemp)"
+          response="$(mktemp)"
+          trap 'rm -f "$api_auth" "$response"' EXIT
+
+          printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN" > "$api_auth"
+          printf 'header = "Accept: application/json"\n' >> "$api_auth"
+
+          pulls_url="${FORGEJO_URL}/api/v1/repos/${FORGEJO_OWNER}/${FORGEJO_REPO}/pulls"
+          curl -fsS -K "$api_auth" \
+            "${pulls_url}?state=open&base=${BASE_BRANCH}&limit=100" \
+            -o "$response"
+
+          if UPDATE_BRANCH="$UPDATE_BRANCH" python3 -c 'import json, os, sys; target = os.environ["UPDATE_BRANCH"]; prs = json.load(open(sys.argv[1])); raise SystemExit(0 if any((pr.get("head") or {}).get("ref") == target for pr in prs) else 1)' "$response"
+          then
+            echo "Existing update PR found for ${UPDATE_BRANCH}; refreshing it."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing update PR for ${UPDATE_BRANCH}; push-triggered run will not discover a new update."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install runner prerequisites
+        if: steps.update_gate.outputs.should_run == 'true'
         run: |
           apt-get update
           apt-get install -y sudo xxd
 
       - uses: https://github.com/cachix/install-nix-action@v30
+        if: steps.update_gate.outputs.should_run == 'true'
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
       - name: Check and update ${{ matrix.package }}
+        if: steps.update_gate.outputs.should_run == 'true'
         id: update
         env:
           GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
