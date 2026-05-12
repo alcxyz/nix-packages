@@ -27,6 +27,17 @@ fi
 
 git config user.name "forgejo-actions"
 git config user.email "forgejo-actions@alc.xyz"
+
+git fetch origin "$BASE_BRANCH"
+base_commit="$(git rev-parse "origin/${BASE_BRANCH}")"
+head_commit="$(git rev-parse HEAD)"
+if [ "$head_commit" != "$base_commit" ]; then
+  echo "Refusing to create ${UPDATE_BRANCH} from stale base." >&2
+  echo "Expected HEAD to be origin/${BASE_BRANCH} (${base_commit}), got ${head_commit}." >&2
+  echo "The update workflow must check out origin/${BASE_BRANCH} before running the updater." >&2
+  exit 1
+fi
+
 git switch -C "$UPDATE_BRANCH"
 git add pkgs
 git commit -m "$COMMIT_MESSAGE"
