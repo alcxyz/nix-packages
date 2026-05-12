@@ -1,6 +1,9 @@
 name: Update packages
 
 on:
+  push:
+    branches:
+      - dev
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
