@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - dev
+  pull_request:
+    branches:
+      - dev
+    types:
+      - opened
+      - synchronize
+      - reopened
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
@@ -21,6 +28,7 @@ jobs:
       FORGEJO_OWNER: alcxyz
       FORGEJO_REPO: nix-packages
       BASE_BRANCH: dev
+      WAIT_FOR_STATUS_SECONDS: 1800
       REQUIRED_STATUS_CONTEXTS: |
         CI / Go tests (pull_request)
         CI / Build packages (pull_request)
