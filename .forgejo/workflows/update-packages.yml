@@ -9,6 +9,11 @@ jobs:
   update:
     name: Update ${{ matrix.package }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: package-update-${{ matrix.package }}
+      cancel-in-progress: false
+    env:
+      BASE_BRANCH: dev
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +74,12 @@ jobs:
         with:
           fetch-depth: 0
           github-server-url: https://git.alc.xyz
+          ref: dev
+
+      - name: Check out update base
+        run: |
+          git fetch origin "${BASE_BRANCH}"
+          git switch -C "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
 
       - name: Install runner prerequisites
         run: |
@@ -95,7 +106,6 @@ jobs:
           FORGEJO_URL: https://git.alc.xyz
           FORGEJO_OWNER: alcxyz
           FORGEJO_REPO: nix-packages
-          BASE_BRANCH: dev
           UPDATE_BRANCH: ${{ matrix.branch }}
           COMMIT_MESSAGE: "${{ matrix.title_prefix }} ${{ steps.update.outputs.version }}"
           PR_TITLE: "${{ matrix.title_prefix }} ${{ steps.update.outputs.version }}"
