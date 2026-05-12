@@ -16,6 +16,7 @@ jobs:
       BASE_BRANCH: dev
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - package: t3code
