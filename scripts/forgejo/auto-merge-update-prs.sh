@@ -8,6 +8,8 @@ set -euo pipefail
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
 : "${REQUIRED_STATUS_CONTEXTS:?REQUIRED_STATUS_CONTEXTS is required}"
 
+wait_for_status_seconds="${WAIT_FOR_STATUS_SECONDS:-0}"
+
 api_auth=(
   -H "Authorization: token ${FORGEJO_TOKEN}"
   -H "Accept: application/json"
@@ -53,28 +55,44 @@ jq -c --arg base "$BASE_BRANCH" '
     continue
   fi
 
-  status_json="$(curl -fsS "${api_auth[@]}" "${api_base}/commits/${head_sha}/status")"
-  state="$(jq -r '.state' <<< "$status_json")"
-  if [ "$state" != "success" ]; then
-    echo "  skip: combined status is ${state}"
-    continue
-  fi
+  deadline=$((SECONDS + wait_for_status_seconds))
+  while true; do
+    status_json="$(curl -fsS "${api_auth[@]}" "${api_base}/commits/${head_sha}/status")"
+    state="$(jq -r '.state' <<< "$status_json")"
 
-  missing_contexts=()
-  for context in "${required_contexts[@]}"; do
-    [ -n "$context" ] || continue
-    if ! jq -e --arg context "$context" \
-      '.statuses[] | select(.context == $context and .status == "success")' \
-      >/dev/null <<< "$status_json"; then
-      missing_contexts+=("$context")
+    missing_contexts=()
+    for context in "${required_contexts[@]}"; do
+      [ -n "$context" ] || continue
+      if ! jq -e --arg context "$context" \
+        '.statuses[] | select(.context == $context and .status == "success")' \
+        >/dev/null <<< "$status_json"; then
+        missing_contexts+=("$context")
+      fi
+    done
+
+    if [ "$state" = "success" ] && [ "${#missing_contexts[@]}" -eq 0 ]; then
+      break
     fi
-  done
 
-  if [ "${#missing_contexts[@]}" -gt 0 ]; then
-    echo "  skip: missing successful status contexts:"
-    printf '        %s\n' "${missing_contexts[@]}"
-    continue
-  fi
+    case "$state" in
+      failure|error)
+        echo "  skip: combined status is ${state}"
+        continue 2
+        ;;
+    esac
+
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "  skip: combined status is ${state}"
+      if [ "${#missing_contexts[@]}" -gt 0 ]; then
+        echo "        missing successful status contexts:"
+        printf '        %s\n' "${missing_contexts[@]}"
+      fi
+      continue 2
+    fi
+
+    echo "  wait: combined status is ${state}; checking again in 30s"
+    sleep 30
+  done
 
   jq -n \
     --arg title "Merge pull request '${title}' (#${number}) from ${head_ref} into ${BASE_BRANCH}" \
