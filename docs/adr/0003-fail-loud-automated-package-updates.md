@@ -43,6 +43,12 @@ CI must:
 - compare pull request heads against the target branch, and use a conservative promotion baseline when the runner does not expose a target branch variable
 - avoid stale references to deleted or retired packages
 
+Runner usage must:
+
+- cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once
+- avoid queueing stale auto-merge runs; a newer auto-merge event should replace an older waiting run
+- keep the scheduled auto-merge trigger as a low-frequency fallback because pull request events already cover the normal merge path
+
 The scheduled updater may retry on the next scheduled run from a clean checkout. It must not silently carry invalid generated state forward.
 
 ## Alternatives Considered
@@ -57,5 +63,6 @@ The scheduled updater may retry on the next scheduled run from a clean checkout.
 - Bad generated hashes fail earlier and more clearly.
 - Upstream package layout changes fail before a generated update PR is refreshed.
 - Update PR checks are more relevant because they include the changed package.
+- Package update automation trades some latency for lower runner pressure.
 - Darwin-only packages still need occasional real Darwin builds for full confidence.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
