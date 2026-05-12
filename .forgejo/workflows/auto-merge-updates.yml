@@ -1,0 +1,41 @@
+name: Auto merge package updates
+
+on:
+  push:
+    branches:
+      - dev
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  auto-merge:
+    name: Auto merge green package update PRs
+    runs-on: ubuntu-latest
+    concurrency:
+      group: package-update-auto-merge
+      cancel-in-progress: false
+    env:
+      FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+      FORGEJO_URL: https://git.alc.xyz
+      FORGEJO_OWNER: alcxyz
+      FORGEJO_REPO: nix-packages
+      BASE_BRANCH: dev
+      REQUIRED_STATUS_CONTEXTS: |
+        CI / Go tests (pull_request)
+        CI / Build packages (pull_request)
+
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 1
+          github-server-url: https://git.alc.xyz
+          ref: dev
+
+      - name: Install runner prerequisites
+        run: |
+          apt-get update
+          apt-get install -y jq
+
+      - name: Merge green package update PRs
+        run: scripts/forgejo/auto-merge-update-prs.sh
