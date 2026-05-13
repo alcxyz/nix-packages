@@ -85,18 +85,12 @@ jobs:
       - name: Decide update mode
         id: update_gate
         env:
-          EVENT_NAME: ${{ github.event_name }}
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
           FORGEJO_URL: https://git.alc.xyz
           FORGEJO_OWNER: alcxyz
           FORGEJO_REPO: nix-packages
           UPDATE_BRANCH: ${{ matrix.branch }}
         run: |
-          if [ "$EVENT_NAME" != "push" ]; then
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           api_auth="$(mktemp)"
           response="$(mktemp)"
           trap 'rm -f "$api_auth" "$response"' EXIT
@@ -111,11 +105,15 @@ jobs:
 
           if UPDATE_BRANCH="$UPDATE_BRANCH" python3 -c 'import json, os, sys; target = os.environ["UPDATE_BRANCH"]; prs = json.load(open(sys.argv[1])); raise SystemExit(0 if any((pr.get("head") or {}).get("ref") == target for pr in prs) else 1)' "$response"
           then
-            echo "Existing update PR found for ${UPDATE_BRANCH}; refreshing it."
+            echo "Existing update PR found for ${UPDATE_BRANCH}; refreshing that branch and PR if a newer upstream version exists."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "mode=refresh_existing_pr" >> "$GITHUB_OUTPUT"
+            echo "existing_update_pr=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No existing update PR for ${UPDATE_BRANCH}; push-triggered run will not discover a new update."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "No existing update PR for ${UPDATE_BRANCH}; checking upstream from ${BASE_BRANCH}."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "mode=discover_update" >> "$GITHUB_OUTPUT"
+            echo "existing_update_pr=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install runner prerequisites
@@ -152,4 +150,5 @@ jobs:
           BODY_NAME: ${{ matrix.body_name }}
           VERSION: ${{ steps.update.outputs.version }}
           UPSTREAM_URL: "${{ matrix.upstream }}${{ steps.update.outputs.version }}"
+          EXISTING_UPDATE_PR: ${{ steps.update_gate.outputs.existing_update_pr }}
         run: scripts/forgejo/upsert-update-pr.sh
