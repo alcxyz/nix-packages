@@ -13,6 +13,20 @@ set -euo pipefail
 : "${VERSION:?VERSION is required}"
 : "${UPSTREAM_URL:?UPSTREAM_URL is required}"
 
+if [ "$BASE_BRANCH" != "dev" ]; then
+  echo "Refusing to open or refresh package update PR against ${BASE_BRANCH}; expected dev." >&2
+  exit 1
+fi
+
+case "$UPDATE_BRANCH" in
+  update/*)
+    ;;
+  *)
+    echo "Refusing to open or refresh package update PR from ${UPDATE_BRANCH}; expected update/*." >&2
+    exit 1
+    ;;
+esac
+
 body=$(cat <<EOF
 Automated update of **${BODY_NAME}** to \`${VERSION}\`.
 
@@ -24,6 +38,8 @@ if git diff --quiet; then
   echo "No worktree changes remain after updater; skipping PR."
   exit 0
 fi
+
+existing_update_pr="${EXISTING_UPDATE_PR:-false}"
 
 git config user.name "forgejo-actions"
 git config user.email "forgejo-actions@alc.xyz"
@@ -40,7 +56,6 @@ fi
 
 git switch -C "$UPDATE_BRANCH"
 git add pkgs
-git commit -m "$COMMIT_MESSAGE"
 
 git remote set-url origin "${FORGEJO_URL}/${FORGEJO_OWNER}/${FORGEJO_REPO}.git"
 auth_header=$(printf '%s:%s' "$FORGEJO_OWNER" "$FORGEJO_TOKEN" | base64 -w0)
@@ -50,9 +65,14 @@ lease_args=()
 if remote_ref=$(git ls-remote --heads origin "$UPDATE_BRANCH" | awk '{print $1}'); then
   if [ -n "$remote_ref" ]; then
     lease_args=("--force-with-lease=refs/heads/${UPDATE_BRANCH}:${remote_ref}")
+    if [ "$existing_update_pr" = "true" ] && git diff --cached --quiet "$remote_ref" -- pkgs; then
+      echo "Existing update PR for ${UPDATE_BRANCH} already contains these package changes; skipping refresh."
+      exit 0
+    fi
   fi
 fi
 
+git commit -m "$COMMIT_MESSAGE"
 git push "${lease_args[@]}" origin "HEAD:refs/heads/${UPDATE_BRANCH}"
 
 api_auth=$(mktemp)
