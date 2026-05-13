@@ -8,6 +8,11 @@ set -euo pipefail
 : "${BASE_BRANCH:?BASE_BRANCH is required}"
 : "${REQUIRED_STATUS_CONTEXTS:?REQUIRED_STATUS_CONTEXTS is required}"
 
+if [ "$BASE_BRANCH" != "dev" ]; then
+  echo "Refusing to auto-merge package updates into ${BASE_BRANCH}; expected dev." >&2
+  exit 1
+fi
+
 wait_for_status_seconds="${WAIT_FOR_STATUS_SECONDS:-0}"
 
 api_auth=(

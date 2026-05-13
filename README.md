@@ -38,10 +38,15 @@ Packages are kept up to date by a daily Forgejo Actions workflow
 detected the workflow computes fresh Nix SRI hashes and opens a Forgejo pull
 request against `dev`.
 
+Each package uses one stable `update/<package>` branch. If an update PR is
+already open, the next updater run refreshes that same branch and PR so a newer
+upstream release supersedes the stuck update instead of creating more PR noise.
+
 The update matrix is capped at two concurrent package jobs to avoid flooding
 the shared runners. Green `update/*` pull requests are merged into `dev` by
 `.forgejo/workflows/auto-merge-updates.yml`; PR events trigger the normal path,
-with an hourly scheduled run as a fallback.
+with a nightly scheduled run as a fallback. Promotion from `dev` to `main` is
+manual.
 
 Updater scripts must fail before committing invalid generated state. Empty SRI
 hashes such as `hash = "sha256-";` are rejected by both the updater scripts and
