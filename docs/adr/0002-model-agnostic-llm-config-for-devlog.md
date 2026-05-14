@@ -12,7 +12,7 @@ The devlog tool hardcodes `claude-sonnet-4-6` in its `runClaude()` helper (`main
 cmd := exec.Command("claude", "-p", "--model", "claude-sonnet-4-6")
 ```
 
-Both daily and weekly generation flow through this single call site. If Claude is unavailable (API outage, rate limit, session expiry), the systemd timers fail silently and no devlog entry is produced.
+Both daily and weekly generation flow through this single call site. If Claude is unavailable (API outage, rate limit, session expiry), the systemd timers can fail before a devlog entry is produced.
 
 paperless-tools solved the same problem with [ADR-009](../../../src/tools/paperless-tools/docs/adr/ADR-009-model-agnostic-llm-config.md), introducing a role-based config at `$XDG_CONFIG_HOME/paperweight/config.toml` with provider, model, and optional backup per role. That approach keeps config scoped to the tool, simple, and independent of other tools.
 
@@ -75,3 +75,7 @@ If no config file exists, devlog behaves exactly as today: Anthropic CLI, model 
 - Adding a backup provider requires only a config file, no code changes.
 - Config is user-specific (XDG), not repo-specific — different hosts can have different provider setups, which matters for headless systemd-timer hosts that may prefer API keys over CLI sessions.
 - Other tools (leantime-tidy, future nix-packages tools) follow the same pattern independently with their own XDG config, tracked by their own ADRs.
+
+## Follow-up
+
+`devlog catch-up` now covers host or timer outages by scanning a recent date window for missing daily entries and generating only the holes. When it creates daily entries for a completed week, it refreshes that weekly summary so late backfills are reflected in the aggregate view.
