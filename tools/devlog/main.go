@@ -16,7 +16,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: devlog <daily|weekly> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: devlog <daily|weekly|catch-up> [flags]")
 		os.Exit(1)
 	}
 
@@ -25,8 +25,10 @@ func main() {
 		os.Exit(runDaily(os.Args[2:]))
 	case "weekly":
 		os.Exit(runWeekly(os.Args[2:]))
+	case "catch-up":
+		os.Exit(runCatchUp(os.Args[2:]))
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\nusage: devlog <daily|weekly> [flags]\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command: %s\nusage: devlog <daily|weekly|catch-up> [flags]\n", os.Args[1])
 		os.Exit(1)
 	}
 }
@@ -45,31 +47,49 @@ func runDaily(args []string) int {
 		fmt.Fprintf(os.Stderr, "invalid date: %s\n", *dateStr)
 		return 1
 	}
-	ds := date.Format("2006-01-02")
 
-	outfile := filepath.Join(*repoPath, "devlog", ds+".md")
+	generated, err := generateDaily(*repoPath, date, *ghUser)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if !generated {
+		return 0
+	}
+
+	ds := date.Format("2006-01-02")
+	if err := gitCommitAndPush(*repoPath, filepath.Join("devlog", ds+".md"), "devlog: "+ds); err != nil {
+		fmt.Fprintf(os.Stderr, "error committing: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Done: %s\n", filepath.Join(*repoPath, "devlog", ds+".md"))
+	return 0
+}
+
+func generateDaily(repoPath string, date time.Time, ghUser string) (bool, error) {
+	ds := date.Format("2006-01-02")
+	outfile := filepath.Join(repoPath, "devlog", ds+".md")
 	if fileExists(outfile) {
 		fmt.Printf("Devlog for %s already exists: %s\n", ds, outfile)
-		return 0
+		return false, nil
 	}
 
 	fmt.Printf("Generating devlog for %s...\n", ds)
 
-	commits, err := fetchCommitData(*ghUser, ds)
+	commits, err := fetchCommitData(ghUser, ds)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error fetching commits: %v\n", err)
-		return 1
+		return false, fmt.Errorf("error fetching commits for %s: %w", ds, err)
 	}
 
-	prs, _ := fetchSearchItems(*ghUser, ds, "pr")
-	issues, _ := fetchSearchItems(*ghUser, ds, "issue")
+	prs, _ := fetchSearchItems(ghUser, ds, "pr")
+	issues, _ := fetchSearchItems(ghUser, ds, "issue")
 
 	if commits == "" && prs == "" && issues == "" {
 		mustMkdir(filepath.Dir(outfile))
 		content := fmt.Sprintf("---\ndate: %s\n---\n# Devlog — %s\n\nNo activity.\n", ds, ds)
 		if err := os.WriteFile(outfile, []byte(content), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "error writing file: %v\n", err)
-			return 1
+			return false, fmt.Errorf("error writing file: %w", err)
 		}
 		fmt.Printf("No activity for %s.\n", ds)
 	} else {
@@ -79,18 +99,11 @@ func runDaily(args []string) int {
 		prompt := buildDailyPrompt(ds, diffs, prs, issues)
 		mustMkdir(filepath.Dir(outfile))
 		if err := runLLM(prompt, outfile); err != nil {
-			fmt.Fprintf(os.Stderr, "error running LLM: %v\n", err)
-			return 1
+			return false, fmt.Errorf("error running LLM for %s: %w", ds, err)
 		}
 	}
 
-	if err := gitCommitAndPush(*repoPath, filepath.Join("devlog", ds+".md"), "devlog: "+ds); err != nil {
-		fmt.Fprintf(os.Stderr, "error committing: %v\n", err)
-		return 1
-	}
-
-	fmt.Printf("Done: %s\n", outfile)
-	return 0
+	return true, nil
 }
 
 func fetchCommitData(user, date string) (string, error) {
@@ -194,12 +207,102 @@ ISSUES:
 %s`, date, date, diffs, prs, issues)
 }
 
+// --- catch-up ---
+
+func runCatchUp(args []string) int {
+	fs := flag.NewFlagSet("catch-up", flag.ExitOnError)
+	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
+	endStr := fs.String("end", yesterday(), "Last date to consider (YYYY-MM-DD)")
+	startStr := fs.String("start", "", "First date to consider (YYYY-MM-DD). Defaults to -days before end")
+	days := fs.Int("days", 30, "Number of recent days to scan when -start is not set")
+	ghUser := fs.String("user", "alcxyz", "GitHub username for activity lookup")
+	refreshWeekly := fs.Bool("weekly", true, "Refresh complete weekly summaries affected by newly generated daily entries")
+	fs.Parse(args)
+
+	end, err := time.Parse("2006-01-02", *endStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid end date: %s\n", *endStr)
+		return 1
+	}
+
+	var start time.Time
+	if *startStr != "" {
+		start, err = time.Parse("2006-01-02", *startStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid start date: %s\n", *startStr)
+			return 1
+		}
+	} else {
+		if *days < 1 {
+			fmt.Fprintln(os.Stderr, "-days must be at least 1")
+			return 1
+		}
+		start = end.AddDate(0, 0, -*days+1)
+	}
+	if start.After(end) {
+		fmt.Fprintf(os.Stderr, "start date %s is after end date %s\n", start.Format("2006-01-02"), end.Format("2006-01-02"))
+		return 1
+	}
+
+	fmt.Printf("Catching up devlog from %s to %s...\n", start.Format("2006-01-02"), end.Format("2006-01-02"))
+
+	var changed []string
+	affectedWeeks := make(map[string]time.Time)
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		generated, err := generateDaily(*repoPath, d, *ghUser)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if generated {
+			ds := d.Format("2006-01-02")
+			changed = append(changed, filepath.Join("devlog", ds+".md"))
+			monday := weekday(d, time.Monday)
+			weekStr := isoWeekString(monday)
+			affectedWeeks[weekStr] = monday
+		}
+	}
+
+	if *refreshWeekly {
+		today, _ := time.Parse("2006-01-02", time.Now().Format("2006-01-02"))
+		for weekStr, monday := range affectedWeeks {
+			sunday := monday.AddDate(0, 0, 6)
+			if !sunday.Before(today) {
+				fmt.Printf("Skipping weekly %s; week is not complete yet\n", weekStr)
+				continue
+			}
+			generated, err := generateWeekly(*repoPath, monday, false, "", "", true)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			if generated {
+				changed = append(changed, filepath.Join("weekly", weekStr+".md"))
+			}
+		}
+	}
+
+	if len(changed) == 0 {
+		fmt.Println("No missing devlogs found.")
+		return 0
+	}
+
+	if err := gitCommitAndPushMany(*repoPath, changed, fmt.Sprintf("devlog catch-up: %s to %s", start.Format("2006-01-02"), end.Format("2006-01-02"))); err != nil {
+		fmt.Fprintf(os.Stderr, "error committing: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Done: filled %d devlog artifact(s)\n", len(changed))
+	return 0
+}
+
 // --- weekly ---
 
 func runWeekly(args []string) int {
 	fs := flag.NewFlagSet("weekly", flag.ExitOnError)
 	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
 	dateStr := fs.String("date", sevenDaysAgo(), "Any date in the target week (YYYY-MM-DD)")
+	force := fs.Bool("force", false, "Regenerate weekly devlog even if it already exists")
 	hedgedocPost := fs.Bool("hedgedoc", envBool("HEDGEDOC_POST"), "Post to HedgeDoc")
 	hedgedocBin := fs.String("hedgedoc-bin", envOr("HEDGEDOC_BIN", "/home/alc/src/infra/gitops/tools/hedgedoc/hedgedoc"), "Path to hedgedoc binary")
 	hedgedocSecrets := fs.String("hedgedoc-secrets", os.Getenv("HEDGEDOC_SECRETS_FILE"), "Path to sops-encrypted HedgeDoc secrets.env")
@@ -211,21 +314,38 @@ func runWeekly(args []string) int {
 		return 1
 	}
 
-	monday := weekday(refDate, time.Monday)
+	generated, err := generateWeekly(*repoPath, weekday(refDate, time.Monday), *hedgedocPost, *hedgedocBin, *hedgedocSecrets, *force)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if !generated {
+		return 0
+	}
+
+	weekStr := isoWeekString(weekday(refDate, time.Monday))
+	if err := gitCommitAndPush(*repoPath, filepath.Join("weekly", weekStr+".md"), "weekly: "+weekStr); err != nil {
+		fmt.Fprintf(os.Stderr, "error committing: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Done: %s\n", filepath.Join(*repoPath, "weekly", weekStr+".md"))
+	return 0
+}
+
+func generateWeekly(repoPath string, monday time.Time, hedgedocPost bool, hedgedocBin, hedgedocSecrets string, force bool) (bool, error) {
 	friday := monday.AddDate(0, 0, 4)
 	sunday := monday.AddDate(0, 0, 6)
-	_, week := monday.ISOWeek()
-	year, _ := monday.ISOWeek()
-	weekStr := fmt.Sprintf("%d-W%02d", year, week)
+	weekStr := isoWeekString(monday)
 
 	monStr := monday.Format("2006-01-02")
 	friStr := friday.Format("2006-01-02")
 	sunStr := sunday.Format("2006-01-02")
 
-	outfile := filepath.Join(*repoPath, "weekly", weekStr+".md")
-	if fileExists(outfile) {
+	outfile := filepath.Join(repoPath, "weekly", weekStr+".md")
+	if fileExists(outfile) && !force {
 		fmt.Printf("Weekly devlog for %s already exists: %s\n", weekStr, outfile)
-		return 0
+		return false, nil
 	}
 
 	fmt.Printf("Generating weekly devlog for %s (%s to %s)...\n", weekStr, monStr, sunStr)
@@ -236,7 +356,7 @@ func runWeekly(args []string) int {
 
 	for d := monday; !d.After(sunday); d = d.AddDate(0, 0, 1) {
 		ds := d.Format("2006-01-02")
-		daily := filepath.Join(*repoPath, "devlog", ds+".md")
+		daily := filepath.Join(repoPath, "devlog", ds+".md")
 		data, err := os.ReadFile(daily)
 		if err != nil {
 			fmt.Printf("  No entry for %s, skipping\n", ds)
@@ -257,7 +377,7 @@ func runWeekly(args []string) int {
 
 	if weekdayEntries.Len() == 0 && weekendEntries.Len() == 0 {
 		fmt.Printf("No daily devlogs found for %s\n", weekStr)
-		return 0
+		return false, nil
 	}
 
 	mustMkdir(filepath.Dir(outfile))
@@ -266,8 +386,7 @@ func runWeekly(args []string) int {
 		content := fmt.Sprintf("---\ndate: %s\nweek: %s\ntags: alcxyz, devlog, weekly\n---\n# Week %s — %s to %s\n\nNo activity.\n",
 			monStr, weekStr, weekStr, monStr, sunStr)
 		if err := os.WriteFile(outfile, []byte(content), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "error writing file: %v\n", err)
-			return 1
+			return false, fmt.Errorf("error writing file: %w", err)
 		}
 		fmt.Printf("No activity for %s.\n", weekStr)
 	} else {
@@ -277,15 +396,13 @@ func runWeekly(args []string) int {
 		}
 		prompt := buildWeeklyPrompt(monStr, friStr, sunStr, weekStr, weekdayEntries.String(), weStr)
 		if err := runLLM(prompt, outfile); err != nil {
-			fmt.Fprintf(os.Stderr, "error running LLM: %v\n", err)
-			return 1
+			return false, fmt.Errorf("error running LLM for %s: %w", weekStr, err)
 		}
 
 		// Append raw daily entries below the summary
 		summary, err := os.ReadFile(outfile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading summary: %v\n", err)
-			return 1
+			return false, fmt.Errorf("error reading summary: %w", err)
 		}
 
 		var stitched strings.Builder
@@ -294,7 +411,7 @@ func runWeekly(args []string) int {
 
 		for d := monday; !d.After(sunday); d = d.AddDate(0, 0, 1) {
 			ds := d.Format("2006-01-02")
-			daily := filepath.Join(*repoPath, "devlog", ds+".md")
+			daily := filepath.Join(repoPath, "devlog", ds+".md")
 			data, err := os.ReadFile(daily)
 			if err != nil {
 				continue
@@ -305,25 +422,18 @@ func runWeekly(args []string) int {
 		}
 
 		if err := os.WriteFile(outfile, []byte(stitched.String()), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "error writing stitched file: %v\n", err)
-			return 1
+			return false, fmt.Errorf("error writing stitched file: %w", err)
 		}
 	}
 
 	// Post to HedgeDoc
-	if *hedgedocPost {
-		if err := postToHedgeDoc(outfile, *hedgedocBin, *hedgedocSecrets); err != nil {
+	if hedgedocPost {
+		if err := postToHedgeDoc(outfile, hedgedocBin, hedgedocSecrets); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: HedgeDoc posting failed: %v\n", err)
 		}
 	}
 
-	if err := gitCommitAndPush(*repoPath, filepath.Join("weekly", weekStr+".md"), "weekly: "+weekStr); err != nil {
-		fmt.Fprintf(os.Stderr, "error committing: %v\n", err)
-		return 1
-	}
-
-	fmt.Printf("Done: %s\n", outfile)
-	return 0
+	return true, nil
 }
 
 func buildWeeklyPrompt(monday, friday, sunday, week, weekdayEntries, weekendEntries string) string {
@@ -632,6 +742,10 @@ func callOpenAICLI(model, prompt string) ([]byte, error) {
 }
 
 func gitCommitAndPush(repoPath, relPath, message string) error {
+	return gitCommitAndPushMany(repoPath, []string{relPath}, message)
+}
+
+func gitCommitAndPushMany(repoPath string, relPaths []string, message string) error {
 	git := func(args ...string) error {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repoPath
@@ -640,8 +754,17 @@ func gitCommitAndPush(repoPath, relPath, message string) error {
 		return cmd.Run()
 	}
 
-	if err := git("add", relPath); err != nil {
+	addArgs := append([]string{"add", "--"}, relPaths...)
+	if err := git(addArgs...); err != nil {
 		return fmt.Errorf("git add: %w", err)
+	}
+	diff := exec.Command("git", "diff", "--cached", "--quiet")
+	diff.Dir = repoPath
+	if err := diff.Run(); err == nil {
+		fmt.Println("No git changes to commit.")
+		return nil
+	} else if _, ok := err.(*exec.ExitError); !ok {
+		return fmt.Errorf("git diff --cached: %w", err)
 	}
 	if err := git("commit", "-m", message); err != nil {
 		return fmt.Errorf("git commit: %w", err)
@@ -676,6 +799,15 @@ func defaultRepoPath() string {
 
 func sevenDaysAgo() string {
 	return time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+}
+
+func yesterday() string {
+	return time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+}
+
+func isoWeekString(date time.Time) string {
+	year, week := date.ISOWeek()
+	return fmt.Sprintf("%d-W%02d", year, week)
 }
 
 func fileExists(path string) bool {
