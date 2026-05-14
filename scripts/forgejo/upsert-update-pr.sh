@@ -66,8 +66,12 @@ if remote_ref=$(git ls-remote --heads origin "$UPDATE_BRANCH" | awk '{print $1}'
   if [ -n "$remote_ref" ]; then
     lease_args=("--force-with-lease=refs/heads/${UPDATE_BRANCH}:${remote_ref}")
     if [ "$existing_update_pr" = "true" ] && git diff --cached --quiet "$remote_ref" -- pkgs; then
-      echo "Existing update PR for ${UPDATE_BRANCH} already contains these package changes; skipping refresh."
-      exit 0
+      if git merge-base --is-ancestor "origin/${BASE_BRANCH}" "$remote_ref"; then
+        echo "Existing update PR for ${UPDATE_BRANCH} already contains these package changes and is based on current ${BASE_BRANCH}; skipping refresh."
+        exit 0
+      fi
+
+      echo "Existing update PR for ${UPDATE_BRANCH} already contains these package changes, but is not based on current ${BASE_BRANCH}; refreshing branch."
     fi
   fi
 fi
