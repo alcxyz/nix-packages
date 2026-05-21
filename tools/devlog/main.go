@@ -38,7 +38,7 @@ func main() {
 func runDaily(args []string) int {
 	fs := flag.NewFlagSet("daily", flag.ExitOnError)
 	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
-	dateStr := fs.String("date", time.Now().Format("2006-01-02"), "Date to generate devlog for (YYYY-MM-DD)")
+	dateStr := fs.String("date", lastCompleteDevlogDate().Format("2006-01-02"), "Devlog date to generate (YYYY-MM-DD). Covers 05:00 that day through 04:59 the next day.")
 	ghUser := fs.String("user", "alcxyz", "GitHub username for activity lookup")
 	fs.Parse(args)
 
@@ -69,25 +69,27 @@ func runDaily(args []string) int {
 
 func generateDaily(repoPath string, date time.Time, ghUser string) (bool, error) {
 	ds := date.Format("2006-01-02")
+	start, end := devlogWindow(date)
+	window := formatWindow(start, end)
 	outfile := filepath.Join(repoPath, "devlog", ds+".md")
 	if fileExists(outfile) {
 		fmt.Printf("Devlog for %s already exists: %s\n", ds, outfile)
 		return false, nil
 	}
 
-	fmt.Printf("Generating devlog for %s...\n", ds)
+	fmt.Printf("Generating devlog for %s (%s)...\n", ds, window)
 
-	commits, err := fetchCommitData(ghUser, ds)
+	commits, err := fetchCommitData(ghUser, date)
 	if err != nil {
 		return false, fmt.Errorf("error fetching commits for %s: %w", ds, err)
 	}
 
-	prs, _ := fetchSearchItems(ghUser, ds, "pr")
-	issues, _ := fetchSearchItems(ghUser, ds, "issue")
+	prs, _ := fetchSearchItems(ghUser, date, "pr")
+	issues, _ := fetchSearchItems(ghUser, date, "issue")
 
 	if commits == "" && prs == "" && issues == "" {
 		mustMkdir(filepath.Dir(outfile))
-		content := fmt.Sprintf("---\ndate: %s\n---\n# Devlog — %s\n\nNo activity.\n", ds, ds)
+		content := fmt.Sprintf("---\ndate: %s\nwindow: %s\n---\n# Devlog — %s\n\nNo activity.\n", ds, window, ds)
 		if err := os.WriteFile(outfile, []byte(content), 0644); err != nil {
 			return false, fmt.Errorf("error writing file: %w", err)
 		}
@@ -96,7 +98,7 @@ func generateDaily(repoPath string, date time.Time, ghUser string) (bool, error)
 		fmt.Println("Fetching diffs...")
 		diffs := fetchDiffs(commits)
 
-		prompt := buildDailyPrompt(ds, diffs, prs, issues)
+		prompt := buildDailyPrompt(ds, window, diffs, prs, issues)
 		mustMkdir(filepath.Dir(outfile))
 		if err := runLLM(prompt, outfile); err != nil {
 			return false, fmt.Errorf("error running LLM for %s: %w", ds, err)
@@ -106,24 +108,73 @@ func generateDaily(repoPath string, date time.Time, ghUser string) (bool, error)
 	return true, nil
 }
 
-func fetchCommitData(user, date string) (string, error) {
-	query := fmt.Sprintf("author:%s+committer-date:%s", user, date)
-	jq := `.items[] | "\(.repository.full_name) \(.sha) \(.commit.message | split("\n") | first)"`
-	out, err := run("gh", "api", fmt.Sprintf("search/commits?q=%s&per_page=100", query), "--jq", jq)
+func fetchCommitData(user string, date time.Time) (string, error) {
+	start, end := devlogWindow(date)
+	query := fmt.Sprintf("author:%s+committer-date:%s..%s", user, start.Format("2006-01-02"), end.Format("2006-01-02"))
+	out, err := run("gh", "api", fmt.Sprintf("search/commits?q=%s&per_page=100", query))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out), nil
+
+	var result struct {
+		Items []struct {
+			SHA        string `json:"sha"`
+			Repository struct {
+				FullName string `json:"full_name"`
+			} `json:"repository"`
+			Commit struct {
+				Message   string `json:"message"`
+				Committer struct {
+					Date time.Time `json:"date"`
+				} `json:"committer"`
+			} `json:"commit"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return "", err
+	}
+
+	var lines []string
+	for _, item := range result.Items {
+		if !inDevlogWindow(item.Commit.Committer.Date, start, end) {
+			continue
+		}
+		msg := strings.Split(item.Commit.Message, "\n")[0]
+		lines = append(lines, fmt.Sprintf("%s %s %s", item.Repository.FullName, item.SHA, msg))
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
-func fetchSearchItems(user, date, itemType string) (string, error) {
-	query := fmt.Sprintf("author:%s+type:%s+updated:%s", user, itemType, date)
-	jq := `.items[] | "- [\(.repository_url | split("/") | last)] #\(.number) \(.title) (\(.state))"`
-	out, err := run("gh", "api", fmt.Sprintf("search/issues?q=%s&per_page=100", query), "--jq", jq)
+func fetchSearchItems(user string, date time.Time, itemType string) (string, error) {
+	start, end := devlogWindow(date)
+	query := fmt.Sprintf("author:%s+type:%s+updated:%s..%s", user, itemType, start.Format("2006-01-02"), end.Format("2006-01-02"))
+	out, err := run("gh", "api", fmt.Sprintf("search/issues?q=%s&per_page=100", query))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(out), nil
+
+	var result struct {
+		Items []struct {
+			Number        int       `json:"number"`
+			Title         string    `json:"title"`
+			State         string    `json:"state"`
+			RepositoryURL string    `json:"repository_url"`
+			UpdatedAt     time.Time `json:"updated_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return "", err
+	}
+
+	var lines []string
+	for _, item := range result.Items {
+		if !inDevlogWindow(item.UpdatedAt, start, end) {
+			continue
+		}
+		repo := item.RepositoryURL[strings.LastIndex(item.RepositoryURL, "/")+1:]
+		lines = append(lines, fmt.Sprintf("- [%s] #%d %s (%s)", repo, item.Number, item.Title, item.State))
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 func fetchDiffs(commitData string) string {
@@ -156,7 +207,7 @@ func fetchDiffs(commitData string) string {
 	return diffs.String()
 }
 
-func buildDailyPrompt(date, diffs, prs, issues string) string {
+func buildDailyPrompt(date, window, diffs, prs, issues string) string {
 	if prs == "" {
 		prs = "None"
 	}
@@ -171,6 +222,7 @@ Output ONLY the raw markdown — no code fences, no commentary, no preamble.
 Format:
 ---
 date: %s
+window: %s
 ---
 # Devlog — %s
 
@@ -192,6 +244,7 @@ date: %s
 
 Rules:
 - Output starts with --- (the frontmatter delimiter), nothing before it
+- The devlog date covers the local time window %s
 - Analyze the diffs to understand what actually changed, don't just parrot commit messages
 - Merge related commits into a single description when they're part of the same logical change
 - Be specific about what code/features were added or modified
@@ -204,7 +257,7 @@ PULL REQUESTS:
 %s
 
 ISSUES:
-%s`, date, date, diffs, prs, issues)
+%s`, date, window, date, window, diffs, prs, issues)
 }
 
 // --- catch-up ---
@@ -212,7 +265,7 @@ ISSUES:
 func runCatchUp(args []string) int {
 	fs := flag.NewFlagSet("catch-up", flag.ExitOnError)
 	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
-	endStr := fs.String("end", yesterday(), "Last date to consider (YYYY-MM-DD)")
+	endStr := fs.String("end", lastCompleteDevlogDate().Format("2006-01-02"), "Last devlog date to consider (YYYY-MM-DD). Dates cover 05:00 through 04:59 the next day.")
 	startStr := fs.String("start", "", "First date to consider (YYYY-MM-DD). Defaults to -days before end")
 	days := fs.Int("days", 30, "Number of recent days to scan when -start is not set")
 	ghUser := fs.String("user", "alcxyz", "GitHub username for activity lookup")
@@ -801,8 +854,27 @@ func sevenDaysAgo() string {
 	return time.Now().AddDate(0, 0, -7).Format("2006-01-02")
 }
 
-func yesterday() string {
-	return time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+func lastCompleteDevlogDate() time.Time {
+	return dateOnly(time.Now().Add(-5*time.Hour)).AddDate(0, 0, -1)
+}
+
+func devlogWindow(date time.Time) (time.Time, time.Time) {
+	start := time.Date(date.Year(), date.Month(), date.Day(), 5, 0, 0, 0, time.Local)
+	return start, start.Add(24 * time.Hour)
+}
+
+func inDevlogWindow(t, start, end time.Time) bool {
+	local := t.In(time.Local)
+	return !local.Before(start) && local.Before(end)
+}
+
+func formatWindow(start, end time.Time) string {
+	return fmt.Sprintf("%s to %s", start.Format("2006-01-02 15:04 MST"), end.Add(-time.Minute).Format("2006-01-02 15:04 MST"))
+}
+
+func dateOnly(t time.Time) time.Time {
+	local := t.In(time.Local)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
 }
 
 func isoWeekString(date time.Time) string {
