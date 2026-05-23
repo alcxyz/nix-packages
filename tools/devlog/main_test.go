@@ -14,12 +14,12 @@ func TestWeekday(t *testing.T) {
 		target   time.Weekday
 		expected string
 	}{
-		{"2026-04-25", time.Monday, "2026-04-20"},    // Friday → Monday
-		{"2026-04-20", time.Monday, "2026-04-20"},    // Monday → Monday (same day)
-		{"2026-04-26", time.Monday, "2026-04-20"},    // Saturday → Monday
-		{"2026-04-27", time.Monday, "2026-04-27"},    // Sunday → Monday (Go: Sunday=0, so wraps to current week's Monday)
-		{"2026-04-22", time.Monday, "2026-04-20"},    // Wednesday → Monday
-		{"2026-01-01", time.Monday, "2025-12-29"},    // Year boundary
+		{"2026-04-25", time.Monday, "2026-04-20"}, // Friday → Monday
+		{"2026-04-20", time.Monday, "2026-04-20"}, // Monday → Monday (same day)
+		{"2026-04-26", time.Monday, "2026-04-20"}, // Saturday → Monday
+		{"2026-04-27", time.Monday, "2026-04-27"}, // Sunday → Monday (Go: Sunday=0, so wraps to current week's Monday)
+		{"2026-04-22", time.Monday, "2026-04-20"}, // Wednesday → Monday
+		{"2026-01-01", time.Monday, "2025-12-29"}, // Year boundary
 	}
 
 	for _, tt := range tests {
@@ -131,11 +131,15 @@ func containsStr(s, substr string) bool {
 }
 
 func TestBuildDailyPrompt(t *testing.T) {
-	prompt := buildDailyPrompt("2026-04-25", "some diffs", "- [repo] #1 PR title (open)", "")
+	window := "2026-04-25 05:00 TEST to 2026-04-26 04:59 TEST"
+	prompt := buildDailyPrompt("2026-04-25", window, "some diffs", "- [repo] #1 PR title (open)", "")
 
 	// Should contain date in frontmatter instruction
 	if !containsStr(prompt, "date: 2026-04-25") {
 		t.Error("prompt missing date in frontmatter")
+	}
+	if !containsStr(prompt, "window: "+window) {
+		t.Error("prompt missing window in frontmatter")
 	}
 	// Should contain diffs
 	if !containsStr(prompt, "some diffs") {
@@ -148,6 +152,39 @@ func TestBuildDailyPrompt(t *testing.T) {
 	// Empty issues should become "None"
 	if !containsStr(prompt, "ISSUES:\nNone") {
 		t.Error("prompt should show 'None' for empty issues")
+	}
+}
+
+func TestDevlogWindow(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.FixedZone("TEST", 2*60*60)
+	t.Cleanup(func() { time.Local = originalLocal })
+
+	date, _ := time.Parse("2006-01-02", "2026-04-25")
+	start, end := devlogWindow(date)
+
+	if got := formatWindow(start, end); got != "2026-04-25 05:00 TEST to 2026-04-26 04:59 TEST" {
+		t.Fatalf("formatWindow() = %q", got)
+	}
+
+	tests := []struct {
+		name string
+		ts   time.Time
+		want bool
+	}{
+		{"before window", time.Date(2026, 4, 25, 4, 59, 59, 0, time.Local), false},
+		{"at start", time.Date(2026, 4, 25, 5, 0, 0, 0, time.Local), true},
+		{"before end", time.Date(2026, 4, 26, 4, 59, 59, 0, time.Local), true},
+		{"at end", time.Date(2026, 4, 26, 5, 0, 0, 0, time.Local), false},
+		{"utc inside", time.Date(2026, 4, 26, 2, 30, 0, 0, time.UTC), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := inDevlogWindow(tt.ts, start, end); got != tt.want {
+				t.Errorf("inDevlogWindow(%s) = %v, want %v", tt.ts, got, tt.want)
+			}
+		})
 	}
 }
 

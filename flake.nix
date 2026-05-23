@@ -36,6 +36,10 @@
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
           nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
+          xonsh-direnv = pkgs.callPackage ./pkgs/xonsh-direnv { };
+          xonsh-with-direnv = pkgs.callPackage ./pkgs/xonsh-with-direnv {
+            inherit (allPackages) xonsh-direnv;
+          };
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
