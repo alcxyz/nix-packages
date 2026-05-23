@@ -37,8 +37,8 @@ jq -c --arg base "$BASE_BRANCH" '
   .[]
   | select(.base.ref == $base)
   | select(.head.ref | startswith("update/"))
-' "$pulls_json" | while IFS= read -r pr; do
-  number="$(jq -r '.number // .index' <<< "$pr")"
+' "$pulls_json" | jq -r '.number // .index' | while IFS= read -r number; do
+  pr="$(curl -fsS "${api_auth[@]}" "${api_base}/pulls/${number}")"
   title="$(jq -r '.title' <<< "$pr")"
   head_ref="$(jq -r '.head.ref' <<< "$pr")"
   head_sha="$(jq -r '.head.sha' <<< "$pr")"
@@ -54,10 +54,45 @@ jq -c --arg base "$BASE_BRANCH" '
   fi
 
   if [ "$merge_base" != "$base_sha" ]; then
-    echo "  skip: PR is not based on current ${BASE_BRANCH}"
+    echo "  rebase: PR is not based on current ${BASE_BRANCH}"
     echo "        merge base: ${merge_base}"
     echo "        base head:  ${base_sha}"
-    continue
+    update_status="$(curl -sS -o "$response" -w '%{http_code}' "${api_auth[@]}" \
+      -X POST \
+      "${api_base}/pulls/${number}/update?style=rebase")"
+
+    case "$update_status" in
+      200|201|204)
+        echo "  rebased; refetching PR and waiting for refreshed pull_request checks"
+        pr="$(curl -fsS "${api_auth[@]}" "${api_base}/pulls/${number}")"
+        head_sha="$(jq -r '.head.sha' <<< "$pr")"
+        base_sha="$(jq -r '.base.sha' <<< "$pr")"
+        merge_base="$(jq -r '.merge_base // ""' <<< "$pr")"
+        mergeable="$(jq -r '.mergeable' <<< "$pr")"
+
+        if [ "$mergeable" != "true" ]; then
+          echo "  skip: PR is not currently mergeable after rebase"
+          continue
+        fi
+
+        if [ "$merge_base" != "$base_sha" ]; then
+          echo "  skip: PR is still not based on current ${BASE_BRANCH} after rebase"
+          echo "        merge base: ${merge_base}"
+          echo "        base head:  ${base_sha}"
+          continue
+        fi
+        ;;
+      409)
+        echo "  skip: rebase update reported a conflict"
+        cat "$response"
+        continue
+        ;;
+      *)
+        echo "  rebase update failed: HTTP ${update_status}" >&2
+        cat "$response" >&2
+        exit 1
+        ;;
+    esac
   fi
 
   deadline=$((SECONDS + wait_for_status_seconds))
@@ -66,45 +101,55 @@ jq -c --arg base "$BASE_BRANCH" '
     state="$(jq -r '.state' <<< "$status_json")"
 
     missing_contexts=()
+    failed_contexts=()
     for context in "${required_contexts[@]}"; do
       [ -n "$context" ] || continue
-      if ! jq -e --arg context "$context" \
-        '.statuses[] | select(.context == $context and .status == "success")' \
-        >/dev/null <<< "$status_json"; then
-        missing_contexts+=("$context")
-      fi
+      context_status="$(jq -r --arg context "$context" '
+        [.statuses[] | select(.context == $context)] | sort_by(.updated_at) | last.status // "missing"
+      ' <<< "$status_json")"
+
+      case "$context_status" in
+        success)
+          ;;
+        failure|error)
+          failed_contexts+=("${context}: ${context_status}")
+          ;;
+        *)
+          missing_contexts+=("${context}: ${context_status}")
+          ;;
+      esac
     done
 
-    if [ "$state" = "success" ] && [ "${#missing_contexts[@]}" -eq 0 ]; then
-      break
-    fi
-
-    case "$state" in
-      failure|error)
-        echo "  skip: combined status is ${state}"
-        continue 2
-        ;;
-    esac
-
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "  skip: combined status is ${state}"
-      if [ "${#missing_contexts[@]}" -gt 0 ]; then
-        echo "        missing successful status contexts:"
-        printf '        %s\n' "${missing_contexts[@]}"
-      fi
+    if [ "${#failed_contexts[@]}" -gt 0 ]; then
+      echo "  skip: required status context failed"
+      printf '        %s\n' "${failed_contexts[@]}"
       continue 2
     fi
 
-    echo "  wait: combined status is ${state}; checking again in 30s"
+    if [ "${#missing_contexts[@]}" -eq 0 ]; then
+      break
+    fi
+
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "  skip: required status contexts are not successful"
+      echo "        combined status: ${state}"
+      printf '        %s\n' "${missing_contexts[@]}"
+      continue 2
+    fi
+
+    echo "  wait: required status contexts are not successful; combined status is ${state}; checking again in 30s"
     sleep 30
   done
 
   jq -n \
-    --arg title "Merge pull request '${title}' (#${number}) from ${head_ref} into ${BASE_BRANCH}" \
+    --arg title "${title} (#${number})" \
+    --arg message "" \
+    --arg head_sha "$head_sha" \
     '{
-      Do: "merge",
+      Do: "squash",
       MergeTitleField: $title,
-      MergeMessageField: "",
+      MergeMessageField: $message,
+      head_commit_id: $head_sha,
       delete_branch_after_merge: true
     }' > "$merge_payload"
 

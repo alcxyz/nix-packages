@@ -59,6 +59,11 @@ jobs:
             title_prefix: "chore(claude-code): update to"
             body_name: claude-code
             upstream: "https://www.npmjs.com/package/@anthropic-ai/claude-code/v/"
+          - package: codex-cli
+            branch: update/codex-cli
+            title_prefix: "chore(codex-cli): update to"
+            body_name: codex-cli
+            upstream: "https://www.npmjs.com/package/@openai/codex/v/"
           - package: zen-browser
             branch: update/zen-browser
             title_prefix: "chore(zen-browser): update to"

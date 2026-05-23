@@ -2,7 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/ci/`
+**Updated:** 2026-05-23
+**Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
 
@@ -47,9 +48,19 @@ Runner usage must:
 
 - keep package automation scoped to `dev`; promotion from `dev` to `main` remains manual
 - use one stable `update/<package>` branch per package and refresh the existing open PR when a newer upstream version supersedes a stuck update
+- treat closed `update/<package>` branches as disposable; stale remote update branches should be deleted because the updater can recreate them from current `dev`
 - cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once
 - avoid queueing stale auto-merge runs; a newer auto-merge event should replace an older waiting run
 - keep the scheduled auto-merge trigger as a nightly fallback because pull request events already cover the normal merge path
+
+Auto-merge must:
+
+- only operate on `update/*` pull requests targeting `dev`
+- refetch pull request state immediately before acting so one merged update does not leave the rest of the run working from stale base information
+- rebase stale update pull requests onto the current `dev` with Forgejo's pull request update API instead of skipping them indefinitely
+- wait for the explicit required CI contexts, not the combined commit status, because the auto-merge workflow can post its own pull-request status while it is running
+- use squash merge for update pull requests and include the checked head commit ID in the merge request
+- delete the update branch after a successful squash merge
 
 The scheduled updater may retry on the next scheduled run from a clean checkout. It must not silently carry invalid generated state forward.
 
@@ -59,6 +70,8 @@ The scheduled updater may retry on the next scheduled run from a clean checkout.
 - **Automatically retry inside the same updater run** — Rejected for malformed generated state. Retries are reasonable for network fetches, but once a script computes an invalid hash the safest behavior is to stop and make the failure visible.
 - **Build a fixed package list in CI** — Rejected. Fixed lists drift as packages are added or retired, and they do not prove the changed package works.
 - **Skip Darwin-only packages on Linux CI** — Rejected. Full Darwin builds are not available on the Linux runner, but metadata evaluation still catches missing attributes and obvious unsupported-system mistakes.
+- **Plain merge update PRs** — Rejected. Squash merging keeps routine generated updates to one commit per package update and matches the manual recovery process used when stale update PRs failed to auto-merge.
+- **Skip stale-but-clean update PRs until a later updater run refreshes them** — Rejected. A successful update PR merge advances `dev`, which can make every other open update PR stale. Auto-merge should rebase those PRs instead of relying on manual repair.
 
 ## Consequences
 
@@ -68,3 +81,5 @@ The scheduled updater may retry on the next scheduled run from a clean checkout.
 - Package update automation trades some latency for lower runner pressure and lower PR noise.
 - Darwin-only packages still need occasional real Darwin builds for full confidence.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
+- Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
+- Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
