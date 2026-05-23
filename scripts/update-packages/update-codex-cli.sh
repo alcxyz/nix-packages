@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# scripts/update-packages/update-codex-cli.sh
+# Checks for a new Codex CLI release on npm, regenerates package-lock.json,
+# computes Nix SRI hashes, and patches pkgs/codex-cli/default.nix.
+# Sets GITHUB_OUTPUT: updated, version.
+set -euo pipefail
+
+PKG_DIR="pkgs/codex-cli"
+PKG_FILE="$PKG_DIR/default.nix"
+
+# ── current version ────────────────────────────────────────────────────────────
+current_version=$(grep -m1 'version = ' "$PKG_FILE" | grep -oP '"\K[^"]+' | head -1)
+echo "Current: $current_version"
+
+# ── latest version from npm ───────────────────────────────────────────────────
+latest_version=$(curl -fsSL "https://registry.npmjs.org/@openai/codex/latest" \
+  | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['version'])")
+echo "Latest:  $latest_version"
+
+if [[ "$current_version" == "$latest_version" ]]; then
+  echo "Already up to date — nothing to do."
+  echo "updated=false" >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+
+# ── compute source hash (fetchzip) ────────────────────────────────────────────
+tgz_url="https://registry.npmjs.org/@openai/codex/-/codex-${latest_version}.tgz"
+echo "Fetching source hash..."
+src_hash=$(nix store prefetch-file --unpack --json "$tgz_url" 2>/dev/null \
+  | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['hash'])")
+echo "Source hash: $src_hash"
+
+# ── regenerate package-lock.json ──────────────────────────────────────────────
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+curl -fsSL -o "$tmp/package.tgz" "$tgz_url"
+tar xzf "$tmp/package.tgz" -C "$tmp"
+
+PACKAGE_JSON="$tmp/package/package.json" python3 - <<'PYEOF'
+import json
+import os
+from pathlib import Path
+
+package_json = Path(os.environ["PACKAGE_JSON"])
+package_dir = package_json.parent
+metadata = json.loads(package_json.read_text())
+bin_entry = metadata.get("bin", {}).get("codex")
+
+if not bin_entry:
+    raise SystemExit("codex package.json does not define bin.codex")
+
+bin_path = package_dir / bin_entry
+if not bin_path.is_file():
+    raise SystemExit(f"codex bin.codex points to missing file: {bin_entry}")
+
+optional = metadata.get("optionalDependencies", {})
+expected = [
+    "@openai/codex-linux-x64",
+    "@openai/codex-linux-arm64",
+    "@openai/codex-darwin-x64",
+    "@openai/codex-darwin-arm64",
+]
+missing = [name for name in expected if name not in optional]
+if missing:
+    raise SystemExit(f"codex package.json is missing optional dependencies: {', '.join(missing)}")
+
+print(f"Validated Codex CLI package layout: bin.codex -> {bin_entry}")
+PYEOF
+
+cd "$tmp/package"
+npm install --package-lock-only --ignore-scripts 2>/dev/null
+cp package-lock.json "$OLDPWD/$PKG_DIR/package-lock.json"
+cd "$OLDPWD"
+echo "Regenerated package-lock.json"
+
+# ── compute npmDepsHash ───────────────────────────────────────────────────────
+echo "Computing npm deps hash..."
+npm_deps_hash=$(nix shell github:NixOS/nixpkgs/nixos-25.05#prefetch-npm-deps -c prefetch-npm-deps "$PKG_DIR/package-lock.json" 2>/dev/null)
+echo "npm deps hash: $npm_deps_hash"
+
+# ── patch default.nix ────────────────────────────────────────────────────────
+NEW_VERSION="$latest_version" \
+SRC_HASH="$src_hash" \
+NPM_DEPS_HASH="$npm_deps_hash" \
+python3 - <<'PYEOF'
+import os, re
+
+path          = 'pkgs/codex-cli/default.nix'
+version       = os.environ['NEW_VERSION']
+src_hash      = os.environ['SRC_HASH']
+npm_deps_hash = os.environ['NPM_DEPS_HASH']
+
+content = open(path).read()
+
+# Update version
+content = re.sub(r'(version = )"[^"]+"', rf'\g<1>"{version}"', content)
+
+# Update fetchzip hash
+content = re.sub(
+    r'(url = "https://registry\.npmjs\.org/@openai/codex/-/codex-\$\{finalAttrs\.version\}\.tgz";\n\s+hash = )"[^"]+"',
+    rf'\g<1>"{src_hash}"',
+    content,
+)
+
+# Update npmDepsHash
+content = re.sub(r'(npmDepsHash = )"[^"]+"', rf'\g<1>"{npm_deps_hash}"', content)
+
+open(path, 'w').write(content)
+print(f"Patched {path} → {version}")
+PYEOF
+
+echo "Validating codex-cli derivation build..."
+rm -rf /homeless-shelter
+nix build .#codex-cli --no-link
+
+echo "updated=true"                >> "$GITHUB_OUTPUT"
+echo "version=$latest_version"     >> "$GITHUB_OUTPUT"

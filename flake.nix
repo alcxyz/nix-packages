@@ -35,6 +35,7 @@
           helium = pkgs.callPackage ./pkgs/helium { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
+          codex-cli = pkgs.callPackage ./pkgs/codex-cli { };
           nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
           xonsh-direnv = pkgs.callPackage ./pkgs/xonsh-direnv { };
           xonsh-with-direnv = pkgs.callPackage ./pkgs/xonsh-with-direnv {
