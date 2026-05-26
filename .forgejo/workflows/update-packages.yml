@@ -64,6 +64,11 @@ jobs:
             title_prefix: "chore(codex-cli): update to"
             body_name: codex-cli
             upstream: "https://www.npmjs.com/package/@openai/codex/v/"
+          - package: codex-app-server
+            branch: update/codex-app-server
+            title_prefix: "chore(codex-app-server): update to"
+            body_name: codex-app-server
+            upstream: "https://github.com/openai/codex/releases/tag/rust-v"
           - package: zen-browser
             branch: update/zen-browser
             title_prefix: "chore(zen-browser): update to"
