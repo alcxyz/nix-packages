@@ -12,7 +12,7 @@
 
 let
   pname = "ledger-live";
-  version = "4.4.0";
+  version = "4.6.0";
 
   linuxAsset =
     if lib.hasPrefix "x86_64-linux" system then {
@@ -20,8 +20,8 @@ let
         "https://download.live.ledger.com/ledger-live-desktop-${version}-linux-x86_64.AppImage";
 
       # Upstream (hex) SHA256:
-      # 762ca3850080fab17d13c41d4dbc09a94284d0deb076570df4e6a6afcd4bb0e7
-      hash = "sha256-diyjhQCA+rF9E8QdTbwJqUKE0N6wdlcN9Oamr81LsOc=";
+      # 07f640b5fe29059ea48c42fdaa5278758cbb3878cc6edaaaba48d8bcddc20bc7
+      hash = "sha256-B/ZAtf4pBZ6kjEL9qlJ4dYy7OHjMbtqqukjYvN3CC8c=";
     } else
       null;
 
@@ -31,8 +31,8 @@ let
         "https://download.live.ledger.com/ledger-live-desktop-${version}-mac.dmg";
 
       # Upstream (hex) SHA256:
-      # 85e844790e13c88d5d189b5544862c79852272f22f233ed01d78c3f4e036e6e2
-      hash = "sha256-hehEeQ4TyI1dGJtVRIYseYUicvIvIz7QHXjD9OA25uI=";
+      # 569bdb95e7495ab2dfaed17583bd91b2f6d172e0e0096ea0edcc5064f64acc71
+      hash = "sha256-VpvbledJWrLfrtF1g72RsvbRcuDgCW6g7cxQZPZKzHE=";
     } else
       null;
 in
