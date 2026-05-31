@@ -297,9 +297,10 @@ func runCatchUp(args []string) int {
 		return 1
 	}
 
-	fmt.Printf("Catching up devlog from %s to %s...\n", start.Format("2006-01-02"), end.Format("2006-01-02"))
+	fmt.Printf("Scanning devlog from %s to %s...\n", start.Format("2006-01-02"), end.Format("2006-01-02"))
 
 	var changed []string
+	var generatedDates []time.Time
 	affectedWeeks := make(map[string]time.Time)
 	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
 		generated, err := generateDaily(*repoPath, d, *ghUser)
@@ -309,6 +310,7 @@ func runCatchUp(args []string) int {
 		}
 		if generated {
 			ds := d.Format("2006-01-02")
+			generatedDates = append(generatedDates, d)
 			changed = append(changed, filepath.Join("devlog", ds+".md"))
 			monday := weekday(d, time.Monday)
 			weekStr := isoWeekString(monday)
@@ -340,13 +342,35 @@ func runCatchUp(args []string) int {
 		return 0
 	}
 
-	if err := gitCommitAndPushMany(*repoPath, changed, fmt.Sprintf("devlog catch-up: %s to %s", start.Format("2006-01-02"), end.Format("2006-01-02"))); err != nil {
+	if err := gitCommitAndPushMany(*repoPath, changed, catchUpCommitMessage(generatedDates, end)); err != nil {
 		fmt.Fprintf(os.Stderr, "error committing: %v\n", err)
 		return 1
 	}
 
 	fmt.Printf("Done: filled %d devlog artifact(s)\n", len(changed))
 	return 0
+}
+
+func catchUpCommitMessage(generatedDates []time.Time, end time.Time) string {
+	if len(generatedDates) == 0 {
+		return "devlog catch-up"
+	}
+
+	if len(generatedDates) == 1 && sameDate(generatedDates[0], end) {
+		return "devlog: " + generatedDates[0].Format("2006-01-02")
+	}
+
+	if len(generatedDates) == 1 {
+		return "devlog catch-up: " + generatedDates[0].Format("2006-01-02")
+	}
+
+	first := generatedDates[0]
+	last := generatedDates[len(generatedDates)-1]
+	return fmt.Sprintf("devlog catch-up: %s to %s", first.Format("2006-01-02"), last.Format("2006-01-02"))
+}
+
+func sameDate(a, b time.Time) bool {
+	return a.Format("2006-01-02") == b.Format("2006-01-02")
 }
 
 // --- weekly ---
