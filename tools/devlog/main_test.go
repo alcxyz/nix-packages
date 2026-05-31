@@ -188,6 +188,51 @@ func TestDevlogWindow(t *testing.T) {
 	}
 }
 
+func TestCatchUpCommitMessage(t *testing.T) {
+	parseDate := func(s string) time.Time {
+		t.Helper()
+		d, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+
+	tests := []struct {
+		name           string
+		generatedDates []time.Time
+		end            time.Time
+		want           string
+	}{
+		{
+			name:           "normal latest day generation",
+			generatedDates: []time.Time{parseDate("2026-05-30")},
+			end:            parseDate("2026-05-30"),
+			want:           "devlog: 2026-05-30",
+		},
+		{
+			name:           "single older missing day",
+			generatedDates: []time.Time{parseDate("2026-05-28")},
+			end:            parseDate("2026-05-30"),
+			want:           "devlog catch-up: 2026-05-28",
+		},
+		{
+			name:           "multiple missing days",
+			generatedDates: []time.Time{parseDate("2026-05-27"), parseDate("2026-05-29")},
+			end:            parseDate("2026-05-30"),
+			want:           "devlog catch-up: 2026-05-27 to 2026-05-29",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := catchUpCommitMessage(tt.generatedDates, tt.end); got != tt.want {
+				t.Errorf("catchUpCommitMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildWeeklyPrompt(t *testing.T) {
 	prompt := buildWeeklyPrompt("2026-04-20", "2026-04-24", "2026-04-26", "2026-W17",
 		"weekday content here", "weekend content here")
