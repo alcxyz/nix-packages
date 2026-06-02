@@ -54,6 +54,20 @@ var githubMirrorDenylist = map[string]string{
 	"madideal-site":         "ADR-022: private-source Cloudflare Pages site",
 }
 
+var githubPrimaryRepos = map[string]bool{
+	"NB.no-Downloader":         true,
+	"Terraform-Associate-Labs": true,
+	"bn-bootstrap":             true,
+	"canopy":                   true,
+	"dms-plugin-registry":      true,
+	"dms-plugins":              true,
+	"frappe_docker":            true,
+	"grove":                    true,
+	"madideal":                 true,
+	"nvim-treesitter":          true,
+	"paperflow":                true,
+}
+
 type forgejoRepo struct {
 	Name           string `json:"name"`
 	Mirror         bool   `json:"mirror"`
@@ -344,6 +358,9 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 	configured := 0
 	for _, repoPath := range repos {
 		name := inferRepoName(repoPath)
+		if githubPrimaryRepos[name] {
+			continue
+		}
 		cloneURL, ok := mirrorNames[name]
 		if !ok {
 			continue
@@ -386,6 +403,9 @@ func cmdPrimary(forgejoUser string, scanPaths []string) error {
 	changedCount := 0
 	for _, repoPath := range repos {
 		name := inferRepoName(repoPath)
+		if githubPrimaryRepos[name] {
+			continue
+		}
 		if !forgejoRepos[name] {
 			continue
 		}
