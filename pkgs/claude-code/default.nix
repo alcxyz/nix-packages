@@ -9,14 +9,14 @@
 }:
 buildNpmPackage (finalAttrs: {
   pname = "claude-code";
-  version = "2.1.160";
+  version = "2.1.161";
 
   src = fetchzip {
     url = "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-${finalAttrs.version}.tgz";
-    hash = "sha256-DZfdNzVzQJErJ+2aPPo4AM8oEYBpa6Tf8Svs6hViTNc=";
+    hash = "sha256-WiMh/QWLeKLMbFuXJGUNHCTv/H5fZssbIL9w9qtqkT4=";
   };
 
-  npmDepsHash = "sha256-GQI+3GLS6ZZ5fZ4MtKI9GWOiwg6Y+2DrwVwuqf1pysU=";
+  npmDepsHash = "sha256-RwoDVOnB8T/+9+q0vtOzWMZElttIJ0to09xZS410UIo=";
 
   strictDeps = true;
 
