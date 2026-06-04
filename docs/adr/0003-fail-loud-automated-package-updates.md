@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-05-23
+**Updated:** 2026-06-04
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -47,8 +47,10 @@ CI must:
 Runner usage must:
 
 - keep package automation scoped to `dev`; promotion from `dev` to `main` remains manual
+- keep `dev` as a long-lived integration branch; manual promotion PRs must not delete it after merge
 - use one stable `update/<package>` branch per package and refresh the existing open PR when a newer upstream version supersedes a stuck update
 - treat closed `update/<package>` branches as disposable; stale remote update branches should be deleted because the updater can recreate them from current `dev`
+- leave repository-level default branch deletion disabled so manual promotions do not delete `dev`
 - cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once
 - avoid queueing stale auto-merge runs; a newer auto-merge event should replace an older waiting run
 - keep the scheduled auto-merge trigger as a nightly fallback because pull request events already cover the normal merge path
@@ -83,3 +85,4 @@ The scheduled updater may retry on the next scheduled run from a clean checkout.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
+- Manual `dev` to `main` promotion cannot rely on the repository's default branch cleanup; only disposable `update/*` branches are deleted by automation.

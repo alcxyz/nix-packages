@@ -48,7 +48,10 @@ The update matrix is capped at two concurrent package jobs to avoid flooding
 the shared runners. Green `update/*` pull requests are rebased onto `dev` when
 needed and squash-merged by `.forgejo/workflows/auto-merge-updates.yml`; PR
 events trigger the normal path, with a nightly scheduled run as a fallback.
-Promotion from `dev` to `main` is manual.
+Promotion from `dev` to `main` is manual. `dev` is a long-lived integration
+branch and must be retained after promotion; repository-level default branch
+deletion is disabled, while update branch cleanup is handled explicitly by the
+auto-merge workflow.
 
 Updater scripts must fail before committing invalid generated state. Empty SRI
 hashes such as `hash = "sha256-";` are rejected by both the updater scripts and
