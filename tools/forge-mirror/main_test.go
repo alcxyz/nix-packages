@@ -9,7 +9,10 @@ import (
 func TestConfiguredGithubPrimaryReposUsesEnvOverride(t *testing.T) {
 	t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS", "repo-a, repo-b\nrepo-c")
 
-	repos := configuredGithubPrimaryRepos()
+	repos, configured := configuredGithubPrimaryRepos()
+	if !configured {
+		t.Fatal("expected env configuration to be detected")
+	}
 
 	for _, name := range []string{"repo-a", "repo-b", "repo-c"} {
 		if !repos[name] {
@@ -17,8 +20,8 @@ func TestConfiguredGithubPrimaryReposUsesEnvOverride(t *testing.T) {
 		}
 	}
 
-	if repos["DankVault"] {
-		t.Fatal("env configuration should override the built-in fallback set")
+	if repos["unconfigured-repo"] {
+		t.Fatal("unexpected repo in configured set")
 	}
 }
 
@@ -30,11 +33,26 @@ func TestConfiguredGithubPrimaryReposReadsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repos := configuredGithubPrimaryRepos()
+	repos, configured := configuredGithubPrimaryRepos()
+	if !configured {
+		t.Fatal("expected file configuration to be detected")
+	}
 
 	for _, name := range []string{"repo-a", "repo-b", "repo-c"} {
 		if !repos[name] {
 			t.Fatalf("expected %q in configured repo set", name)
 		}
+	}
+}
+
+func TestConfiguredGithubPrimaryReposFailsClosedWithoutConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	repos, configured := configuredGithubPrimaryRepos()
+	if configured {
+		t.Fatal("expected missing configuration to be reported")
+	}
+	if len(repos) != 0 {
+		t.Fatalf("expected empty repo set, got %d entries", len(repos))
 	}
 }
