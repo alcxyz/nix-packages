@@ -54,7 +54,7 @@ var githubMirrorDenylist = map[string]string{
 	"madideal-site":         "ADR-022: private-source Cloudflare Pages site",
 }
 
-var githubPrimaryRepos = map[string]bool{
+var defaultGithubPrimaryRepos = map[string]bool{
 	"NB.no-Downloader":         true,
 	"Terraform-Associate-Labs": true,
 	"DankAIUsage":              true,
@@ -75,6 +75,47 @@ var githubPrimaryRepos = map[string]bool{
 	"madideal":                 true,
 	"nvim-treesitter":          true,
 	"paperflow":                true,
+}
+
+func configuredGithubPrimaryRepos() map[string]bool {
+	envList := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS")
+	filePath := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
+	if envList == "" && filePath == "" {
+		return cloneBoolMap(defaultGithubPrimaryRepos)
+	}
+
+	repos := map[string]bool{}
+	addRepoList(repos, envList)
+
+	if filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot read FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE: %v\n", err)
+		} else {
+			addRepoList(repos, string(data))
+		}
+	}
+
+	return repos
+}
+
+func cloneBoolMap(src map[string]bool) map[string]bool {
+	dst := make(map[string]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func addRepoList(repos map[string]bool, raw string) {
+	for _, name := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	}) {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			repos[name] = true
+		}
+	}
 }
 
 type forgejoRepo struct {
@@ -338,6 +379,8 @@ Environment:
   GITHUB_USER          GitHub username (default: alcxyz)
   GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)
   GITHUB_MIRROR_PAT_FILE Path to file containing GitHub PAT
+  FORGE_MIRROR_GITHUB_PRIMARY_REPOS Comma/space/newline-separated repo names to skip for Forgejo-primary local remotes
+  FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE File containing repo names to skip for Forgejo-primary local remotes
   CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
   CODEBERG_USER        Codeberg username (default: alcxyz)
   CODEBERG_MIRROR_PAT  Codeberg PAT for Forgejo push mirrors
@@ -364,6 +407,7 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 	}
 
 	repos := findLocalRepos(scanPaths)
+	githubPrimaryRepos := configuredGithubPrimaryRepos()
 	configured := 0
 	for _, repoPath := range repos {
 		name := inferRepoName(repoPath)
@@ -410,6 +454,7 @@ func cmdPrimary(forgejoUser string, scanPaths []string) error {
 	}
 
 	changedCount := 0
+	githubPrimaryRepos := configuredGithubPrimaryRepos()
 	for _, repoPath := range repos {
 		name := inferRepoName(repoPath)
 		if githubPrimaryRepos[name] {
