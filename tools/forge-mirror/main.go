@@ -54,18 +54,59 @@ var githubMirrorDenylist = map[string]string{
 	"madideal-site":         "ADR-022: private-source Cloudflare Pages site",
 }
 
-var githubPrimaryRepos = map[string]bool{
-	"NB.no-Downloader":         true,
-	"Terraform-Associate-Labs": true,
-	"bn-bootstrap":             true,
-	"canopy":                   true,
-	"dms-plugin-registry":      true,
-	"dms-plugins":              true,
-	"frappe_docker":            true,
-	"grove":                    true,
-	"madideal":                 true,
-	"nvim-treesitter":          true,
-	"paperflow":                true,
+func configuredGithubPrimaryRepos() (map[string]bool, bool) {
+	envList := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS")
+	filePath := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
+	configured := envList != "" || filePath != ""
+
+	if filePath == "" {
+		filePath = defaultGithubPrimaryReposFile()
+		if filePath != "" {
+			configured = true
+		}
+	}
+
+	repos := map[string]bool{}
+	addRepoList(repos, envList)
+
+	if filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot read FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE: %v\n", err)
+		} else {
+			addRepoList(repos, string(data))
+		}
+	}
+
+	return repos, configured
+}
+
+func defaultGithubPrimaryReposFile() string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+
+	path := filepath.Join(configHome, "forge-mirror", "github-primary-repos")
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
+
+func addRepoList(repos map[string]bool, raw string) {
+	for _, name := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	}) {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			repos[name] = true
+		}
+	}
 }
 
 type forgejoRepo struct {
@@ -329,6 +370,9 @@ Environment:
   GITHUB_USER          GitHub username (default: alcxyz)
   GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)
   GITHUB_MIRROR_PAT_FILE Path to file containing GitHub PAT
+  FORGE_MIRROR_GITHUB_PRIMARY_REPOS Comma/space/newline-separated repo names to skip for Forgejo-primary local remotes
+  FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE File containing repo names to skip for Forgejo-primary local remotes
+                         Defaults to $XDG_CONFIG_HOME/forge-mirror/github-primary-repos when present
   CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
   CODEBERG_USER        Codeberg username (default: alcxyz)
   CODEBERG_MIRROR_PAT  Codeberg PAT for Forgejo push mirrors
@@ -355,6 +399,10 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 	}
 
 	repos := findLocalRepos(scanPaths)
+	githubPrimaryRepos, githubPrimaryConfigured := configuredGithubPrimaryRepos()
+	if !githubPrimaryConfigured {
+		return fmt.Errorf("github-primary repo config missing; set FORGE_MIRROR_GITHUB_PRIMARY_REPOS or FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
+	}
 	configured := 0
 	for _, repoPath := range repos {
 		name := inferRepoName(repoPath)
@@ -401,6 +449,10 @@ func cmdPrimary(forgejoUser string, scanPaths []string) error {
 	}
 
 	changedCount := 0
+	githubPrimaryRepos, githubPrimaryConfigured := configuredGithubPrimaryRepos()
+	if !githubPrimaryConfigured {
+		return fmt.Errorf("github-primary repo config missing; set FORGE_MIRROR_GITHUB_PRIMARY_REPOS or FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
+	}
 	for _, repoPath := range repos {
 		name := inferRepoName(repoPath)
 		if githubPrimaryRepos[name] {
