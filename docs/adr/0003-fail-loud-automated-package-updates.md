@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-06-04
+**Updated:** 2026-06-09
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -53,7 +53,8 @@ Runner usage must:
 - leave repository-level default branch deletion disabled so manual promotions do not delete `dev`
 - cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once
 - avoid queueing stale auto-merge runs; a newer auto-merge event should replace an older waiting run
-- keep the scheduled auto-merge trigger as a nightly fallback because pull request events already cover the normal merge path
+- trigger auto-merge from update pull request changes, with the scheduled auto-merge trigger kept as a nightly fallback
+- rely on pull request validation for automated update merges instead of running duplicate validation on every resulting `dev` push
 
 Auto-merge must:
 

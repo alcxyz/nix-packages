@@ -1,9 +1,9 @@
-name: CI
+name: Validate changes
+run-name: "Validation (${{ forgejo.event_name }}): ${{ forgejo.head_ref || forgejo.ref_name }}"
 
 on:
   push:
     branches:
-      - dev
       - main
   pull_request:
     branches:
@@ -12,7 +12,7 @@ on:
 
 jobs:
   go-test:
-    name: Go tests
+    name: Go tool tests
     runs-on: ubuntu-latest
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
           done < <(find tools -maxdepth 2 -name go.mod | sort)
 
   nix-build:
-    name: Build packages
+    name: Package build validation
     runs-on: ubuntu-latest
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
