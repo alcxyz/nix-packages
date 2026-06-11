@@ -12,7 +12,7 @@
 
 let
   pname = "helium";
-  version = "0.13.1.1";
+  version = "0.13.2.1";
 
   linuxAsset =
     if lib.hasPrefix "x86_64-linux" system then {
@@ -20,8 +20,8 @@ let
         "https://github.com/imputnet/helium-linux/releases/download/${version}/helium-${version}-x86_64.AppImage";
 
       # Upstream (hex) SHA256:
-      # 64053e2074ae2aef0a8aab602be7def75e02ff2eca4e8556cc2f9daea764f993
-      hash = "sha256-ZAU+IHSuKu8KiqtgK+fe914C/y7KToVWzC+drqdk+ZM=";
+      # 23d56a5c4db414d8c4cfd172bdc099f19a9165b3c853e42d18f6e501dc09464f
+      hash = "sha256-I9VqXE20FNjEz9FyvcCZ8ZqRZbPIU+QtGPblAdwJRk8=";
     } else if lib.hasPrefix "aarch64-linux" system then {
       url =
         "https://github.com/imputnet/helium-linux/releases/download/${version}/helium_${version}_arm64.AppImage";
@@ -38,15 +38,15 @@ let
         "https://github.com/imputnet/helium-macos/releases/download/${version}/helium_${version}_arm64-macos.dmg";
 
       # Upstream (hex) SHA256:
-      # a01d9a250704e45b520e5c44a7e959e7c2b71d7fc47805ceab92b7c3f9b8ab3f
-      hash = "sha256-oB2aJQcE5FtSDlxEp+lZ58K3HX/EeAXOq5K3w/m4qz8=";
+      # d15c39899e08ae8d061c338e221e44e1c25b5576aa63479d7981af58301dc3c1
+      hash = "sha256-0Vw5iZ4Iro0GHDOOIh5E4cJbVXaqY0edeYGvWDAdw8E=";
     } else if lib.hasPrefix "x86_64-darwin" system then {
       url =
         "https://github.com/imputnet/helium-macos/releases/download/${version}/helium_${version}_x86_64-macos.dmg";
 
       # Upstream (hex) SHA256:
-      # bb37645c59c795c071cf796789778a5f36395d6036ec15124f69747de8d78b44
-      hash = "sha256-uzdkXFnHlcBxz3lniXeKXzY5XWA27BUST2l0fejXi0Q=";
+      # 92a2fe581e412d0af0769bd38d4b774319927c9473906ce5b49984856dff7e12
+      hash = "sha256-kqL+WB5BLQrwdpvTjUt3QxmSfJRzkGzltJmEhW3/fhI=";
     } else
       null;
 in
