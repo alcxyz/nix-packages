@@ -7,11 +7,11 @@
 
 stdenv.mkDerivation rec {
   pname = "omniwm";
-  version = "0.4.9.6";
+  version = "0.4.9.7";
 
   src = fetchurl {
     url = "https://github.com/BarutSRB/OmniWM/releases/download/v${version}/OmniWM-v${version}.zip";
-    hash = "sha256-0Xhn1ePrMh2lSVI9PQKcnxGArlUcv/XjL+JkF1lBC/I=";
+    hash = "sha256-O2Tl8uMCug9A3Dlfh56nMe1iQlP/562EGurm8dKC1Fk=";
   };
 
   nativeBuildInputs = [ unzip ];
