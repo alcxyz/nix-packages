@@ -114,6 +114,8 @@ buildGoModule (
       hash = srcHash;
     };
 
+    env.HOME = "/tmp";
+
     ldflags = [
       "-s"
       "-w"
