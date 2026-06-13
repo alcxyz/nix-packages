@@ -11,16 +11,16 @@
 
 let
   pname = "t3code";
-  version = "0.0.25";
+  version = "0.0.27";
 
   linuxSrc = fetchurl {
     url = "https://github.com/pingdotgg/t3code/releases/download/v${version}/T3-Code-${version}-x86_64.AppImage";
-    hash = "sha256-aO1gFdYRs/9kvT8/1W4/v5e8os9E7rJl46BTK9SUglI=";
+    hash = "sha256-ALkm7wSVbDlZR7TWVag3NRbP1kvGJQqmpR1mmZvSCAU=";
   };
 
   darwinSrc = fetchurl {
     url = "https://github.com/pingdotgg/t3code/releases/download/v${version}/T3-Code-${version}-arm64.dmg";
-    hash = "sha256-vnc+LfBV6UnLK72kl693aXXPEgfVw5qAWtkR4k1BddI=";
+    hash = "sha256-0Uh5pKtf7FIuJ/pvu74H8NYUC90rgu3S3p3JVvIWqm8=";
   };
 
   appimageContents = appimageTools.extractType2 { inherit pname version; src = linuxSrc; };

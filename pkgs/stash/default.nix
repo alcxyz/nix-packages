@@ -1,10 +1,12 @@
 {
   buildGoModule,
   fetchFromGitHub,
+  fetchPnpmDeps ? null,
   lib,
   nixosTests,
   nodejs,
   pnpm_10,
+  pnpmConfigHook ? null,
   stash,
   stdenv,
   testers,
@@ -13,12 +15,22 @@ let
   inherit (lib.importJSON ./version.json)
     gitHash
     pnpmHash
+    pnpmHashV3
     srcHash
     vendorHash
     version
     ;
 
   pname = "stash";
+  useTopLevelPnpmFetcher = fetchPnpmDeps != null;
+  pnpmDepsFetcher =
+    if useTopLevelPnpmFetcher
+    then fetchPnpmDeps
+    else pnpm_10.fetchDeps;
+  pnpmHook =
+    if pnpmConfigHook == null
+    then pnpm_10.configHook
+    else pnpmConfigHook;
 in
 buildGoModule (
   finalAttrs:
@@ -28,15 +40,28 @@ buildGoModule (
       inherit (finalAttrs) version gitHash;
       src = "${finalAttrs.src}/ui/v2.5";
 
-      pnpmDeps = pnpm_10.fetchDeps {
-        inherit (final) pname version src;
-        fetcherVersion = 2;
-        hash = finalAttrs.pnpmHash;
-      };
+      pnpmDeps =
+        pnpmDepsFetcher (
+          {
+            inherit (final) pname version src;
+            fetcherVersion =
+              if useTopLevelPnpmFetcher
+              then 3
+              else 2;
+            hash =
+              if useTopLevelPnpmFetcher
+              then finalAttrs.pnpmHashV3
+              else finalAttrs.pnpmHash;
+          }
+          // lib.optionalAttrs useTopLevelPnpmFetcher {
+            pnpm = pnpm_10;
+          }
+        );
 
       nativeBuildInputs = [
         nodejs
-        pnpm_10.configHook
+        pnpmHook
+        pnpm_10
       ];
 
       postPatch = ''
@@ -78,6 +103,7 @@ buildGoModule (
       version
       gitHash
       pnpmHash
+      pnpmHashV3
       vendorHash
       ;
 
@@ -87,6 +113,8 @@ buildGoModule (
       tag = "v${finalAttrs.version}";
       hash = srcHash;
     };
+
+    env.HOME = "/tmp";
 
     ldflags = [
       "-s"

@@ -101,7 +101,17 @@ PYEOF
 
 echo "Validating claude-code derivation build..."
 rm -rf /homeless-shelter
-nix build .#claude-code --no-link
+out_path=$(nix build .#claude-code --no-link --print-out-paths)
+
+echo "Validating claude-code runtime..."
+tmp_home=$(mktemp -d)
+trap 'rm -rf "$tmp" "$tmp_home"' EXIT
+HOME="$tmp_home" \
+  XDG_CONFIG_HOME="$tmp_home/.config" \
+  XDG_CACHE_HOME="$tmp_home/.cache" \
+  XDG_DATA_HOME="$tmp_home/.local/share" \
+  "$out_path/bin/claude" --version
+rm -rf "$tmp_home"
 
 echo "updated=true"                >> "$GITHUB_OUTPUT"
 echo "version=$latest_version"     >> "$GITHUB_OUTPUT"
