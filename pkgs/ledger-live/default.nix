@@ -52,12 +52,12 @@ if linuxAsset != null then
       if [ -n "$desktop" ]; then
         install -Dm444 "$desktop" "$out/share/applications/${pname}.desktop"
         substituteInPlace "$out/share/applications/${pname}.desktop" \
-          --replace 'Exec=AppRun' 'Exec=${pname}' || true
+          --replace-fail 'Exec=AppRun' 'Exec=${pname}'
       fi
 
       icon="$(find ${appimageContents} -path '*/hicolor/*/apps/*.png' | head -n1)"
       if [ -n "$icon" ]; then
-        size="$(echo "$icon" | grep -Eo '/[0-9]{2,3}x[0-9]{2,3}/' | tr -d /)"
+        size="$(basename "$(dirname "$(dirname "$icon")")")"
         install -Dm444 "$icon" \
           "$out/share/icons/hicolor/$size/apps/${pname}.png"
       fi
