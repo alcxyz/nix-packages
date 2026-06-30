@@ -8,19 +8,19 @@ let
   sources = {
     x86_64-linux = {
       artifact = "kdash-linux-musl";
-      hash = "sha256-+qC2QWjlzyQcUx018amcegjWpS4AeXBBZPo2ngxntBY=";
+      hash = "sha256-fSv6ZQXBiyDry8gMMabuGgLg4tHAtptJAn9x9SKiaSA=";
     };
     aarch64-linux = {
       artifact = "kdash-aarch64-musl";
-      hash = "sha256-C7Te08iW3J0B8HLrzbBKZVJB116MUI5I7iHSLMeejw8=";
+      hash = "sha256-fxOyMsLQToKBOFYd3vQNFvUmnf5r+NyUxLVLZNVI2PQ=";
     };
     x86_64-darwin = {
       artifact = "kdash-macos";
-      hash = "sha256-S5c5BsLO16usEqBHDSQEn7l0DliV8Q/JESg45vrOs+g=";
+      hash = "sha256-AwRHx23CuBj/i+YctDlz7CMwYN9qDSNGiv2RWVmxCtc=";
     };
     aarch64-darwin = {
       artifact = "kdash-macos-arm64";
-      hash = "sha256-keihXzv4fKWHRN0iwnk58tmL4iIS3O7/TXuayT8cR3w=";
+      hash = "sha256-o31wCrHTaAxg5mkNhBQ+cOCOxOfqjt/wAOmR87macIw=";
     };
   };
 
@@ -30,7 +30,7 @@ let
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "kdash";
-  version = "2.0.1";
+  version = "2.0.2";
 
   src = fetchurl {
     url = "https://github.com/kdash-rs/kdash/releases/download/v${finalAttrs.version}/${source.artifact}.tar.gz";
