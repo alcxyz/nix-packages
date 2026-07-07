@@ -16,6 +16,7 @@ Then reference packages as `inputs.nix-packages.packages.${system}.<name>`.
 | Package | Description | Platforms |
 |---------|-------------|-----------|
 | [ghostty](https://ghostty.org) | Ghostty terminal emulator | `aarch64-darwin` `x86_64-darwin` |
+| [herdr](https://github.com/ogulcancelik/herdr) | Agent multiplexer that lives in your terminal | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [helium](https://github.com/imputnet/helium) | Helium browser | `x86_64-linux` `aarch64-linux` `aarch64-darwin` `x86_64-darwin` |
 | [kdash](https://github.com/kdash-rs/kdash) | Simple and fast dashboard for Kubernetes | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [paneru](https://github.com/karinushka/paneru) | Sliding, tiling window manager for macOS | `aarch64-darwin` `x86_64-darwin` |

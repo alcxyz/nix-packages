@@ -32,6 +32,7 @@
         allPackages = {
           agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
+          herdr = unstablePkgs.callPackage ./pkgs/herdr { };
           helium = pkgs.callPackage ./pkgs/helium { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
