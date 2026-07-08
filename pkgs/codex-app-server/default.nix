@@ -9,19 +9,19 @@ let
   sources = {
     x86_64-linux = {
       target = "x86_64-unknown-linux-musl";
-      hash = "sha256-p4UX+4+kEJXTO1KgDNvCSYxfIcuaa4EHpc1C5JUYnRw=";
+      hash = "sha256-b/2NQG7DDmdHVsKoMQFNM/s6NqU7w/n5mp+wrayk99g=";
     };
     aarch64-linux = {
       target = "aarch64-unknown-linux-musl";
-      hash = "sha256-kW1/BIJFJ8m5v6CptO/H5WdPn/CXv/4jjdPt9H7etzQ=";
+      hash = "sha256-PhuPdvRL9zLDiWckc9XM5GB7/BKtGQm0K8zaomoH6L8=";
     };
     x86_64-darwin = {
       target = "x86_64-apple-darwin";
-      hash = "sha256-kM5FurppGavDOl5GLy7X/L6FBAw7Jrd1mkATXbabjHE=";
+      hash = "sha256-m46TUGo4vfPlqv0yetYunT5loRl7cv4aBJ/mjLHUSqk=";
     };
     aarch64-darwin = {
       target = "aarch64-apple-darwin";
-      hash = "sha256-vMmy8f2JJMAj3X4qVG1ehm/vMtpwT7k/wT4Z5nb9nqU=";
+      hash = "sha256-nxgzsQ/vZwMiT0RTRkSPJNC8FCRCbjKhpIFzsFspEyc=";
     };
   };
 
@@ -31,7 +31,7 @@ let
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "codex-app-server";
-  version = "0.142.5";
+  version = "0.143.0";
 
   src = fetchurl {
     url = "https://github.com/openai/codex/releases/download/rust-v${finalAttrs.version}/codex-app-server-package-${source.target}.tar.gz";
