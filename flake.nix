@@ -49,7 +49,7 @@
           paneru = unstablePkgs.callPackage ./pkgs/paneru { };
         }
         // lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
-          t3code = pkgs.callPackage ./pkgs/t3code { };
+          t3code = unstablePkgs.callPackage ./pkgs/t3code { };
         }
         // lib.optionalAttrs (system == "aarch64-darwin") {
           omniwm = pkgs.callPackage ./pkgs/omniwm { };
