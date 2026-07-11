@@ -61,6 +61,10 @@ For remote launch into an existing Hyprland session, dispatch the executable
 through that compositor. Background user services remain appropriate for
 headless servers, not interactive desktop windows.
 
+On Linux, launch Electron through XWayland until its native Wayland startup is
+reliable. A process existing without a mapped window or a listening backend is
+not a successful GUI launch and must fail runtime verification.
+
 ## Alternatives Considered
 
 - **Use official artifacts on all platforms** — Rejected because they omit the

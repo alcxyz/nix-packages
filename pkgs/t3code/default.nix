@@ -5,6 +5,7 @@
   fetchPnpmDeps,
   lib,
   pnpm_11,
+  stdenv,
   t3code,
 }:
 
@@ -73,6 +74,10 @@ in
       (cd apps/desktop && node scripts/build-preview-annotation-css.mjs && node ../../node_modules/vite-plus/dist/pack-bin.js)
 
       runHook postBuild
+    '';
+
+    postInstall = previousAttrs.postInstall + lib.optionalString stdenv.hostPlatform.isLinux ''
+      wrapProgram "$out/bin/t3code-desktop" --add-flags "--ozone-platform=x11"
     '';
 
     meta = previousAttrs.meta // {
