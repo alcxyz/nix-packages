@@ -1,117 +1,76 @@
 {
+  fetchFromGitHub,
+  fetchPnpmDeps,
   lib,
-  stdenv,
-  fetchurl,
-  appimageTools,
-  undmg,
-  bun,
-  asar,
-  system ? stdenv.hostPlatform.system,
+  pnpm_11,
+  t3code,
 }:
 
 let
-  pname = "t3code";
-  version = "0.0.28";
-
-  linuxSrc = fetchurl {
-    url = "https://github.com/pingdotgg/t3code/releases/download/v${version}/T3-Code-${version}-x86_64.AppImage";
-    hash = "sha256-+mBp+wPrJRV/HpaimQHcqBuwqZcPWTbKJVNCVW7ELgo=";
+  version = "0.0.28-alc.1";
+  rev = "ec230183c1d25bfacbed8bb2c494fe18fef319d6";
+  src = fetchFromGitHub {
+    owner = "alcxyz";
+    repo = "t3code";
+    inherit rev;
+    hash = "sha256-icB5AykYXyOw0QDHUskzm+ltTP01eet/RdNm3edCTs8=";
   };
-
-  darwinSrc = fetchurl {
-    url = "https://github.com/pingdotgg/t3code/releases/download/v${version}/T3-Code-${version}-arm64.dmg";
-    hash = "sha256-TfI1SAMbMCdRFEwLbVsIJLFXg0bpVQptlgZCmKgLBaM=";
-  };
-
-  appimageContents = appimageTools.extractType2 { inherit pname version; src = linuxSrc; };
 in
-if lib.hasPrefix "x86_64-linux" system then
-  appimageTools.wrapType2 {
-    inherit pname version;
-    src = linuxSrc;
+t3code.overrideAttrs (
+  finalAttrs: previousAttrs: {
+    inherit version src;
 
-    extraInstallCommands = ''
-      desktop="$(find ${appimageContents} -maxdepth 5 -name '*.desktop' | head -n1)"
-      if [ -n "$desktop" ]; then
-        install -Dm444 "$desktop" "$out/share/applications/${pname}.desktop"
-        substituteInPlace "$out/share/applications/${pname}.desktop" \
-          --replace-warn 'Exec=AppRun' 'Exec=${pname}'
-      fi
-
-      icon="$(find ${appimageContents} -path '*/hicolor/*/apps/*.png' | head -n1)"
-      if [ -n "$icon" ]; then
-        size="$(echo "$icon" | grep -Eo '/[0-9]+x[0-9]+/' | tr -d /)"
-        install -Dm444 "$icon" \
-          "$out/share/icons/hicolor/$size/apps/${pname}.png"
-      fi
-
-      # Extract app.asar so the headless server can run under Bun
-      # without needing Electron's asar support.
-      ${asar}/bin/asar extract \
-        ${appimageContents}/resources/app.asar \
-        $out/lib/t3code-server
-      cp -r ${appimageContents}/resources/app.asar.unpacked/* \
-        $out/lib/t3code-server/
-
-      # Headless CLI (t3 serve, t3 start, etc.) via Bun.
-      cat > "$out/bin/t3" <<'WRAPPER'
-      #!/usr/bin/env bash
-      exec "@bun@" "@out@/lib/t3code-server/apps/server/dist/bin.mjs" "$@"
-      WRAPPER
-      substituteInPlace "$out/bin/t3" \
-        --replace-warn '@bun@' '${bun}/bin/bun' \
-        --replace-warn '@out@' "$out"
-      chmod +x "$out/bin/t3"
+    VP_SKIP_INSTALL = "1";
+    postPatch = previousAttrs.postPatch + ''
+      substituteInPlace package.json \
+        --replace-fail \
+          '"prepare": "effect-tsgo patch && vp config --no-agent"' \
+          '"prepare": "effect-tsgo patch"'
+      printf '\nverifyDepsBeforeRun: false\n' >> pnpm-workspace.yaml
     '';
 
-    meta = with lib; {
-      description = "T3 Code — AI coding assistant desktop app";
-      homepage = "https://github.com/pingdotgg/t3code";
-      license = licenses.mit;
-      platforms = [ "x86_64-linux" ];
-      mainProgram = "t3code";
+    nativeBuildInputs = map (
+      input: if lib.getName input == "pnpm" then pnpm_11 else input
+    ) previousAttrs.nativeBuildInputs;
+
+    pnpmDeps = fetchPnpmDeps {
+      pnpm = pnpm_11;
+      inherit (finalAttrs) pname;
+      inherit version src;
+      inherit (previousAttrs) pnpmWorkspaces;
+      fetcherVersion = 4;
+      hash = "sha256-JmOs6j0Tx8EgZFgvYhhnIPLmEcXirk0AlLvY+onNZhQ=";
+    };
+
+    preBuild = ''
+      ${lib.concatStringsSep "\n" (lib.drop 1 (lib.splitString "\n" previousAttrs.preBuild))}
+      node scripts/update-release-package-versions.ts ${version}
+    '';
+
+    # Avoid vite-plus' dependency-status check: it launches an impure nested
+    # `pnpm install`, which aborts in the Darwin sandbox. This is the explicit
+    # build sequence used by the working Linux package as well.
+    buildPhase = ''
+      runHook preBuild
+
+      viteCli="$(node -e '
+        const { createRequire } = require("node:module");
+        const { dirname, join } = require("node:path");
+        const localRequire = createRequire(require.resolve("vite-plus/package.json"));
+        process.stdout.write(join(dirname(localRequire.resolve("@voidzero-dev/vite-plus-core")), "cli.js"));
+      ')"
+
+      (cd apps/web && node "$viteCli" build)
+      (cd apps/server && node ../../node_modules/vite-plus/dist/pack-bin.js)
+      cp --recursive apps/web/dist apps/server/dist/client
+      node scripts/apply-web-brand-assets.ts development apps/server/dist/client
+      (cd apps/desktop && node scripts/build-preview-annotation-css.mjs && node ../../node_modules/vite-plus/dist/pack-bin.js)
+
+      runHook postBuild
+    '';
+
+    meta = previousAttrs.meta // {
+      changelog = "https://github.com/alcxyz/t3code/commit/${rev}";
     };
   }
-
-else if lib.hasPrefix "aarch64-darwin" system then
-  stdenv.mkDerivation {
-    inherit pname version;
-    src = darwinSrc;
-
-    nativeBuildInputs = [ undmg ];
-
-    unpackPhase = ''
-      undmg $src
-    '';
-
-    installPhase = ''
-      mkdir -p "$out/Applications" "$out/bin"
-
-      app="$(find . -maxdepth 3 -name '*.app' -print -quit)"
-      if [ -z "$app" ]; then
-        echo "Could not find .app inside dmg"
-        exit 1
-      fi
-      cp -r "$app" "$out/Applications/"
-
-      appName="$(basename "$app")"
-      exe="$(find "$out/Applications/$appName/Contents/MacOS" \
-        -maxdepth 1 -type f -perm -111 -print -quit)"
-      if [ -z "$exe" ]; then
-        echo "Could not find executable in $appName/Contents/MacOS"
-        exit 1
-      fi
-      ln -s "$exe" "$out/bin/t3code"
-    '';
-
-    meta = with lib; {
-      description = "T3 Code — AI coding assistant desktop app";
-      homepage = "https://github.com/pingdotgg/t3code";
-      license = licenses.mit;
-      platforms = [ "aarch64-darwin" ];
-      mainProgram = "t3code";
-    };
-  }
-
-else
-  throw "t3code: unsupported system ${system}"
+)
