@@ -1,4 +1,6 @@
 {
+  claude-code,
+  codex-cli,
   fetchFromGitHub,
   fetchPnpmDeps,
   lib,
@@ -16,7 +18,11 @@ let
     hash = "sha256-icB5AykYXyOw0QDHUskzm+ltTP01eet/RdNm3edCTs8=";
   };
 in
-t3code.overrideAttrs (
+(t3code.override {
+  inherit claude-code;
+  codex = codex-cli;
+  enableClaude = true;
+}).overrideAttrs (
   finalAttrs: previousAttrs: {
     inherit version src;
 

@@ -81,6 +81,9 @@ headless servers, not interactive desktop windows.
 - Builds are slower than repackaging release binaries, especially on Darwin.
 - The Codex package may consume prerelease updates and therefore needs explicit
   build and runtime smoke tests.
+- T3's runtime wrapper must explicitly receive the selected Codex and Claude
+  derivations. Installing newer CLIs in the user profile is insufficient
+  because the desktop launcher prepends its build-time runtime package set.
 - Switching desktop distribution identities can require one-time regeneration
   of encrypted connection metadata, while project data remains independent.
 - Update automation must not replace the source build with official artifacts
