@@ -9,3 +9,4 @@ Non-obvious decisions in this repo are documented here. Before changing tool des
 | [ADR-0002](0002-model-agnostic-llm-config-for-devlog.md) | Model-Agnostic LLM Configuration for devlog | `tools/devlog/` |
 | [ADR-0003](0003-fail-loud-automated-package-updates.md) | Fail-Loud Automated Package Updates | package update CI |
 | [ADR-0004](0004-patched-paneru-package.md) | Patched Paneru Package | `pkgs/paneru/` |
+| [ADR-0005](0005-patched-t3code-source-builds.md) | Patched T3 Code Source Builds | `pkgs/t3code/`, `pkgs/codex-cli/` |
