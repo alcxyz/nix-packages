@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +58,44 @@ func TestConfiguredGithubPrimaryReposFailsClosedWithoutConfig(t *testing.T) {
 	}
 	if len(repos) != 0 {
 		t.Fatalf("expected empty repo set, got %d entries", len(repos))
+	}
+}
+
+func TestFetchForgejoReposPaginates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "token test-token" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+
+		switch r.URL.Query().Get("page") {
+		case "1":
+			fmt.Fprint(w, `{"data":[{"name":"one"}]}`)
+		case "2":
+			fmt.Fprint(w, `{"data":[]}`)
+		default:
+			t.Fatalf("unexpected page: %s", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	repos, err := fetchForgejoRepos(server.URL, "alcxyz", "test-token")
+	if err != nil {
+		t.Fatalf("fetchForgejoRepos returned error: %v", err)
+	}
+	if len(repos) != 1 || repos[0].Name != "one" {
+		t.Fatalf("unexpected repositories: %#v", repos)
+	}
+}
+
+func TestFetchForgejoReposReportsHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, "404 page not found")
+	}))
+	defer server.Close()
+
+	_, err := fetchForgejoRepos(server.URL, "alcxyz", "test-token")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 404") {
+		t.Fatalf("expected HTTP 404 error, got %v", err)
 	}
 }
