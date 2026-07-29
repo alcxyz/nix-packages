@@ -10,78 +10,80 @@
 }:
 
 let
-  version = "0.0.28-alc.1";
-  rev = "ec230183c1d25bfacbed8bb2c494fe18fef319d6";
-  src = fetchFromGitHub {
-    owner = "alcxyz";
-    repo = "t3code";
-    inherit rev;
-    hash = "sha256-icB5AykYXyOw0QDHUskzm+ltTP01eet/RdNm3edCTs8=";
-  };
+  upstreamVersion = "0.0.30";
+  version = "${upstreamVersion}-rpc-ping-60s.1";
 in
 (t3code.override {
   inherit claude-code;
   codex = codex-cli;
   enableClaude = true;
-}).overrideAttrs (
-  finalAttrs: previousAttrs: {
-    inherit version src;
+}).overrideAttrs
+  (
+    finalAttrs: previousAttrs: {
+      inherit version;
 
-    VP_SKIP_INSTALL = "1";
-    postPatch = previousAttrs.postPatch + ''
-      substituteInPlace package.json \
-        --replace-fail \
-          '"prepare": "effect-tsgo patch && vp config --no-agent"' \
-          '"prepare": "effect-tsgo patch"'
-      printf '\nverifyDepsBeforeRun: false\n' >> pnpm-workspace.yaml
-    '';
+      src = fetchFromGitHub {
+        owner = "pingdotgg";
+        repo = "t3code";
+        tag = "v${upstreamVersion}";
+        hash = "sha256-8N/TbKjaeog5+fbFr1o/Hs0xgbJijsZigo2FdOFtMco=";
+      };
 
-    nativeBuildInputs = map (
-      input: if lib.getName input == "pnpm" then pnpm_11 else input
-    ) previousAttrs.nativeBuildInputs;
+      VP_SKIP_INSTALL = "1";
+      postPatch = ''
+        substituteInPlace apps/web/vite.config.ts \
+          --replace-fail \
+            'const host = explicitHost || "localhost";' \
+            'const host = explicitHost || "127.0.0.1";'
+        substituteInPlace package.json \
+          --replace-fail \
+            '"prepare": "effect-tsgo patch && vp config --no-agent"' \
+            '"prepare": "effect-tsgo patch"'
+        printf '\nverifyDepsBeforeRun: false\n' >> pnpm-workspace.yaml
+      '';
 
-    pnpmDeps = fetchPnpmDeps {
-      pnpm = pnpm_11;
-      inherit (finalAttrs) pname;
-      inherit version src;
-      inherit (previousAttrs) pnpmWorkspaces;
-      fetcherVersion = 4;
-      hash = "sha256-JmOs6j0Tx8EgZFgvYhhnIPLmEcXirk0AlLvY+onNZhQ=";
-    };
+      nativeBuildInputs = map (
+        input: if lib.getName input == "pnpm" then pnpm_11 else input
+      ) previousAttrs.nativeBuildInputs;
 
-    preBuild = ''
-      ${lib.concatStringsSep "\n" (lib.drop 1 (lib.splitString "\n" previousAttrs.preBuild))}
-      node scripts/update-release-package-versions.ts ${version}
-    '';
+      pnpmDeps = fetchPnpmDeps {
+        pnpm = pnpm_11;
+        inherit (finalAttrs)
+          pname
+          version
+          src
+          pnpmWorkspaces
+          ;
+        fetcherVersion = 4;
+        hash = "sha256-Qiwbg1EPjcVvt8YGc0YYP+1NbgBIxMkwIyTq5f3gtl4=";
+      };
 
-    # Avoid vite-plus' dependency-status check: it launches an impure nested
-    # `pnpm install`, which aborts in the Darwin sandbox. This is the explicit
-    # build sequence used by the working Linux package as well.
-    buildPhase = ''
-      runHook preBuild
+      postInstall =
+        (previousAttrs.postInstall or "")
+        + ''
+          rpcClient="$(find "$out/libexec/t3code" \
+            -type f -path '*/effect/dist/unstable/rpc/RpcClient.js' \
+            -print -quit)"
+          if [ -z "$rpcClient" ]; then
+            echo "Could not find Effect RPC client in the T3 Code output"
+            exit 1
+          fi
 
-      viteCli="$(node -e '
-        const { createRequire } = require("node:module");
-        const { dirname, join } = require("node:path");
-        const localRequire = createRequire(require.resolve("vite-plus/package.json"));
-        process.stdout.write(join(dirname(localRequire.resolve("@voidzero-dev/vite-plus-core")), "cli.js"));
-      ')"
+          if grep -Fq 'Effect.delay("60 seconds")' "$rpcClient"; then
+            echo "Effect RPC ping interval is already 60 seconds"
+          else
+            substituteInPlace "$rpcClient" \
+              --replace-fail \
+                'Effect.delay("5 seconds")' \
+                'Effect.delay("60 seconds")'
+          fi
+        ''
+        + lib.optionalString stdenv.hostPlatform.isLinux ''
+          wrapProgram "$out/bin/t3code-desktop" --add-flags "--ozone-platform=x11"
+        '';
 
-      (cd apps/web && node "$viteCli" build)
-      (cd apps/server && node ../../node_modules/vite-plus/dist/pack-bin.js)
-      cp --recursive apps/web/dist apps/server/dist/client
-      node scripts/apply-web-brand-assets.ts development apps/server/dist/client
-      (cd apps/desktop && node scripts/build-preview-annotation-css.mjs && node ../../node_modules/vite-plus/dist/pack-bin.js)
-
-      runHook postBuild
-    '';
-
-    postInstall = previousAttrs.postInstall + lib.optionalString stdenv.hostPlatform.isLinux ''
-      wrapProgram "$out/bin/t3code-desktop" --add-flags "--ozone-platform=x11"
-    '';
-
-    meta = previousAttrs.meta // {
-      changelog = "https://github.com/alcxyz/t3code/commit/${rev}";
-    };
-  }
-)
+      meta = previousAttrs.meta // {
+        changelog = "https://github.com/pingdotgg/t3code/releases/tag/v${upstreamVersion}";
+      };
+    }
+  )
