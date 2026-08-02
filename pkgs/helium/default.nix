@@ -39,14 +39,14 @@ let
 
       # Upstream (hex) SHA256:
       # unknown
-      hash = lib.fakeHash;
+      hash = "sha256-N2W+rfqJbjv+lKnVJj7sct8vl+L2/8E3fstmmCYd7Ww=";
     } else if lib.hasPrefix "x86_64-darwin" system then {
       url =
         "https://github.com/imputnet/helium-macos/releases/download/${version}/helium_${version}_x86_64-macos.dmg";
 
       # Upstream (hex) SHA256:
       # unknown
-      hash = lib.fakeHash;
+      hash = "sha256-jlF6qiM2MJHsnyUfnOc6eTQLl1KxucQ5NXEFn5reago=";
     } else
       null;
 in
