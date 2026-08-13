@@ -23,14 +23,8 @@ let
 
   pname = "stash";
   useTopLevelPnpmFetcher = fetchPnpmDeps != null;
-  pnpmDepsFetcher =
-    if useTopLevelPnpmFetcher
-    then fetchPnpmDeps
-    else pnpm_10.fetchDeps;
-  pnpmHook =
-    if pnpmConfigHook == null
-    then pnpm_10.configHook
-    else pnpmConfigHook;
+  pnpmDepsFetcher = if useTopLevelPnpmFetcher then fetchPnpmDeps else pnpm_10.fetchDeps;
+  pnpmHook = if pnpmConfigHook == null then pnpm_10.configHook else pnpmConfigHook;
 in
 buildGoModule (
   finalAttrs:
@@ -40,23 +34,16 @@ buildGoModule (
       inherit (finalAttrs) version gitHash;
       src = "${finalAttrs.src}/ui/v2.5";
 
-      pnpmDeps =
-        pnpmDepsFetcher (
-          {
-            inherit (final) pname version src;
-            fetcherVersion =
-              if useTopLevelPnpmFetcher
-              then 3
-              else 2;
-            hash =
-              if useTopLevelPnpmFetcher
-              then finalAttrs.pnpmHashV3
-              else finalAttrs.pnpmHash;
-          }
-          // lib.optionalAttrs useTopLevelPnpmFetcher {
-            pnpm = pnpm_10;
-          }
-        );
+      pnpmDeps = pnpmDepsFetcher (
+        {
+          inherit (final) pname version src;
+          fetcherVersion = if useTopLevelPnpmFetcher then 3 else 2;
+          hash = if useTopLevelPnpmFetcher then finalAttrs.pnpmHashV3 else finalAttrs.pnpmHash;
+        }
+        // lib.optionalAttrs useTopLevelPnpmFetcher {
+          pnpm = pnpm_10;
+        }
+      );
 
       nativeBuildInputs = [
         nodejs
@@ -141,6 +128,15 @@ buildGoModule (
       # remove `-trimpath` fron `GOFLAGS` because `gqlgen` does not work with it
       GOFLAGS="''${GOFLAGS/-trimpath/}" go generate ./cmd/stash
     '';
+
+    # Upstream ships a stale vendor tree. Remove it only in buildGoModule's
+    # dependency fetcher; the final build needs the freshly generated tree.
+    overrideModAttrs = old: {
+      preBuild = ''
+        rm -rf vendor
+        ${old.preBuild or ""}
+      '';
+    };
 
     strictDeps = true;
 
