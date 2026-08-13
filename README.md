@@ -25,6 +25,7 @@ Then reference packages as `inputs.nix-packages.packages.${system}.<name>`.
 | [codex-cli](https://github.com/openai/codex) | Lightweight coding agent that runs in your terminal | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [codex-app-server](https://github.com/openai/codex) | Codex app server for GUI integrations | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [ndrop](https://github.com/schweber/ndrop) | Scratchpad toggle helper for Wayland compositors | `x86_64-linux` |
+| [OpenZFS 7.1 snapshot](https://github.com/openzfs/zfs) | Pinned unreleased OpenZFS snapshot with Linux 7.1 support | `x86_64-linux` `aarch64-linux` |
 
 ## Tools
 

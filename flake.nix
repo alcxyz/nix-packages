@@ -14,12 +14,25 @@
       nixpkgs-unstable,
       flake-utils,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    let
+      openzfs71Overlay =
+        final: _prev:
+        final.lib.optionalAttrs final.stdenv.hostPlatform.isLinux {
+          openzfs_7_1 = final.callPackage ./pkgs/openzfs-7_1 {
+            nixpkgsPath = final.path;
+          };
+        };
+    in
+    {
+      overlays.openzfs-7-1 = openzfs71Overlay;
+    }
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
+          overlays = [ openzfs71Overlay ];
         };
         unstablePkgs = import nixpkgs-unstable {
           inherit system;
@@ -63,6 +76,7 @@
         }
         // lib.optionalAttrs isLinux {
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
+          inherit (pkgs) openzfs_7_1;
           stash = pkgs.callPackage ./pkgs/stash { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           devlog = pkgs.callPackage ./tools/devlog { };
