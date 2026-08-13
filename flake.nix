@@ -16,8 +16,8 @@
     }:
     let
       openzfs71Overlay =
-        final: _prev:
-        final.lib.optionalAttrs final.stdenv.hostPlatform.isLinux {
+        final: prev:
+        prev.lib.optionalAttrs prev.stdenv.hostPlatform.isLinux {
           openzfs_7_1 = final.callPackage ./pkgs/openzfs-7_1 {
             nixpkgsPath = final.path;
           };
