@@ -9,13 +9,12 @@
   stdenv,
   t3code,
 }: let
-  upstreamVersion = "0.0.32";
-  version = "${upstreamVersion}-rpc-ping-60s.1";
+  version = "0.0.33";
   src = fetchFromGitHub {
     owner = "pingdotgg";
     repo = "t3code";
-    tag = "v${upstreamVersion}";
-    hash = "sha256-Gmn3Fz0E32TnHPEun6cReXcW/dxfl6qI1TIFHzdWRzU=";
+    tag = "v${version}";
+    hash = "sha256-qZi9hMGzqpmnpqvvVtsQvkZIiVqTgOMWv1y15MiSAYg=";
   };
   resourceMonitor = rustPlatform.buildRustPackage {
     pname = "t3-resource-monitor";
@@ -73,23 +72,6 @@ in
       postInstall =
         (previousAttrs.postInstall or "")
         + ''
-          rpcClient="$(find "$out/libexec/t3code" \
-            -type f -path '*/effect/dist/unstable/rpc/RpcClient.js' \
-            -print -quit)"
-          if [ -z "$rpcClient" ]; then
-            echo "Could not find Effect RPC client in the T3 Code output"
-            exit 1
-          fi
-
-          if grep -Fq 'Effect.delay("60 seconds")' "$rpcClient"; then
-            echo "Effect RPC ping interval is already 60 seconds"
-          else
-            substituteInPlace "$rpcClient" \
-              --replace-fail \
-                'Effect.delay("5 seconds")' \
-                'Effect.delay("60 seconds")'
-          fi
-
           install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
             "$out/libexec/t3code/apps/desktop/prod-resources/resource-monitor/t3-resource-monitor"
           install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
@@ -102,7 +84,7 @@ in
       meta =
         previousAttrs.meta
         // {
-          changelog = "https://github.com/pingdotgg/t3code/releases/tag/v${upstreamVersion}";
+          changelog = "https://github.com/pingdotgg/t3code/releases/tag/v${version}";
         };
     }
   )
