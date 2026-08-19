@@ -59,7 +59,6 @@
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
-          paneru = unstablePkgs.callPackage ./pkgs/paneru { };
         }
         // lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
           t3code = unstablePkgs.callPackage ./pkgs/t3code {
