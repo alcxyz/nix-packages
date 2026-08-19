@@ -1,117 +1,90 @@
 {
+  claude-code,
+  codex-cli,
+  fetchFromGitHub,
+  fetchPnpmDeps,
   lib,
+  pnpm_11,
+  rustPlatform,
   stdenv,
-  fetchurl,
-  appimageTools,
-  undmg,
-  bun,
-  asar,
-  system ? stdenv.hostPlatform.system,
-}:
-
-let
-  pname = "t3code";
-  version = "0.0.28";
-
-  linuxSrc = fetchurl {
-    url = "https://github.com/pingdotgg/t3code/releases/download/v${version}/T3-Code-${version}-x86_64.AppImage";
-    hash = "sha256-+mBp+wPrJRV/HpaimQHcqBuwqZcPWTbKJVNCVW7ELgo=";
+  t3code,
+}: let
+  version = "0.0.33";
+  src = fetchFromGitHub {
+    owner = "pingdotgg";
+    repo = "t3code";
+    tag = "v${version}";
+    hash = "sha256-qZi9hMGzqpmnpqvvVtsQvkZIiVqTgOMWv1y15MiSAYg=";
   };
-
-  darwinSrc = fetchurl {
-    url = "https://github.com/pingdotgg/t3code/releases/download/v${version}/T3-Code-${version}-arm64.dmg";
-    hash = "sha256-TfI1SAMbMCdRFEwLbVsIJLFXg0bpVQptlgZCmKgLBaM=";
+  resourceMonitor = rustPlatform.buildRustPackage {
+    pname = "t3-resource-monitor";
+    inherit version src;
+    sourceRoot = "${src.name}/native/resource-monitor";
+    cargoHash = "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=";
   };
-
-  appimageContents = appimageTools.extractType2 { inherit pname version; src = linuxSrc; };
 in
-if lib.hasPrefix "x86_64-linux" system then
-  appimageTools.wrapType2 {
-    inherit pname version;
-    src = linuxSrc;
+  (t3code.override {
+    inherit claude-code;
+    codex = codex-cli;
+    enableClaude = true;
+  }).overrideAttrs
+  (
+    finalAttrs: previousAttrs: {
+      inherit version;
 
-    extraInstallCommands = ''
-      desktop="$(find ${appimageContents} -maxdepth 5 -name '*.desktop' | head -n1)"
-      if [ -n "$desktop" ]; then
-        install -Dm444 "$desktop" "$out/share/applications/${pname}.desktop"
-        substituteInPlace "$out/share/applications/${pname}.desktop" \
-          --replace-warn 'Exec=AppRun' 'Exec=${pname}'
-      fi
+      inherit src;
 
-      icon="$(find ${appimageContents} -path '*/hicolor/*/apps/*.png' | head -n1)"
-      if [ -n "$icon" ]; then
-        size="$(echo "$icon" | grep -Eo '/[0-9]+x[0-9]+/' | tr -d /)"
-        install -Dm444 "$icon" \
-          "$out/share/icons/hicolor/$size/apps/${pname}.png"
-      fi
+      VP_SKIP_INSTALL = "1";
+      postPatch = ''
+        substituteInPlace apps/web/vite.config.ts \
+          --replace-fail \
+            'const host = explicitHost || "localhost";' \
+            'const host = explicitHost || "127.0.0.1";'
+        substituteInPlace package.json \
+          --replace-fail \
+            '"prepare": "node scripts/clean-tsgo-backups.mjs && effect-tsgo patch && vp config --no-agent"' \
+            '"prepare": "node scripts/clean-tsgo-backups.mjs && effect-tsgo patch"'
+        printf '\nverifyDepsBeforeRun: false\n' >> pnpm-workspace.yaml
+      '';
 
-      # Extract app.asar so the headless server can run under Bun
-      # without needing Electron's asar support.
-      ${asar}/bin/asar extract \
-        ${appimageContents}/resources/app.asar \
-        $out/lib/t3code-server
-      cp -r ${appimageContents}/resources/app.asar.unpacked/* \
-        $out/lib/t3code-server/
+      nativeBuildInputs =
+        map (
+          input:
+            if lib.getName input == "pnpm"
+            then pnpm_11
+            else input
+        )
+        previousAttrs.nativeBuildInputs;
 
-      # Headless CLI (t3 serve, t3 start, etc.) via Bun.
-      cat > "$out/bin/t3" <<'WRAPPER'
-      #!/usr/bin/env bash
-      exec "@bun@" "@out@/lib/t3code-server/apps/server/dist/bin.mjs" "$@"
-      WRAPPER
-      substituteInPlace "$out/bin/t3" \
-        --replace-warn '@bun@' '${bun}/bin/bun' \
-        --replace-warn '@out@' "$out"
-      chmod +x "$out/bin/t3"
-    '';
+      pnpmDeps = fetchPnpmDeps {
+        pnpm = pnpm_11;
+        inherit
+          (finalAttrs)
+          pname
+          version
+          src
+          pnpmWorkspaces
+          ;
+        fetcherVersion = 4;
+        hash = "sha256-i/K5bj7CS7PGIX5hfayxAJ7ngNib92w3SDKGXTVWccA=";
+      };
 
-    meta = with lib; {
-      description = "T3 Code — AI coding assistant desktop app";
-      homepage = "https://github.com/pingdotgg/t3code";
-      license = licenses.mit;
-      platforms = [ "x86_64-linux" ];
-      mainProgram = "t3code";
-    };
-  }
+      postInstall =
+        (previousAttrs.postInstall or "")
+        + ''
+          install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
+            "$out/libexec/t3code/apps/desktop/prod-resources/resource-monitor/t3-resource-monitor"
+          install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
+            "$out/libexec/t3code/apps/server/dist/resource-monitor/t3-resource-monitor"
+        ''
+        + lib.optionalString stdenv.hostPlatform.isLinux ''
+          wrapProgram "$out/bin/t3code-desktop" --add-flags "--ozone-platform=x11"
+        '';
 
-else if lib.hasPrefix "aarch64-darwin" system then
-  stdenv.mkDerivation {
-    inherit pname version;
-    src = darwinSrc;
-
-    nativeBuildInputs = [ undmg ];
-
-    unpackPhase = ''
-      undmg $src
-    '';
-
-    installPhase = ''
-      mkdir -p "$out/Applications" "$out/bin"
-
-      app="$(find . -maxdepth 3 -name '*.app' -print -quit)"
-      if [ -z "$app" ]; then
-        echo "Could not find .app inside dmg"
-        exit 1
-      fi
-      cp -r "$app" "$out/Applications/"
-
-      appName="$(basename "$app")"
-      exe="$(find "$out/Applications/$appName/Contents/MacOS" \
-        -maxdepth 1 -type f -perm -111 -print -quit)"
-      if [ -z "$exe" ]; then
-        echo "Could not find executable in $appName/Contents/MacOS"
-        exit 1
-      fi
-      ln -s "$exe" "$out/bin/t3code"
-    '';
-
-    meta = with lib; {
-      description = "T3 Code — AI coding assistant desktop app";
-      homepage = "https://github.com/pingdotgg/t3code";
-      license = licenses.mit;
-      platforms = [ "aarch64-darwin" ];
-      mainProgram = "t3code";
-    };
-  }
-
-else
-  throw "t3code: unsupported system ${system}"
+      meta =
+        previousAttrs.meta
+        // {
+          changelog = "https://github.com/pingdotgg/t3code/releases/tag/v${version}";
+        };
+    }
+  )

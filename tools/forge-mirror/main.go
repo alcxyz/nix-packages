@@ -1247,14 +1247,20 @@ func fetchForgejoRepos(forgejoURL, user string, authTokens ...string) ([]forgejo
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return nil, fmt.Errorf("Forgejo API returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
 
 		var result struct {
 			Data []forgejoRepo `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
 			return nil, err
 		}
+		resp.Body.Close()
 		if len(result.Data) == 0 {
 			break
 		}

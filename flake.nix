@@ -14,12 +14,25 @@
       nixpkgs-unstable,
       flake-utils,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    let
+      openzfs71Overlay =
+        final: prev:
+        prev.lib.optionalAttrs prev.stdenv.hostPlatform.isLinux {
+          openzfs_7_1 = final.callPackage ./pkgs/openzfs-7_1 {
+            nixpkgsPath = final.path;
+          };
+        };
+    in
+    {
+      overlays.openzfs-7-1 = openzfs71Overlay;
+    }
+    // flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
+          overlays = [ openzfs71Overlay ];
         };
         unstablePkgs = import nixpkgs-unstable {
           inherit system;
@@ -32,6 +45,7 @@
         allPackages = {
           agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
+          herdr = unstablePkgs.callPackage ./pkgs/herdr { };
           helium = pkgs.callPackage ./pkgs/helium { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
@@ -45,10 +59,11 @@
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
-          paneru = unstablePkgs.callPackage ./pkgs/paneru { };
         }
         // lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
-          t3code = pkgs.callPackage ./pkgs/t3code { };
+          t3code = unstablePkgs.callPackage ./pkgs/t3code {
+            inherit (allPackages) claude-code codex-cli;
+          };
         }
         // lib.optionalAttrs (system == "aarch64-darwin") {
           omniwm = pkgs.callPackage ./pkgs/omniwm { };
@@ -60,6 +75,7 @@
         }
         // lib.optionalAttrs isLinux {
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
+          inherit (pkgs) openzfs_7_1;
           stash = pkgs.callPackage ./pkgs/stash { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           devlog = pkgs.callPackage ./tools/devlog { };

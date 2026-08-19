@@ -13,8 +13,11 @@ current_version=$(grep -m1 'version = ' "$PKG_FILE" | grep -oP '"\K[^"]+' | head
 echo "Current: $current_version"
 
 # ── latest version from npm ───────────────────────────────────────────────────
-latest_version=$(curl -fsSL "https://registry.npmjs.org/@openai/codex/latest" \
-  | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['version'])")
+release_channel=${CODEX_NPM_TAG:-alpha}
+latest_version=$(curl -fsSL "https://registry.npmjs.org/@openai/codex" \
+  | CODEX_NPM_TAG="$release_channel" python3 -c \
+      "import os,sys,json; print(json.loads(sys.stdin.read())['dist-tags'][os.environ['CODEX_NPM_TAG']])")
+echo "Channel: $release_channel"
 echo "Latest:  $latest_version"
 
 if [[ "$current_version" == "$latest_version" ]]; then

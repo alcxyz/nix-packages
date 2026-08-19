@@ -19,7 +19,7 @@
 }:
 
 let
-  version = "1.21.5b";
+  version = "1.21.14b";
 
   policies = {
     DisableAppUpdate = true;
@@ -35,8 +35,8 @@ let
       url = "https://github.com/zen-browser/desktop/releases/download/${version}/zen.linux-x86_64.tar.xz";
 
       # Upstream (hex) SHA256:
-      # 0dea09bbc5fed9e1e32839f288a609b0b20eb1befed8d4f892e222a65dfaa069
-      hash = "sha256-DeoJu8X+2eHjKDnyiKYJsLIOsb7+2NT4kuIipl36oGk=";
+      # b3a5bb782d9403dce8cf4cde3d61daed64548568058862eaeb9e045c212b7ee0
+      hash = "sha256-s6W7eC2UA9zoz0zePWHa7WRUhWgFiGLq654EXCErfuA=";
     };
 
     nativeBuildInputs = [

@@ -20,11 +20,6 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - package: t3code
-            branch: update/t3code
-            title_prefix: "chore(t3code): update to"
-            body_name: t3code
-            upstream: "https://github.com/pingdotgg/t3code/releases/tag/v"
           - package: omniwm
             branch: update/omniwm
             title_prefix: "chore(omniwm): update to"

@@ -16,14 +16,15 @@ Then reference packages as `inputs.nix-packages.packages.${system}.<name>`.
 | Package | Description | Platforms |
 |---------|-------------|-----------|
 | [ghostty](https://ghostty.org) | Ghostty terminal emulator | `aarch64-darwin` `x86_64-darwin` |
+| [herdr](https://github.com/ogulcancelik/herdr) | Agent multiplexer that lives in your terminal | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [helium](https://github.com/imputnet/helium) | Helium browser | `x86_64-linux` `aarch64-linux` `aarch64-darwin` `x86_64-darwin` |
 | [kdash](https://github.com/kdash-rs/kdash) | Simple and fast dashboard for Kubernetes | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
-| [paneru](https://github.com/karinushka/paneru) | Sliding, tiling window manager for macOS | `aarch64-darwin` `x86_64-darwin` |
 | [t3code](https://github.com/pingdotgg/t3code) | T3 Code — AI coding assistant desktop app | `x86_64-linux` `aarch64-darwin` |
 | [claude-code](https://github.com/anthropics/claude-code) | Agentic coding tool that lives in your terminal | all |
 | [codex-cli](https://github.com/openai/codex) | Lightweight coding agent that runs in your terminal | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [codex-app-server](https://github.com/openai/codex) | Codex app server for GUI integrations | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [ndrop](https://github.com/schweber/ndrop) | Scratchpad toggle helper for Wayland compositors | `x86_64-linux` |
+| [OpenZFS 7.1 snapshot](https://github.com/openzfs/zfs) | Pinned unreleased OpenZFS snapshot with Linux 7.1 support | `x86_64-linux` `aarch64-linux` |
 
 ## Tools
 
