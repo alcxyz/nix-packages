@@ -81,6 +81,16 @@ in
           wrapProgram "$out/bin/t3code-desktop" --add-flags "--ozone-platform=x11"
         '';
 
+      passthru =
+        (previousAttrs.passthru or {})
+        // {
+          inherit resourceMonitor;
+          embeddedProviderVersions = {
+            claudeCode = claude-code.version;
+            codexCli = codex-cli.version;
+          };
+        };
+
       meta =
         previousAttrs.meta
         // {
