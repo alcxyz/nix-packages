@@ -3,8 +3,9 @@ run-name: "Merge update PR queue (${{ forgejo.event_name }})"
 
 on:
   schedule:
-    - cron: "30 0 * * *"
-    - cron: "30 1 * * *"
+    # Two passes follow the nightly scan inside the same local-time window.
+    - cron: "TZ=Europe/Oslo 10 4 * * *"
+    - cron: "TZ=Europe/Oslo 30 4 * * *"
   workflow_dispatch:
 
 jobs:
@@ -20,7 +21,7 @@ jobs:
       FORGEJO_OWNER: alcxyz
       FORGEJO_REPO: nix-packages
       BASE_BRANCH: dev
-      WAIT_FOR_STATUS_SECONDS: 1800
+      WAIT_FOR_STATUS_SECONDS: 600
       REQUIRED_STATUS_CONTEXTS: |
         Validate changes / Go tool tests (pull_request)
         Validate changes / Package build validation (pull_request)
