@@ -22,6 +22,13 @@ if [[ "$embedded_codex" != "$codex_version" ]]; then
   exit 1
 fi
 
+# The Forgejo runner builds without sandboxing. Some provider/resource builds
+# create /homeless-shelter, so isolate them and clean between Nix invocations
+# before assembling the already-cached T3 Code closure.
+nix_build .#claude-code --no-link
+nix_build .#codex-cli --no-link
+nix_build .#t3code.pnpmDeps --no-link
+nix_build .#t3code.resourceMonitor --no-link
 t3_out=$(nix_build .#t3code --no-link --print-out-paths)
 references=$(nix-store -q --references "$t3_out")
 
