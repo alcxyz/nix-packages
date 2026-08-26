@@ -7,6 +7,20 @@ set -euo pipefail
 PKG_FILE="pkgs/t3code/default.nix"
 FAKE_HASH="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
+clean_homeless_shelter() {
+  for _ in {1..10}; do
+    rm -rf /homeless-shelter
+    sleep 1
+    if [[ ! -e /homeless-shelter ]]; then
+      sleep 1
+      [[ ! -e /homeless-shelter ]] && return 0
+    fi
+  done
+
+  echo "Unable to keep /homeless-shelter absent before a non-sandboxed Nix command." >&2
+  return 1
+}
+
 current_version=$(grep -m1 'version = ' "$PKG_FILE" | grep -oP '"\K[^"]+' | head -1)
 echo "Current: $current_version"
 
@@ -49,6 +63,7 @@ fi
 
 src_url="https://github.com/pingdotgg/t3code/archive/refs/tags/v${target_version}.tar.gz"
 echo "Fetching source hash..."
+clean_homeless_shelter
 src_hash=$(nix store prefetch-file --unpack --json "$src_url" 2>/dev/null |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["hash"])')
 echo "Source hash: $src_hash"
@@ -91,6 +106,7 @@ collect_hash() {
   local hash
 
   log=$(mktemp)
+  clean_homeless_shelter
   if nix build "$attr" --no-link 2>"$log"; then
     cat "$log" >&2
     rm -f "$log"
