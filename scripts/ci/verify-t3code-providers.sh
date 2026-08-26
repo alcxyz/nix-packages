@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
+if [[ -n "$base_ref" ]]; then
+  git fetch origin "$base_ref"
+  if ! git diff --name-only "origin/${base_ref}"...HEAD | grep -Eq \
+    '^(flake\.(nix|lock)|pkgs/(claude-code|codex-app-server|codex-cli|t3code)/|scripts/ci/verify-t3code-providers\.sh$)'
+  then
+    echo "No T3 Code provider inputs changed; skipping provider closure verification."
+    exit 0
+  fi
+fi
+
 nix_build() {
   rm -rf /homeless-shelter
   nix build "$@"
