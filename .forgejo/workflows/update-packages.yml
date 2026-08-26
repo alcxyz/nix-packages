@@ -3,7 +3,7 @@ run-name: "Package update scan (${{ forgejo.event_name }})"
 
 on:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "TZ=Europe/Oslo 0 4 * * *"
   workflow_dispatch:
 
 jobs:
