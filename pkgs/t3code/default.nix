@@ -9,12 +9,12 @@
   stdenv,
   t3code,
 }: let
-  version = "0.0.33";
+  version = "0.0.34";
   src = fetchFromGitHub {
     owner = "pingdotgg";
     repo = "t3code";
     tag = "v${version}";
-    hash = "sha256-qZi9hMGzqpmnpqvvVtsQvkZIiVqTgOMWv1y15MiSAYg=";
+    hash = "sha256-dS9sDlvepbQe8ATAU/DANGcyBk+BX2mxPaoljeIUn48=";
   };
   resourceMonitor = rustPlatform.buildRustPackage {
     pname = "t3-resource-monitor";
@@ -66,7 +66,7 @@ in
           pnpmWorkspaces
           ;
         fetcherVersion = 4;
-        hash = "sha256-i/K5bj7CS7PGIX5hfayxAJ7ngNib92w3SDKGXTVWccA=";
+        hash = "sha256-y/sJIluwbn65APmJ2p07FK1ScXpetCloTHtQzZMchDU=";
       };
 
       postInstall =
@@ -80,6 +80,16 @@ in
         + lib.optionalString stdenv.hostPlatform.isLinux ''
           wrapProgram "$out/bin/t3code-desktop" --add-flags "--ozone-platform=x11"
         '';
+
+      passthru =
+        (previousAttrs.passthru or {})
+        // {
+          inherit resourceMonitor;
+          embeddedProviderVersions = {
+            claudeCode = claude-code.version;
+            codexCli = codex-cli.version;
+          };
+        };
 
       meta =
         previousAttrs.meta

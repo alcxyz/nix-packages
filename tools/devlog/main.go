@@ -326,7 +326,7 @@ func runCatchUp(args []string) int {
 				fmt.Printf("Skipping weekly %s; week is not complete yet\n", weekStr)
 				continue
 			}
-			generated, err := generateWeekly(*repoPath, monday, false, "", "", true)
+			generated, err := generateWeekly(*repoPath, monday, true)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return 1
@@ -380,9 +380,6 @@ func runWeekly(args []string) int {
 	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
 	dateStr := fs.String("date", sevenDaysAgo(), "Any date in the target week (YYYY-MM-DD)")
 	force := fs.Bool("force", false, "Regenerate weekly devlog even if it already exists")
-	hedgedocPost := fs.Bool("hedgedoc", envBool("HEDGEDOC_POST"), "Post to HedgeDoc")
-	hedgedocBin := fs.String("hedgedoc-bin", envOr("HEDGEDOC_BIN", "/home/alc/src/infra/gitops/tools/hedgedoc/hedgedoc"), "Path to hedgedoc binary")
-	hedgedocSecrets := fs.String("hedgedoc-secrets", os.Getenv("HEDGEDOC_SECRETS_FILE"), "Path to sops-encrypted HedgeDoc secrets.env")
 	fs.Parse(args)
 
 	refDate, err := time.Parse("2006-01-02", *dateStr)
@@ -391,7 +388,7 @@ func runWeekly(args []string) int {
 		return 1
 	}
 
-	generated, err := generateWeekly(*repoPath, weekday(refDate, time.Monday), *hedgedocPost, *hedgedocBin, *hedgedocSecrets, *force)
+	generated, err := generateWeekly(*repoPath, weekday(refDate, time.Monday), *force)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -410,7 +407,7 @@ func runWeekly(args []string) int {
 	return 0
 }
 
-func generateWeekly(repoPath string, monday time.Time, hedgedocPost bool, hedgedocBin, hedgedocSecrets string, force bool) (bool, error) {
+func generateWeekly(repoPath string, monday time.Time, force bool) (bool, error) {
 	friday := monday.AddDate(0, 0, 4)
 	sunday := monday.AddDate(0, 0, 6)
 	weekStr := isoWeekString(monday)
@@ -503,13 +500,6 @@ func generateWeekly(repoPath string, monday time.Time, hedgedocPost bool, hedged
 		}
 	}
 
-	// Post to HedgeDoc
-	if hedgedocPost {
-		if err := postToHedgeDoc(outfile, hedgedocBin, hedgedocSecrets); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: HedgeDoc posting failed: %v\n", err)
-		}
-	}
-
 	return true, nil
 }
 
@@ -553,38 +543,6 @@ WEEKDAY ENTRIES (Mon-Fri):
 
 WEEKEND ENTRIES (Sat-Sun):
 %s`, monday, week, week, monday, sunday, weekdayEntries, weekendEntries)
-}
-
-func postToHedgeDoc(file, bin, secretsFile string) error {
-	// If credentials aren't in env, decrypt them
-	if os.Getenv("HEDGEDOC_URL") == "" && secretsFile != "" {
-		out, err := run("sops", "--decrypt", secretsFile)
-		if err != nil {
-			return fmt.Errorf("failed to decrypt secrets: %w", err)
-		}
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			if k, v, ok := strings.Cut(line, "="); ok {
-				v = strings.TrimSpace(v)
-				v = strings.Trim(v, `"'`)
-				os.Setenv(strings.TrimSpace(k), v)
-			}
-		}
-	}
-
-	if os.Getenv("HEDGEDOC_URL") == "" {
-		return fmt.Errorf("HEDGEDOC_POST set but no credentials available")
-	}
-
-	out, err := run(bin, "post", file)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Posted to HedgeDoc: %s\n", strings.TrimSpace(out))
-	return nil
 }
 
 // --- shared helpers ---
@@ -913,16 +871,4 @@ func fileExists(path string) bool {
 
 func mustMkdir(path string) {
 	os.MkdirAll(path, 0755)
-}
-
-func envBool(key string) bool {
-	v := os.Getenv(key)
-	return v == "1" || v == "true"
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

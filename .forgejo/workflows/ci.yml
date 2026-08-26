@@ -57,3 +57,6 @@ jobs:
 
       - name: Build Go tools and changed packages
         run: scripts/ci/build-changed-packages.sh
+
+      - name: Verify T3 Code provider wiring
+        run: scripts/ci/verify-t3code-providers.sh

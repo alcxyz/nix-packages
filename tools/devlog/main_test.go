@@ -254,84 +254,6 @@ func TestBuildWeeklyPrompt(t *testing.T) {
 	}
 }
 
-func TestParseEnvLine(t *testing.T) {
-	tests := []struct {
-		line     string
-		wantKey  string
-		wantVal  string
-		wantSkip bool
-	}{
-		{`HEDGEDOC_URL="https://doc.alc.xyz"`, "HEDGEDOC_URL", "https://doc.alc.xyz", false},
-		{`HEDGEDOC_URL='https://doc.alc.xyz'`, "HEDGEDOC_URL", "https://doc.alc.xyz", false},
-		{`HEDGEDOC_URL=https://doc.alc.xyz`, "HEDGEDOC_URL", "https://doc.alc.xyz", false},
-		{`KEY = "spaced value"`, "KEY", "spaced value", false},
-		{`# comment`, "", "", true},
-		{``, "", "", true},
-		{`  `, "", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.line, func(t *testing.T) {
-			line := tt.line
-			line = trimSpace(line)
-			if line == "" || line[0] == '#' {
-				if !tt.wantSkip {
-					t.Error("expected parsed value, got skip")
-				}
-				return
-			}
-			k, v, ok := cut(line, "=")
-			if !ok {
-				if !tt.wantSkip {
-					t.Error("expected parsed value, got no cut")
-				}
-				return
-			}
-			k = trimSpace(k)
-			v = trimSpace(v)
-			v = trimQuotes(v)
-
-			if tt.wantSkip {
-				t.Error("expected skip, got parsed value")
-				return
-			}
-			if k != tt.wantKey {
-				t.Errorf("key = %q, want %q", k, tt.wantKey)
-			}
-			if v != tt.wantVal {
-				t.Errorf("val = %q, want %q", v, tt.wantVal)
-			}
-		})
-	}
-}
-
-// Minimal helpers to avoid importing strings in tests (mirrors main.go logic)
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-func cut(s, sep string) (string, string, bool) {
-	for i := 0; i <= len(s)-len(sep); i++ {
-		if s[i:i+len(sep)] == sep {
-			return s[:i], s[i+len(sep):], true
-		}
-	}
-	return s, "", false
-}
-
-func trimQuotes(s string) string {
-	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
 func TestFileExists(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -343,47 +265,6 @@ func TestFileExists(t *testing.T) {
 	}
 	if fileExists(filepath.Join(tmpDir, "nope.md")) {
 		t.Error("fileExists returned true for non-existing file")
-	}
-}
-
-func TestEnvBool(t *testing.T) {
-	os.Setenv("TEST_ENVBOOL_TRUE", "1")
-	os.Setenv("TEST_ENVBOOL_TRUE2", "true")
-	os.Setenv("TEST_ENVBOOL_FALSE", "0")
-	os.Setenv("TEST_ENVBOOL_FALSE2", "false")
-	defer func() {
-		os.Unsetenv("TEST_ENVBOOL_TRUE")
-		os.Unsetenv("TEST_ENVBOOL_TRUE2")
-		os.Unsetenv("TEST_ENVBOOL_FALSE")
-		os.Unsetenv("TEST_ENVBOOL_FALSE2")
-	}()
-
-	if !envBool("TEST_ENVBOOL_TRUE") {
-		t.Error(`envBool("1") should be true`)
-	}
-	if !envBool("TEST_ENVBOOL_TRUE2") {
-		t.Error(`envBool("true") should be true`)
-	}
-	if envBool("TEST_ENVBOOL_FALSE") {
-		t.Error(`envBool("0") should be false`)
-	}
-	if envBool("TEST_ENVBOOL_FALSE2") {
-		t.Error(`envBool("false") should be false`)
-	}
-	if envBool("TEST_ENVBOOL_UNSET") {
-		t.Error(`envBool for unset var should be false`)
-	}
-}
-
-func TestEnvOr(t *testing.T) {
-	os.Setenv("TEST_ENVOR_SET", "custom")
-	defer os.Unsetenv("TEST_ENVOR_SET")
-
-	if v := envOr("TEST_ENVOR_SET", "default"); v != "custom" {
-		t.Errorf("envOr with set var = %q, want custom", v)
-	}
-	if v := envOr("TEST_ENVOR_UNSET", "fallback"); v != "fallback" {
-		t.Errorf("envOr with unset var = %q, want fallback", v)
 	}
 }
 

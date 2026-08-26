@@ -2,15 +2,9 @@ name: Merge update PRs
 run-name: "Merge update PR queue (${{ forgejo.event_name }})"
 
 on:
-  pull_request:
-    branches:
-      - dev
-    types:
-      - opened
-      - synchronize
-      - reopened
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "30 0 * * *"
+    - cron: "30 1 * * *"
   workflow_dispatch:
 
 jobs:
