@@ -1,9 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+clean_homeless_shelter() {
+  local attempt
+
+  for attempt in {1..10}; do
+    rm -rf /homeless-shelter
+    sleep 1
+    if [[ ! -e /homeless-shelter ]]; then
+      sleep 1
+      [[ ! -e /homeless-shelter ]] && return 0
+    fi
+  done
+
+  echo "Unable to keep /homeless-shelter absent before a non-sandboxed Nix build." >&2
+  return 1
+}
+
 nix_build() {
-  rm -rf /homeless-shelter
-  nix build "$@"
+  local attempt
+  local status
+
+  for attempt in 1 2 3; do
+    clean_homeless_shelter
+    if nix build "$@"; then
+      return 0
+    else
+      status=$?
+    fi
+
+    if [[ ! -e /homeless-shelter || "$attempt" -eq 3 ]]; then
+      return "$status"
+    fi
+
+    echo "Retrying Nix build after /homeless-shelter was recreated (attempt $((attempt + 1))/3)." >&2
+  done
 }
 
 for attr in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
