@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+nix_build() {
+  rm -rf /homeless-shelter
+  nix build "$@"
+}
+
 claude_version=$(nix eval --raw .#claude-code.version)
 codex_version=$(nix eval --raw .#codex-cli.version)
 app_server_version=$(nix eval --raw .#codex-app-server.version)
@@ -17,7 +22,7 @@ if [[ "$embedded_codex" != "$codex_version" ]]; then
   exit 1
 fi
 
-t3_out=$(nix build .#t3code --no-link --print-out-paths)
+t3_out=$(nix_build .#t3code --no-link --print-out-paths)
 references=$(nix-store -q --references "$t3_out")
 
 if ! grep -Eq -- "-claude-code-${claude_version}$" <<<"$references"; then

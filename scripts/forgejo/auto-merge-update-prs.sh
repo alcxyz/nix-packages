@@ -32,12 +32,9 @@ curl -fsS "${api_auth[@]}" \
   -o "$pulls_json"
 
 mapfile -t required_contexts <<< "$REQUIRED_STATUS_CONTEXTS"
+blocked_updates=()
 
-jq -c --arg base "$BASE_BRANCH" '
-  .[]
-  | select(.base.ref == $base)
-  | select(.head.ref | startswith("update/"))
-' "$pulls_json" | jq -r '.number // .index' | while IFS= read -r number; do
+while IFS= read -r number; do
   pr="$(curl -fsS "${api_auth[@]}" "${api_base}/pulls/${number}")"
   title="$(jq -r '.title' <<< "$pr")"
   head_ref="$(jq -r '.head.ref' <<< "$pr")"
@@ -50,6 +47,7 @@ jq -c --arg base "$BASE_BRANCH" '
 
   if [ "$mergeable" != "true" ]; then
     echo "  skip: PR is not currently mergeable"
+    blocked_updates+=("#${number}: not mergeable")
     continue
   fi
 
@@ -72,6 +70,7 @@ jq -c --arg base "$BASE_BRANCH" '
 
         if [ "$mergeable" != "true" ]; then
           echo "  skip: PR is not currently mergeable after rebase"
+          blocked_updates+=("#${number}: not mergeable after rebase")
           continue
         fi
 
@@ -79,12 +78,14 @@ jq -c --arg base "$BASE_BRANCH" '
           echo "  skip: PR is still not based on current ${BASE_BRANCH} after rebase"
           echo "        merge base: ${merge_base}"
           echo "        base head:  ${base_sha}"
+          blocked_updates+=("#${number}: stale after rebase")
           continue
         fi
         ;;
       409)
         echo "  skip: rebase update reported a conflict"
         cat "$response"
+        blocked_updates+=("#${number}: rebase conflict")
         continue
         ;;
       *)
@@ -123,6 +124,7 @@ jq -c --arg base "$BASE_BRANCH" '
     if [ "${#failed_contexts[@]}" -gt 0 ]; then
       echo "  skip: required status context failed"
       printf '        %s\n' "${failed_contexts[@]}"
+      blocked_updates+=("#${number}: required status failed")
       continue 2
     fi
 
@@ -134,6 +136,7 @@ jq -c --arg base "$BASE_BRANCH" '
       echo "  skip: required status contexts are not successful"
       echo "        combined status: ${state}"
       printf '        %s\n' "${missing_contexts[@]}"
+      blocked_updates+=("#${number}: required status missing or pending")
       continue 2
     fi
 
@@ -168,4 +171,16 @@ jq -c --arg base "$BASE_BRANCH" '
       exit 1
       ;;
   esac
-done
+done < <(
+  jq -c --arg base "$BASE_BRANCH" '
+    .[]
+    | select(.base.ref == $base)
+    | select(.head.ref | startswith("update/"))
+  ' "$pulls_json" | jq -r '.number // .index'
+)
+
+if [ "${#blocked_updates[@]}" -gt 0 ]; then
+  echo "Blocked package update PRs remain:" >&2
+  printf '  %s\n' "${blocked_updates[@]}" >&2
+  exit 1
+fi

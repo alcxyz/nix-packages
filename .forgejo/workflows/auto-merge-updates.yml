@@ -10,7 +10,7 @@ on:
       - synchronize
       - reopened
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "30 1 * * *"
   workflow_dispatch:
 
 jobs:
