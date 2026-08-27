@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-07-11
+**Amended:** 2026-08-27
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
@@ -27,8 +28,8 @@ constraints:
 - interactive Wayland applications must be launched by the active compositor
   when a visible window is required; a background service is not a general
   substitute for compositor-native application launch;
-- the model selected by T3 Code may require a newer Codex CLI than npm's stable
-  `latest` tag.
+- the model selected by T3 Code previously required a newer Codex CLI than
+  npm's stable `latest` tag.
 
 ## Decision
 
@@ -47,10 +48,11 @@ The package must:
 - verify the runtime-reported T3 and provider CLI versions, not only Nix
   derivation names.
 
-Codex CLI follows npm's `alpha` dist-tag while T3 Code requires models that are
-not yet supported by stable Codex. Its updater defaults to that channel and may
-be overridden explicitly with `CODEX_NPM_TAG` when the compatibility policy
-changes.
+Codex CLI follows npm's stable `latest` dist-tag. Prerelease channels create
+substantial update churn and may move between release lines, so the updater
+must reject a prerelease resolved from the default channel. `CODEX_NPM_TAG` may
+explicitly select `alpha` or another dist-tag for a time-bounded compatibility
+exception after the stable CLI has failed the relevant T3 Code runtime check.
 
 Treat Electron Safe Storage files as application-identity-bound. Before
 switching between official and source-built desktop identities, preserve those
@@ -73,8 +75,9 @@ not a successful GUI launch and must fail runtime verification.
   server versions can diverge and become protocol-incompatible.
 - **Allow pnpm or Vite to install dependencies during the build** — Rejected
   because it bypasses Nix hashes and fails in sandboxed Darwin builds.
-- **Always track stable Codex CLI** — Rejected while required T3 models demand a
-  newer CLI. The channel choice is explicit and revisitable.
+- **Always track prerelease Codex CLI** — Rejected now that stable supports the
+  required T3 models. Prerelease channels remain available as an explicit,
+  time-bounded compatibility exception.
 - **Run the graphical desktop as a user service** — Rejected as the default
   interactive launch path because it can own the single-instance process
   without producing a usable compositor window.
@@ -83,7 +86,7 @@ not a successful GUI launch and must fail runtime verification.
 
 - Both supported platforms run the same patched T3 implementation.
 - Builds are slower than repackaging release binaries, especially on Darwin.
-- The Codex package may consume prerelease updates and therefore needs explicit
+- The Codex package follows stable releases by default and still needs explicit
   build and runtime smoke tests.
 - T3's runtime wrapper must explicitly receive the selected Codex and Claude
   derivations. Installing newer CLIs in the user profile is insufficient
@@ -91,4 +94,5 @@ not a successful GUI launch and must fail runtime verification.
 - Switching desktop distribution identities can require one-time regeneration
   of encrypted connection metadata, while project data remains independent.
 - Update automation must not replace the source build with official artifacts
-  or downgrade Codex from the selected compatibility channel.
+  or opt into a Codex prerelease channel without a documented compatibility
+  reason.
