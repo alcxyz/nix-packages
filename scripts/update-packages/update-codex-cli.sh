@@ -13,12 +13,17 @@ current_version=$(grep -m1 'version = ' "$PKG_FILE" | grep -oP '"\K[^"]+' | head
 echo "Current: $current_version"
 
 # ── latest version from npm ───────────────────────────────────────────────────
-release_channel=${CODEX_NPM_TAG:-alpha}
+release_channel=${CODEX_NPM_TAG:-latest}
 latest_version=$(curl -fsSL "https://registry.npmjs.org/@openai/codex" \
   | CODEX_NPM_TAG="$release_channel" python3 -c \
       "import os,sys,json; print(json.loads(sys.stdin.read())['dist-tags'][os.environ['CODEX_NPM_TAG']])")
 echo "Channel: $release_channel"
 echo "Latest:  $latest_version"
+
+if [[ "$release_channel" == "latest" && "$latest_version" == *-* ]]; then
+  echo "Refusing prerelease Codex version from the stable latest channel: $latest_version" >&2
+  exit 1
+fi
 
 if [[ "$current_version" == "$latest_version" ]]; then
   echo "Already up to date — nothing to do."
