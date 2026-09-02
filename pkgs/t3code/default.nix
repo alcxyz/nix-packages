@@ -9,12 +9,12 @@
   stdenv,
   t3code,
 }: let
-  version = "0.0.37";
+  version = "0.0.38";
   src = fetchFromGitHub {
     owner = "pingdotgg";
     repo = "t3code";
     tag = "v${version}";
-    hash = "sha256-a13JlK2kmcJgOlPlNDDzl4pAVtEaWTLYuz9kfiV4J5M=";
+    hash = "sha256-lbAOIlNwVxrjXA5jJGzmOm7Fe2ZcsnFuDzaSEt6R7G4=";
   };
   resourceMonitor = rustPlatform.buildRustPackage {
     pname = "t3-resource-monitor";
@@ -66,7 +66,7 @@ in
           pnpmWorkspaces
           ;
         fetcherVersion = 4;
-        hash = "sha256-RH3YzOn4R3mSwEUGFgKVNR2RdeYSyjp1MZm5m5lb5cY=";
+        hash = "sha256-t/hmpXdYPnBFx18A6NrSL4zSvVnUDIjIPtLjGOzoaDk=";
       };
 
       postInstall =
