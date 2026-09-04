@@ -77,6 +77,10 @@ pr_json() {
     if ((reads == 1)); then
       mergeable=false
     fi
+  elif [[ "$number" == 1 && "$base" != base0 ]]; then
+    # Forgejo temporarily reports a stale PR as non-mergeable immediately
+    # after another PR changes the target branch.
+    mergeable=false
   fi
 
   printf '{"number":%s,"title":"update %s","head":{"ref":"update/pkg-%s","sha":"%s"},"base":{"ref":"dev","sha":"%s"},"merge_base":"%s","mergeable":%s}' \

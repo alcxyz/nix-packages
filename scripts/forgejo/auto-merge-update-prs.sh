@@ -47,12 +47,6 @@ while IFS= read -r number; do
 
   echo "Checking PR #${number} (${head_ref}): ${title}"
 
-  if [ "$mergeable" != "true" ]; then
-    echo "  skip: PR is not currently mergeable"
-    blocked_updates+=("#${number}: not mergeable")
-    continue
-  fi
-
   if [ "$merge_base" != "$base_sha" ]; then
     echo "  rebase: PR is not based on current ${BASE_BRANCH}"
     echo "        merge base: ${merge_base}"
@@ -101,6 +95,10 @@ while IFS= read -r number; do
         exit 1
         ;;
     esac
+  elif [ "$mergeable" != "true" ]; then
+    echo "  skip: current PR is not mergeable"
+    blocked_updates+=("#${number}: not mergeable")
+    continue
   fi
 
   deadline=$((SECONDS + wait_for_status_seconds))
