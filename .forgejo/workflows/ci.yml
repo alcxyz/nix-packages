@@ -45,7 +45,10 @@ jobs:
       - name: Install runner prerequisites
         run: |
           apt-get update
-          apt-get install -y sudo
+          apt-get install -y jq sudo
+
+      - name: Test package update automation
+        run: scripts/ci/test-auto-merge-update-prs.sh
 
       - uses: https://github.com/cachix/install-nix-action@v30
         with:

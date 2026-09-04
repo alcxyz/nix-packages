@@ -3,9 +3,9 @@ run-name: "Merge update PR queue (${{ forgejo.event_name }})"
 
 on:
   schedule:
-    # Two passes cover validations completing between 04:30 and 05:35.
-    - cron: "TZ=Europe/Oslo 30 4 * * *"
-    - cron: "TZ=Europe/Oslo 5 5 * * *"
+    # Retry throughout the validation window. Each run drains every update it
+    # can and a later run catches PRs created after an earlier snapshot.
+    - cron: "TZ=Europe/Oslo 30 4-7 * * *"
   workflow_dispatch:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     concurrency:
       group: package-update-auto-merge
-      cancel-in-progress: true
+      cancel-in-progress: false
     env:
       FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
       FORGEJO_URL: https://git.alc.xyz
@@ -22,6 +22,7 @@ jobs:
       FORGEJO_REPO: nix-packages
       BASE_BRANCH: dev
       WAIT_FOR_STATUS_SECONDS: 1800
+      WAIT_FOR_MERGEABLE_SECONDS: 300
       REQUIRED_STATUS_CONTEXTS: |
         Validate changes / Go tool tests (pull_request)
         Validate changes / Package build validation (pull_request)
@@ -37,6 +38,9 @@ jobs:
         run: |
           apt-get update
           apt-get install -y jq
+
+      - name: Test merge queue logic
+        run: scripts/ci/test-auto-merge-update-prs.sh
 
       - name: Merge green package update PRs
         run: scripts/forgejo/auto-merge-update-prs.sh
