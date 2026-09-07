@@ -59,26 +59,61 @@ fi
 
 echo "Detecting changed packages against ${base}"
 
-changed_attrs="$(
-  git diff --name-only "${base}"...HEAD \
-    | awk -F/ '/^(pkgs|tools)\/[^/]+\// { print $2 }' \
-    | sort -u
-)"
+# Attribute names do not force derivations. Decide platform membership before
+# evaluating drvPath so a broken Linux export cannot look like a Darwin-only one.
+exports=$(nix eval .#packages --json --apply 'builtins.mapAttrs (_: builtins.attrNames)')
+changed_files=$(git diff --name-only "${base}"...HEAD)
+changed_attrs=()
+full_matrix=false
+while IFS= read -r path; do
+  case "$path" in
+    ""|docs/*|README.md|AGENTS.md|LICENSE*) ;;
+    # These packages are also inputs to other packages in flake.nix.
+    pkgs/claude-code/*|pkgs/codex-cli/*|pkgs/xonsh-direnv/*)
+      full_matrix=true
+      ;;
+    pkgs/*/*|tools/*/*)
+      attr=${path#*/}
+      attr=${attr%%/*}
+      # The overlay attribute uses an underscore in its version suffix.
+      [[ "$attr" == openzfs-7_1 ]] && attr=openzfs_7_1
+      changed_attrs+=("$attr")
+      ;;
+    *)
+      # Root flake files and shared scripts/inputs can affect any package.
+      full_matrix=true
+      ;;
+  esac
+done <<<"$changed_files"
 
-for attr in $changed_attrs; do
+if "$full_matrix"; then
+  echo "Shared inputs changed; validating the complete exported package matrix."
+  selected=$(jq -r '[.[][]] | unique[]' <<<"$exports")
+else
+  selected=$(printf '%s\n' "${changed_attrs[@]}" | sort -u)
+fi
+
+while IFS= read -r attr; do
+  [[ -z "$attr" ]] && continue
   echo "::group::changed package ${attr}"
-  if [ ! -e "pkgs/${attr}" ] && [ ! -e "tools/${attr}" ]; then
-    echo "${attr} was deleted in this change; skipping package build."
-    echo "::endgroup::"
-    continue
+  systems=$(jq -r --arg attr "$attr" 'to_entries[] | select(.value | index($attr)) | .key' <<<"$exports")
+  if [[ -z "$systems" ]]; then
+    if [[ -e "pkgs/${attr}" || -e "tools/${attr}" ]]; then
+      echo "${attr} has source files but no exported package; check its flake mapping." >&2
+      exit 1
+    fi
+    echo "${attr} has no remaining export; skipping removed package."
   fi
-
-  if nix eval ".#packages.x86_64-linux.${attr}.drvPath" >/dev/null 2>&1; then
-    nix_build ".#${attr}"
-  else
-    echo "${attr} is not buildable on the x86_64-linux runner; validating Darwin package metadata."
-    nix eval ".#packages.aarch64-darwin.${attr}.meta.platforms" --json >/dev/null \
-      || nix eval ".#packages.x86_64-darwin.${attr}.meta.platforms" --json >/dev/null
-  fi
+  while IFS= read -r system; do
+    [[ -z "$system" ]] && continue
+    package=".#packages.${system}.${attr}"
+    echo "Evaluating ${package}.drvPath"
+    nix eval "${package}.drvPath" >/dev/null
+    if [[ "$system" == x86_64-linux ]]; then
+      nix_build "$package"
+    else
+      echo "${system}: derivation evaluated only; no native build on this runner."
+    fi
+  done <<<"$systems"
   echo "::endgroup::"
-done
+done <<<"$selected"

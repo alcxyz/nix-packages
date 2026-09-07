@@ -45,10 +45,13 @@ jobs:
       - name: Install runner prerequisites
         run: |
           apt-get update
-          apt-get install -y jq sudo
+          apt-get install -y jq python3 sudo
 
       - name: Test package update automation
-        run: scripts/ci/test-auto-merge-update-prs.sh
+        run: |
+          scripts/ci/test-auto-merge-update-prs.sh
+          scripts/ci/test-build-changed-packages.sh
+          scripts/ci/test-helium-updater.sh
 
       - uses: https://github.com/cachix/install-nix-action@v30
         with:
@@ -57,6 +60,9 @@ jobs:
 
       - name: Validate package hashes
         run: scripts/ci/validate-package-hashes.sh
+
+      - name: Evaluate all exported package platforms
+        run: scripts/ci/validate-package-platforms.sh
 
       - name: Build Go tools and changed packages
         run: scripts/ci/build-changed-packages.sh

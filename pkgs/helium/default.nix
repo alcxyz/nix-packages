@@ -50,6 +50,10 @@ let
     } else
       null;
 in
+assert lib.assertMsg (linuxAsset == null || linuxAsset.hash != lib.fakeHash)
+  "Helium has no verified Linux asset for ${system}";
+assert lib.assertMsg (darwinAsset == null || darwinAsset.hash != lib.fakeHash)
+  "Helium has no verified Darwin asset for ${system}";
 if linuxAsset != null then
   let
     src = fetchurl {
@@ -83,7 +87,7 @@ if linuxAsset != null then
       description = "Helium Browser (AppImage)";
       homepage = "https://github.com/imputnet/helium";
       license = with licenses; [ gpl3Only bsd3 ];
-      platforms = [ "x86_64-linux" "aarch64-linux" ];
+      platforms = [ "x86_64-linux" ];
       mainProgram = "helium";
     };
   }
