@@ -45,8 +45,6 @@
         allPackages = {
           agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
-          herdr = unstablePkgs.callPackage ./pkgs/herdr { };
-          helium = pkgs.callPackage ./pkgs/helium { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
           codex-app-server = pkgs.callPackage ./pkgs/codex-app-server { };
@@ -57,6 +55,28 @@
             inherit (allPackages) xonsh-direnv;
           };
         }
+        //
+          lib.optionalAttrs
+            (builtins.elem system [
+              "x86_64-linux"
+              "aarch64-linux"
+              "aarch64-darwin"
+            ])
+            {
+              # The pinned unstable Darwin SDK dependency does not support Intel.
+              herdr = unstablePkgs.callPackage ./pkgs/herdr { };
+            }
+        //
+          lib.optionalAttrs
+            (builtins.elem system [
+              "x86_64-linux"
+              "aarch64-darwin"
+              "x86_64-darwin"
+            ])
+            {
+              # ARM Linux has no verified asset; do not advertise its placeholder.
+              helium = pkgs.callPackage ./pkgs/helium { };
+            }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
         }
@@ -83,8 +103,11 @@
         };
       in
       {
-        packages = allPackages;
-        defaultPackage = allPackages.helium;
+        packages =
+          allPackages
+          // lib.optionalAttrs (allPackages ? helium) {
+            default = allPackages.helium;
+          };
       }
     );
 }

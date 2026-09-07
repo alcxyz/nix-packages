@@ -56,6 +56,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
     changelog = "https://github.com/ogulcancelik/herdr/releases/tag/v${finalAttrs.version}";
     license = lib.licenses.agpl3Only;
     mainProgram = "herdr";
-    platforms = lib.platforms.linux ++ lib.platforms.darwin;
+    platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
   };
 })

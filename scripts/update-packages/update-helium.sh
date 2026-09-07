@@ -4,15 +4,14 @@
 # computes Nix SRI hashes for all four platform assets, and patches
 # pkgs/helium/default.nix.  Sets GITHUB_OUTPUT: updated, version.
 #
-# Assets that do not exist on a given release return lib.fakeHash so the
-# nix file stays valid; real hashes replace fakeHash as soon as upstream
-# publishes the asset.
+# Only the unexported ARM Linux asset is optional. Download failures for any
+# advertised platform must stop the update before changing the package file.
 set -euo pipefail
 
 PKG_FILE="pkgs/helium/default.nix"
 
 # ── current version ────────────────────────────────────────────────────────────
-current_version=$(grep -m1 'version = ' "$PKG_FILE" | grep -oP '"\K[^"]+')
+current_version=$(grep -m1 'version = ' "$PKG_FILE" | cut -d '"' -f2)
 echo "Current: $current_version"
 
 # ── latest release (helium-linux is canonical) ────────────────────────────────
@@ -33,23 +32,37 @@ if [[ "$current_version" == "$latest_version" ]]; then
 fi
 
 # ── hash helper ────────────────────────────────────────────────────────────────
-# Returns the Nix SRI hash for a URL, or the literal string "lib.fakeHash" if
-# the asset does not exist (404 / any non-200 response).
+# Returns the Nix SRI hash for a URL. The explicit optional asset may retain
+# lib.fakeHash until a verified release is available and support is enabled.
 compute_sri() {
   local url="$1"
+  local optional="${2:-false}"
   local tmp
   tmp=$(mktemp)
   echo "  fetching: $url" >&2
   if ! curl -fsSL -o "$tmp" "$url" 2>/dev/null; then
-    echo "  → asset not found, will use lib.fakeHash" >&2
     rm -f "$tmp"
-    printf 'lib.fakeHash'
-    return
+    if [[ "$optional" == true ]]; then
+      echo "  → optional asset unavailable; keeping it unexported" >&2
+      printf 'lib.fakeHash'
+      return
+    fi
+    echo "Failed to fetch required Helium asset: $url" >&2
+    return 1
   fi
-  local hex
-  hex=$(sha256sum "$tmp" | awk '{print $1}')
+  local hash
+  hash=$(python3 - "$tmp" <<'PY'
+import base64
+import hashlib
+import sys
+
+with open(sys.argv[1], 'rb') as asset:
+    digest = hashlib.file_digest(asset, 'sha256').digest()
+print('sha256-' + base64.b64encode(digest).decode())
+PY
+  )
   rm -f "$tmp"
-  printf 'sha256-%s' "$(printf '%s' "$hex" | xxd -r -p | base64 -w0)"
+  printf '%s' "$hash"
 }
 
 validate_sri() {
@@ -70,7 +83,7 @@ v="$latest_version"
 hash_linux_x86=$(compute_sri \
   "https://github.com/imputnet/helium-linux/releases/download/${v}/helium-${v}-x86_64.AppImage")
 hash_linux_arm=$(compute_sri \
-  "https://github.com/imputnet/helium-linux/releases/download/${v}/helium_${v}_arm64.AppImage")
+  "https://github.com/imputnet/helium-linux/releases/download/${v}/helium_${v}_arm64.AppImage" true)
 hash_darwin_arm=$(compute_sri \
   "https://github.com/imputnet/helium-macos/releases/download/${v}/helium_${v}_arm64-macos.dmg")
 hash_darwin_x86=$(compute_sri \
