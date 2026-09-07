@@ -87,3 +87,18 @@ The scheduled updater may retry on the next scheduled run from a clean checkout.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
 - Manual `dev` to `main` promotion cannot rely on the repository's default branch cleanup; only disposable `update/*` branches are deleted by automation.
+
+## September 2026 follow-through
+
+The [repository audit milestone](https://git.alc.xyz/alcxyz/nix-packages/milestone/284)
+tracks gaps found while reviewing the producer and its configuration consumer:
+
+- [Do not classify supported-platform evaluation errors as platform absence](https://git.alc.xyz/alcxyz/nix-packages/issues/320)
+- [Make advertised package platforms and defaults usable](https://git.alc.xyz/alcxyz/nix-packages/issues/321)
+- [Validate packages in the actual consumer dependency context](https://git.alc.xyz/alcxyz/nix-config/issues/275)
+
+The proposed
+[consumer-validation ADR](https://git.alc.xyz/alcxyz/nix-config/pulls/283)
+records the additional producer/consumer contract. Existing fail-loud policy
+remains accepted; the listed implementation gaps remain open until their
+Forgejo issues are completed.
