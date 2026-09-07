@@ -54,11 +54,11 @@ func TestConfiguredGithubPrimaryReposDefaultAndExplicitEmptyFile(t *testing.T) {
 	if err != nil || !repos["repo-a"] || !repos["repo-b"] {
 		t.Fatalf("default config: repos=%v, err=%v", repos, err)
 	}
-	// A supplied list overrides the default file, but an explicit file is additive.
+	// A supplied list remains additive with both default and explicit files.
 	t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS", "repo-c")
 	repos, err = configuredGithubPrimaryRepos()
-	if err != nil || len(repos) != 1 || !repos["repo-c"] {
-		t.Fatalf("env override: repos=%v, err=%v", repos, err)
+	if err != nil || len(repos) != 3 || !repos["repo-c"] {
+		t.Fatalf("default file plus environment: repos=%v, err=%v", repos, err)
 	}
 	t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE", path)
 	repos, err = configuredGithubPrimaryRepos()

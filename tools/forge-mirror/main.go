@@ -59,8 +59,15 @@ func configuredGithubPrimaryRepos() (map[string]bool, error) {
 	envList := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS")
 	filePath := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
 
-	if filePath == "" && strings.TrimSpace(envList) == "" {
+	if filePath == "" {
 		filePath = defaultGithubPrimaryReposFile()
+		// Keep the default file additive when present. An environment list can
+		// stand alone only when no default file exists, not when it is unreadable.
+		if filePath != "" && strings.TrimSpace(envList) != "" {
+			if _, err := os.Stat(filePath); os.IsNotExist(err) {
+				filePath = ""
+			}
+		}
 	}
 	if filePath == "" && strings.TrimSpace(envList) == "" {
 		return nil, fmt.Errorf("github-primary repo config missing; set FORGE_MIRROR_GITHUB_PRIMARY_REPOS or FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
@@ -369,7 +376,8 @@ Environment:
   FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE File containing GitHub-primary repo names
                          Required for sync/primary/convert/recreate/mirror-github/audit;
                          protects against outgoing GitHub mirrors and Forgejo-primary conversion.
-                         Without either setting, reads $XDG_CONFIG_HOME/forge-mirror/github-primary-repos.
+                         The list is additive with the file; the file defaults to
+                         $XDG_CONFIG_HOME/forge-mirror/github-primary-repos when present.
                          An explicitly configured empty file permits an empty exception list.
   CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
   CODEBERG_USER        Codeberg username (default: alcxyz)
