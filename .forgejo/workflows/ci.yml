@@ -48,7 +48,9 @@ jobs:
           apt-get install -y jq sudo
 
       - name: Test package update automation
-        run: scripts/ci/test-auto-merge-update-prs.sh
+        run: |
+          scripts/ci/test-auto-merge-update-prs.sh
+          scripts/ci/test-build-changed-packages.sh
 
       - uses: https://github.com/cachix/install-nix-action@v30
         with:

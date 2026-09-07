@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-06-09
+**Updated:** 2026-09-07
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -39,8 +39,12 @@ CI must:
 
 - reject empty SRI hashes such as `hash = "sha256-";`
 - test every Go tool module present under `tools/`
-- build the changed `x86_64-linux` package when the runner can evaluate it
-- validate Darwin-only package metadata when the Linux runner cannot build the package
+- determine platform membership from exported attribute names before evaluating a derivation
+- fail with the original diagnostic when any selected exported derivation cannot evaluate, including on non-native systems
+- build every selected `x86_64-linux` export; evaluating another platform is never a fallback for a failed Linux evaluation or build
+- evaluate selected exports on all other systems, reporting this as derivation evaluation rather than a successful native build
+- expand selection to all exports when root flake files, shared inputs, CI scripts, or package inputs consumed by other packages change; keep the shared-package list in the selector aligned with dependencies in `flake.nix`
+- regression-test package selection and failure classification with mocked Nix commands in CI
 - compare pull request heads against the target branch, and use a conservative promotion baseline when the runner does not expose a target branch variable
 - avoid stale references to deleted or retired packages
 
