@@ -70,6 +70,12 @@ interface; whitespace and shell metacharacters are rejected before planning.
 - One package owns CLI behavior and black-box contract tests.
 - Missing, malformed, or unsupported inventory fails before deployment work.
 - Schema changes require a new version or backward-compatible optional fields.
-- Fleet Home Manager eligibility retains the current behavior: the consumer's
-  fleet list controls the candidates, while explicit `--hm` validates the Home
-  Manager host list. Revising that distinction is a separate behavior change.
+- Fleet system and Home Manager phases derive independent candidates from the
+  selected fleet. The Home Manager phase considers only `homeManagerHosts`,
+  including an eligible local host, so a system endpoint failure does not
+  suppress a separately reachable Home Manager endpoint. `--fail-unreachable`
+  still makes an unreachable candidate fail its phase instead of being
+  skipped.
+- Fleet mode starts the local sudo keepalive only when the reachable system
+  phase contains a local rebuild job. Remote-only orchestration does not prompt
+  for or refresh local sudo credentials.

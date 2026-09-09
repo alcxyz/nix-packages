@@ -135,18 +135,35 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, _ = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
     assert not any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
     assert any(c[0] == "nixos-rebuild" and ".#solo" in c for c in calls)
+    assert ["sudo", "-v"] in calls
     calls, _ = run("--all", "--nixos", "--fail-unreachable", status=1, MOCK_UNREACHABLE="node.invalid")
     assert not actions(calls)
-    # Existing fleet semantics include NixOS-only hosts in the candidate list;
-    # retain the failure while verifying recursive children keep the inventory.
-    calls, _ = run("--all", "--hm", "--no-preflight", status=1)
+    calls, _ = run("--all", MOCK_UNREACHABLE="root@node.invalid")
+    assert not any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    assert ["nix", "build", "--no-link", "--print-out-paths", ".#homeConfigurations.alc-node.activationPackage"] in calls
+    assert not any("alc-solo.activationPackage" in arg for c in calls for arg in c)
+    calls, _ = run("--all", "--fail-unreachable", status=1, MOCK_UNREACHABLE="root@node.invalid")
+    assert not actions(calls)
+    calls, _ = run("--all", "--fail-unreachable", status=1, MOCK_UNREACHABLE="alc@node.invalid")
+    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    assert not any(c[0] == "nix" and "alc-node.activationPackage" in c[-1] for c in calls)
+    calls, _ = run("--all", "--hm", "--no-preflight")
     parallel = next(c for c in calls if c[0] == "parallel")
     recursive_jobs = [job for job in parallel[parallel.index(":::") + 1:] if "deploy --config" in job]
     assert recursive_jobs and all(shlex.split(job.split("\t", 2)[2])[2] == str(config) for job in recursive_jobs)
+    assert all(" solo" not in job for job in recursive_jobs)
+    assert ["home-manager", "switch", "--flake", ".#alc-xyz"] in calls
     calls, _ = run("--all", "--here", "--no-preflight", "--nixos", host="mac", system="Darwin")
     assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
     assert not any("--build-host" in c for c in calls)
     assert not any(".#xyz" in c for c in calls)
+    assert not any(c[0] == "sudo" for c in calls)
+    config.write_text(json.dumps({**HOST_DATA, "deployAllHosts": ["solo"]}))
+    calls, result = run("--all", "--hm")
+    assert not actions(calls)
+    assert not any(c[0] in {"ssh", "sudo", "parallel"} for c in calls)
+    assert "no Home Manager-eligible hosts" in result.stdout
+    config.write_text(json.dumps(HOST_DATA))
     calls, _ = run("--nixos", host="mac", system="Darwin")
     assert ["sudo", "/run/current-system/sw/bin/darwin-rebuild", "switch", "--flake", ".#mac"] in calls
     calls, _ = run("--no-preflight", "--nixos", "node", MOCK_SWITCH_FAILURE="inhibited")
@@ -185,4 +202,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     reject_inventory({**HOST_DATA, "aliases": {"node": "solo"}}, "does not satisfy schemaVersion 1")
     reject_inventory({**HOST_DATA, "remoteHosts": ["missing"]}, "does not satisfy schemaVersion 1")
 
-print("Deployment contract: 19 mocked CLI cases and 7 invalid inventories passed; no deployment commands executed")
+print("Deployment contract: 23 mocked CLI cases and 7 invalid inventories passed; no deployment commands executed")

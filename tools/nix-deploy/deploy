@@ -582,7 +582,10 @@ do_deploy() {
 
 do_deploy_all() {
   local mode="$1"
-  local deploy_hosts=("${DEPLOY_ALL_HOSTS[@]}")
+  local selected_hosts=("${DEPLOY_ALL_HOSTS[@]}")
+  local system_candidates=()
+  local hm_candidates=()
+  local host
 
   if [[ "$SELF" != "$OPERATOR_HOST" && "$BUILD_HERE" != true ]]; then
     echo "deploy --all must be run from ${OPERATOR_HOST}, or pass --here to run from ${SELF}" >&2
@@ -590,7 +593,7 @@ do_deploy_all() {
   fi
 
   if [[ "$SELF" != "$OPERATOR_HOST" && "$BUILD_HERE" == true ]]; then
-    deploy_hosts=("${REMOTE_HOSTS[@]}")
+    selected_hosts=("${REMOTE_HOSTS[@]}")
   fi
 
   if ! command -v parallel &>/dev/null; then
@@ -598,19 +601,36 @@ do_deploy_all() {
     exit 1
   fi
 
+  system_candidates=("${selected_hosts[@]}")
+  for host in "${selected_hosts[@]}"; do
+    if uses_home_manager "$host"; then
+      hm_candidates+=("$host")
+    fi
+  done
+
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
     local system_jobs=()
     local interactive_system_jobs=()
-    local host cmd
+    local system_hosts=()
+    local cmd
+    local has_local_system_job=false
 
-    filter_reachable_hosts "nixos" "${deploy_hosts[@]}"
-    deploy_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
+    filter_reachable_hosts "nixos" "${system_candidates[@]}"
+    system_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
 
-    start_sudo_keepalive
-    trap stop_sudo_keepalive EXIT
+    for host in "${system_hosts[@]}"; do
+      if [[ "$host" == "$SELF" ]]; then
+        has_local_system_job=true
+        break
+      fi
+    done
+    if [[ "$has_local_system_job" == true ]]; then
+      start_sudo_keepalive
+      trap stop_sudo_keepalive EXIT
+    fi
     section "system rebuilds"
 
-    for host in "${deploy_hosts[@]}"; do
+    for host in "${system_hosts[@]}"; do
       if [[ "$host" == "$SELF" ]]; then
         if is_darwin; then
           cmd="sudo -n /run/current-system/sw/bin/darwin-rebuild switch --flake .#${host}"
@@ -642,14 +662,20 @@ do_deploy_all() {
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
     local hm_jobs=()
-    local host cmd
+    local hm_hosts=()
+    local cmd
 
-    filter_reachable_hosts "hm" "${deploy_hosts[@]}"
-    deploy_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
+    if [[ ${#hm_candidates[@]} -eq 0 ]]; then
+      echo "deploy: no Home Manager-eligible hosts in selected fleet"
+      return 0
+    fi
+
+    filter_reachable_hosts "hm" "${hm_candidates[@]}"
+    hm_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
 
     section "home-manager switches"
 
-    for host in "${deploy_hosts[@]}"; do
+    for host in "${hm_hosts[@]}"; do
       if [[ "$host" == "$SELF" ]]; then
         cmd="home-manager switch --flake .#${HOME_OUTPUT_PREFIX}${host}"
       else
