@@ -1512,19 +1512,22 @@ func ensurePushURL(repoPath, forgejoHTTPS, forgejoURL, forgejoSSHHost string) (b
 
 	// Migrate: remove any old SSH push URLs for Forgejo
 	migrated := false
+	removed := make(map[string]struct{})
 	for _, u := range explicitPushURLs {
 		if isSSHRemote(u) && remoteMatchesForgejo(u, forgejoURL, forgejoSSHHost, forgejoHTTPS) {
-			gitCmd(repoPath, "remote", "set-url", "--delete", "--push", "origin", u)
+			if _, alreadyRemoved := removed[u]; alreadyRemoved {
+				continue
+			}
+			if err := gitCmd(repoPath, "config", "--fixed-value", "--unset-all", "remote.origin.pushurl", u); err != nil {
+				return false, fmt.Errorf("remove old Forgejo SSH push URL: %w", err)
+			}
+			removed[u] = struct{}{}
 			migrated = true
 		}
 	}
 	if migrated {
 		// Re-read after cleanup
 		explicitPushURLs = getExplicitPushURLs(repoPath)
-		// If we removed all push URLs (only had SSH), reset to clean state
-		if len(explicitPushURLs) == 0 {
-			// No explicit URLs left — git falls back to fetch URL, which is fine
-		}
 	}
 
 	// Already has the correct HTTPS push URL

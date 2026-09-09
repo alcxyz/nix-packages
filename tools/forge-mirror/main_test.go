@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -293,6 +294,8 @@ func TestEnsurePushURLUsesConfiguredForgejoHosts(t *testing.T) {
 		{"remote", "add", "origin", "https://github.com/example/sample-repo.git"},
 		{"remote", "set-url", "--add", "--push", "origin", "https://github.com/example/sample-repo.git"},
 		{"remote", "set-url", "--add", "--push", "origin", "git@ssh.forge.test:forge-user/sample-repo.git"},
+		{"remote", "set-url", "--add", "--push", "origin", "git@ssh.forge.test:forge-user/sample-repo.git"},
+		{"remote", "set-url", "--add", "--push", "origin", "git@sshXforgeYtest:forge-user/sample-repo.git"},
 	}
 	for _, args := range commands {
 		if output, err := exec.Command("git", append([]string{"-C", repoPath}, args...)...).CombinedOutput(); err != nil {
@@ -309,9 +312,48 @@ func TestEnsurePushURLUsesConfiguredForgejoHosts(t *testing.T) {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
 	pushURLs := getExplicitPushURLs(repoPath)
-	joined := strings.Join(pushURLs, "\n")
-	if strings.Contains(joined, "ssh.forge.test") || !strings.Contains(joined, "https://forge.test/") || !strings.Contains(joined, "https://github.com/") {
+	want := []string{
+		"https://github.com/example/sample-repo.git",
+		"git@sshXforgeYtest:forge-user/sample-repo.git",
+		"https://forge.test/forge-user/sample-repo.git",
+	}
+	if !reflect.DeepEqual(pushURLs, want) {
 		t.Fatalf("unexpected push URLs: %v", pushURLs)
+	}
+}
+
+func TestEnsurePushURLReportsPushURLDeletionFailure(t *testing.T) {
+	repoPath := t.TempDir()
+	commands := [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "https://github.com/example/sample-repo.git"},
+		{"remote", "set-url", "--add", "--push", "origin", "https://forge.test/forge-user/sample-repo.git"},
+		{"remote", "set-url", "--add", "--push", "origin", "git@ssh.forge.test:forge-user/sample-repo.git"},
+	}
+	for _, args := range commands {
+		if output, err := exec.Command("git", append([]string{"-C", repoPath}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, ".git", "config.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pushURLsBefore := getExplicitPushURLs(repoPath)
+
+	changed, err := ensurePushURL(
+		repoPath,
+		"https://forge.test/forge-user/sample-repo.git",
+		"https://forge.test",
+		"ssh.forge.test",
+	)
+	if err == nil {
+		t.Fatalf("changed=%v, expected push URL deletion error", changed)
+	}
+	if changed {
+		t.Fatal("push URL migration reported a change after deletion failed")
+	}
+	if pushURLsAfter := getExplicitPushURLs(repoPath); !reflect.DeepEqual(pushURLsAfter, pushURLsBefore) {
+		t.Fatalf("push URLs changed after deletion failed: before=%v after=%v", pushURLsBefore, pushURLsAfter)
 	}
 }
 
