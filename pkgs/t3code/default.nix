@@ -1,4 +1,5 @@
 {
+  applyPatches,
   claude-code,
   codex-cli,
   fetchFromGitHub,
@@ -10,25 +11,34 @@
   rustPlatform,
   stdenv,
   t3code,
+  withPatch ? false,
 }:
 
 let
-  version = "0.0.38";
-  src = fetchFromGitHub {
+  source = builtins.fromJSON (builtins.readFile ./source.json);
+  patchRevision = 1;
+  patchHash = builtins.hashFile "sha256" ./patches/automatic-thread-titles.patch;
+  patchId = builtins.substring 0 10 patchHash;
+  version =
+    source.version + lib.optionalString withPatch "-fork.${toString patchRevision}+p${patchId}";
+  upstreamSrc = fetchFromGitHub {
     owner = "pingdotgg";
     repo = "t3code";
-    tag = "v${version}";
-    hash = "sha256-lbAOIlNwVxrjXA5jJGzmOm7Fe2ZcsnFuDzaSEt6R7G4=";
+    rev = source.revision;
+    hash = source.hash;
   };
-  cargoHash = "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=";
-  pnpmDeps = {
-    fetcherVersion = 4;
-    hash = "sha256-t/hmpXdYPnBFx18A6NrSL4zSvVnUDIjIPtLjGOzoaDk=";
-  };
+  src =
+    if withPatch then
+      applyPatches {
+        name = "t3code-${version}-source";
+        src = upstreamSrc;
+        patches = [ ./patches/automatic-thread-titles.patch ];
+      }
+    else
+      upstreamSrc;
 in
 import ./build.nix {
   inherit
-    cargoHash
     claude-code
     codex-cli
     fetchPnpmDeps
@@ -42,8 +52,10 @@ import ./build.nix {
     t3code
     version
     ;
-  changelog = "https://github.com/pingdotgg/t3code/releases/tag/v${version}";
-  pnpmDepsHash = pnpmDeps.hash;
-  sourceRevision = "v${version}";
-  variant = "upstream";
+  inherit (source) cargoHash pnpmDepsHash;
+  changelog = "https://github.com/pingdotgg/t3code/releases/tag/v${source.version}";
+  sourceRevision = source.revision;
+  variant = if withPatch then "fork" else "upstream";
+  patchHash = if withPatch then patchHash else null;
+  patchRevision = if withPatch then patchRevision else null;
 }

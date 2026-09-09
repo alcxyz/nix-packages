@@ -10,10 +10,10 @@ fi
 checkout=$(realpath "$1")
 package_root=$(realpath "$(dirname "$0")/../..")
 destination="$package_root/pkgs/t3code/patches/automatic-thread-titles.patch"
-base_revision=$(sed -nE 's/^  revision = "([0-9a-f]{40})";/\1/p' "$package_root/pkgs/t3code/fork.nix")
+base_revision=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' "$package_root/pkgs/t3code/source.json")
 
 if [[ ! "$base_revision" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "unable to read one pinned base revision from pkgs/t3code/fork.nix" >&2
+  echo "unable to read one pinned base revision from pkgs/t3code/source.json" >&2
   exit 1
 fi
 

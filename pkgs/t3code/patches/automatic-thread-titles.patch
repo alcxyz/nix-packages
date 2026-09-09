@@ -271,6 +271,369 @@ index f19a4f4e8..74d0c3fa4 100644
  export const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
    activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeThread(threadId) : Effect.void;
  
+diff --git a/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts b/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
+new file mode 100644
+index 000000000..0d620c6f0
+--- /dev/null
++++ b/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
+@@ -0,0 +1,229 @@
++import { expect, it } from "@effect/vitest";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import {
++  EnvironmentId,
++  OrchestrationThreadShell,
++  ProviderInstanceId,
++  ThreadId,
++  type OrchestrationCommand,
++} from "@t3tools/contracts";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as Option from "effect/Option";
++import * as Schema from "effect/Schema";
++import * as Stream from "effect/Stream";
++import { McpSchema, McpServer } from "effect/unstable/ai";
++
++import { OrchestrationCommandInvariantError } from "../../../orchestration/Errors.ts";
++import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
++import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
++import * as ServerSettings from "../../../serverSettings.ts";
++import { ThreadTitleToolkitRegistrationLive } from "../../McpHttpServer.ts";
++import { McpInvocationContext, type McpInvocationScope } from "../../McpInvocationContext.ts";
++
++const decodeThreadShell = Schema.decodeUnknownSync(OrchestrationThreadShell);
++
++const scope: McpInvocationScope = {
++  environmentId: EnvironmentId.make("environment-title-test"),
++  threadId: ThreadId.make("current-thread"),
++  providerInstanceId: ProviderInstanceId.make("codex"),
++  providerSessionId: "title-test-session",
++  capabilities: new Set(["thread-title"]),
++  issuedAt: 1,
++};
++
++const client = McpSchema.McpServerClient.of({
++  clientId: 1,
++  clientCapabilities: {},
++  clientInfo: { name: "title-test", version: "1.0.0" },
++  protocolVersion: "2025-06-18",
++  initializePayload: {
++    protocolVersion: "2025-06-18",
++    capabilities: {},
++    clientInfo: { name: "title-test", version: "1.0.0" },
++  },
++  getClient: Effect.die("unused"),
++});
++
++function makeHarness(
++  options: {
++    enabled?: boolean;
++    source?: "automatic" | "user" | "legacy";
++    missing?: boolean;
++    rejectDispatch?: boolean;
++  } = {},
++) {
++  let thread = decodeThreadShell({
++    id: scope.threadId,
++    projectId: "project-title-test",
++    title: "Investigate login",
++    ...(options.source === "legacy" ? {} : { titleSource: options.source ?? "automatic" }),
++    modelSelection: { instanceId: "codex", model: "gpt-5" },
++    runtimeMode: "full-access",
++    branch: null,
++    worktreePath: null,
++    latestTurn: null,
++    createdAt: "2026-09-09T00:00:00.000Z",
++    updatedAt: "2026-09-09T00:00:00.000Z",
++    session: null,
++    latestUserMessageAt: null,
++    hasPendingApprovals: false,
++    hasPendingUserInput: false,
++    hasActionableProposedPlan: false,
++  });
++  const commands: OrchestrationCommand[] = [];
++  const reads: ThreadId[] = [];
++  const unused = () => Effect.die("unexpected query");
++  const queries = ProjectionSnapshotQuery.of({
++    getUserInputActivity: unused,
++    getCommandReadModel: unused,
++    getSnapshot: unused,
++    getShellSnapshot: unused,
++    getArchivedShellSnapshot: unused,
++    searchThreads: unused,
++    getSnapshotSequence: unused,
++    getCounts: unused,
++    getEventReplayStats: unused,
++    getActiveProjectByWorkspaceRoot: unused,
++    getProjectShellById: unused,
++    getFirstActiveThreadIdByProjectId: unused,
++    getImportedAgentSessionSources: unused,
++    getThreadCheckpointContext: unused,
++    getFullThreadDiffContext: unused,
++    getThreadRuntimeContext: unused,
++    getTurnStartMessage: unused,
++    getThreadDetailById: unused,
++    getThreadDetailSnapshot: unused,
++    getThreadShellById: (id) =>
++      Effect.sync(() => {
++        reads.push(id);
++        return options.missing ? Option.none() : Option.some(thread);
++      }),
++  });
++  const engine = OrchestrationEngineService.of({
++    readEvents: () => Stream.empty,
++    readThreadEvents: () => Stream.empty,
++    getThreadReplayStats: unused,
++    streamDomainEvents: Stream.empty,
++    subscribeDomainEvents: Effect.succeed(Stream.empty),
++    latestSequence: Effect.succeed(0),
++    dispatch: (command) =>
++      Effect.gen(function* () {
++        commands.push(command);
++        if (options.rejectDispatch) {
++          return yield* new OrchestrationCommandInvariantError({
++            commandType: command.type,
++            detail: "A user rename won the race.",
++          });
++        }
++        if (command.type === "thread.meta.update" && command.title !== undefined) {
++          thread = { ...thread, title: command.title };
++        }
++        return { sequence: commands.length };
++      }),
++  });
++  const layer = ThreadTitleToolkitRegistrationLive.pipe(
++    Layer.provideMerge(McpServer.McpServer.layer),
++    Layer.provideMerge(
++      ServerSettings.layerTest({ automaticThreadTitles: options.enabled ?? true }),
++    ),
++    Layer.provide(Layer.succeed(ProjectionSnapshotQuery, queries)),
++    Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
++    Layer.provide(NodeServices.layer),
++  );
++  return { layer, commands, reads };
++}
++
++const call = (args: Record<string, unknown>, invocation = scope) =>
++  Effect.gen(function* () {
++    const server = yield* McpServer.McpServer;
++    return yield* server
++      .callTool({ name: "rename_current_thread", arguments: args })
++      .pipe(
++        Effect.provideService(McpInvocationContext, invocation),
++        Effect.provideService(McpSchema.McpServerClient, client),
++      );
++  });
++
++it.effect("uses authenticated thread identity and avoids duplicate title writes", () => {
++  const harness = makeHarness();
++  return Effect.gen(function* () {
++    const result = yield* call({ title: "Fix expired login sessions", threadId: "another-thread" });
++    expect(result.structuredContent).toEqual({
++      status: "updated",
++      title: "Fix expired login sessions",
++    });
++    expect(harness.commands).toHaveLength(1);
++    expect(harness.commands[0]).toMatchObject({
++      threadId: scope.threadId,
++      title: "Fix expired login sessions",
++      titleSource: "automatic",
++    });
++    expect(harness.reads).toEqual([scope.threadId]);
++    expect((yield* call({ title: "Fix expired login sessions" })).structuredContent).toMatchObject({
++      status: "unchanged",
++    });
++    expect(harness.commands).toHaveLength(1);
++  }).pipe(Effect.provide(harness.layer));
++});
++
++it.effect("honors setting changes without restarting the MCP session", () => {
++  const harness = makeHarness({ enabled: false });
++  return Effect.gen(function* () {
++    expect((yield* call({ title: "Fix login" })).structuredContent).toEqual({ status: "disabled" });
++    expect(harness.reads).toHaveLength(0);
++    const settings = yield* ServerSettings.ServerSettingsService;
++    yield* settings.updateSettings({ automaticThreadTitles: true });
++    expect((yield* call({ title: "Fix login" })).structuredContent).toMatchObject({
++      status: "updated",
++    });
++    yield* settings.updateSettings({ automaticThreadTitles: false });
++    expect((yield* call({ title: "Fix login again" })).structuredContent).toEqual({
++      status: "disabled",
++    });
++    expect(harness.commands).toHaveLength(1);
++  }).pipe(Effect.provide(harness.layer));
++});
++
++it.effect.each(["user", "legacy"] as const)("protects %s titles without dispatching", (source) => {
++  const harness = makeHarness({ source });
++  return Effect.gen(function* () {
++    expect((yield* call({ title: "New title" })).structuredContent).toMatchObject({
++      status: "protected",
++    });
++    expect(harness.commands).toHaveLength(0);
++  }).pipe(Effect.provide(harness.layer));
++});
++
++it.effect("rejects credentials without the title capability before reading the thread", () => {
++  const harness = makeHarness();
++  return Effect.gen(function* () {
++    expect(
++      (yield* call({ title: "New title" }, { ...scope, capabilities: new Set(["preview"]) }))
++        .structuredContent,
++    ).toEqual({ status: "unavailable" });
++    expect(harness.reads).toHaveLength(0);
++    expect(harness.commands).toHaveLength(0);
++  }).pipe(Effect.provide(harness.layer));
++});
++
++it.effect("does not report success when the decider rejects a racing rename", () => {
++  const harness = makeHarness({ rejectDispatch: true });
++  return Effect.gen(function* () {
++    expect((yield* call({ title: "New title" })).structuredContent).toEqual({
++      status: "unavailable",
++    });
++  }).pipe(Effect.provide(harness.layer));
++});
++
++it.effect.each(["", "  ", "first\nsecond", "x".repeat(121)])(
++  "rejects invalid titles %#",
++  (title) => {
++    const harness = makeHarness();
++    return Effect.gen(function* () {
++      const result = yield* call({ title }).pipe(Effect.result);
++      expect(result._tag === "Failure" || result.success.isError === true).toBe(true);
++      expect(harness.commands).toHaveLength(0);
++    }).pipe(Effect.provide(harness.layer));
++  },
++);
+diff --git a/apps/server/src/mcp/toolkits/threadTitle/handlers.ts b/apps/server/src/mcp/toolkits/threadTitle/handlers.ts
+new file mode 100644
+index 000000000..622b7c637
+--- /dev/null
++++ b/apps/server/src/mcp/toolkits/threadTitle/handlers.ts
+@@ -0,0 +1,71 @@
++import { CommandId } from "@t3tools/contracts";
++import * as Crypto from "effect/Crypto";
++import * as Effect from "effect/Effect";
++import * as Option from "effect/Option";
++
++import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
++import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
++import { ServerSettingsService } from "../../../serverSettings.ts";
++import { McpInvocationContext } from "../../McpInvocationContext.ts";
++import {
++  type RenameCurrentThreadInput,
++  type RenameCurrentThreadResult,
++  ThreadTitleToolkit,
++} from "./tools.ts";
++
++export const renameCurrentThread = Effect.fn("ThreadTitleToolkit.renameCurrentThread")(function* (
++  input: typeof RenameCurrentThreadInput.Type,
++): Effect.fn.Return<
++  typeof RenameCurrentThreadResult.Type,
++  string,
++  | McpInvocationContext
++  | ServerSettingsService
++  | ProjectionSnapshotQuery
++  | OrchestrationEngineService
++  | Crypto.Crypto
++> {
++  const scope = yield* McpInvocationContext;
++  if (!scope.capabilities.has("thread-title")) return { status: "unavailable" };
++
++  const settingsService = yield* ServerSettingsService;
++  const settings = yield* settingsService.getSettings.pipe(
++    Effect.mapError(() => "Could not read the automatic thread title setting."),
++  );
++  if (!settings.automaticThreadTitles) return { status: "disabled" };
++
++  const queries = yield* ProjectionSnapshotQuery;
++  const result = yield* queries
++    .getThreadShellById(scope.threadId)
++    .pipe(Effect.mapError(() => "Could not read the current thread."));
++  if (Option.isNone(result) || result.value.archivedAt !== null) {
++    return { status: "unavailable" };
++  }
++  const thread = result.value;
++  if (thread.titleSource !== "automatic") return { status: "protected", title: thread.title };
++  if (thread.title === input.title) return { status: "unchanged", title: thread.title };
++
++  const engine = yield* OrchestrationEngineService;
++  const crypto = yield* Crypto.Crypto;
++  const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
++  return yield* engine
++    .dispatch({
++      type: "thread.meta.update",
++      commandId: CommandId.make(`agent-thread-title:${uuid}`),
++      threadId: scope.threadId,
++      title: input.title,
++      titleSource: "automatic",
++    })
++    .pipe(
++      Effect.as({ status: "updated", title: input.title } as const),
++      // The decider checks ownership again inside the serialized command queue.
++      // A user rename that overtakes our read must win.
++      Effect.catchTag("OrchestrationCommandInvariantError", () =>
++        Effect.succeed({ status: "unavailable" } as const),
++      ),
++      Effect.mapError(() => "Could not update the thread title."),
++    );
++});
++
++export const ThreadTitleToolkitHandlersLive = ThreadTitleToolkit.toLayer({
++  rename_current_thread: renameCurrentThread,
++});
+diff --git a/apps/server/src/mcp/toolkits/threadTitle/tools.ts b/apps/server/src/mcp/toolkits/threadTitle/tools.ts
+new file mode 100644
+index 000000000..ccd663cf8
+--- /dev/null
++++ b/apps/server/src/mcp/toolkits/threadTitle/tools.ts
+@@ -0,0 +1,45 @@
++import { TrimmedNonEmptyString } from "@t3tools/contracts";
++import * as Schema from "effect/Schema";
++import * as Crypto from "effect/Crypto";
++import { Tool, Toolkit } from "effect/unstable/ai";
++
++import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
++import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
++import { ServerSettingsService } from "../../../serverSettings.ts";
++import { McpInvocationContext } from "../../McpInvocationContext.ts";
++
++export const RenameCurrentThreadInput = Schema.Struct({
++  title: TrimmedNonEmptyString.check(
++    Schema.isMaxLength(120),
++    Schema.isPattern(/^[^\r\n]+$/),
++  ).annotate({
++    description: "A concise, single-line title describing the thread's main objective.",
++  }),
++});
++
++export const RenameCurrentThreadResult = Schema.Struct({
++  status: Schema.Literals(["updated", "unchanged", "disabled", "protected", "unavailable"]),
++  title: Schema.optional(Schema.String),
++});
++
++export const ThreadTitleToolkit = Toolkit.make(
++  Tool.make("rename_current_thread", {
++    description:
++      "Rename only the current thread using the title you supply. Use only when T3's automatic-title instructions are enabled and the existing title no longer describes the main objective. Manually chosen titles are protected. If disabled, protected, or unavailable, do not retry during this turn.",
++    parameters: RenameCurrentThreadInput,
++    success: RenameCurrentThreadResult,
++    failure: Schema.String,
++    dependencies: [
++      McpInvocationContext,
++      ServerSettingsService,
++      ProjectionSnapshotQuery,
++      OrchestrationEngineService,
++      Crypto.Crypto,
++    ],
++  })
++    .annotate(Tool.Title, "Update thread title")
++    .annotate(Tool.Readonly, false)
++    .annotate(Tool.Destructive, false)
++    .annotate(Tool.Idempotent, true)
++    .annotate(Tool.OpenWorld, false),
++);
 diff --git a/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts b/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
 index 29ecd5164..4d9010baa 100644
 --- a/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
@@ -671,6 +1034,182 @@ index 35d5bacc2..2bb7c07e9 100644
      ProjectionRepositoryError
    >;
  
+diff --git a/apps/server/src/orchestration/decider.titleOwnership.test.ts b/apps/server/src/orchestration/decider.titleOwnership.test.ts
+new file mode 100644
+index 000000000..f282d0e6a
+--- /dev/null
++++ b/apps/server/src/orchestration/decider.titleOwnership.test.ts
+@@ -0,0 +1,170 @@
++import {
++  CommandId,
++  EventId,
++  ProjectId,
++  ProviderInstanceId,
++  ThreadId,
++  type OrchestrationReadModel,
++  type OrchestrationThread,
++} from "@t3tools/contracts";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { expect, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++
++import { decideOrchestrationCommand } from "./decider.ts";
++import { projectEvent } from "./projector.ts";
++
++const NOW = "2026-01-01T00:00:00.000Z";
++const THREAD_ID = ThreadId.make("thread-title-ownership");
++
++function makeReadModel(overrides: Partial<OrchestrationThread> = {}): OrchestrationReadModel {
++  return {
++    snapshotSequence: 0,
++    projects: [],
++    threads: [
++      {
++        id: THREAD_ID,
++        projectId: ProjectId.make("project-1"),
++        title: "Current title",
++        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
++        runtimeMode: "full-access",
++        interactionMode: "default",
++        branch: null,
++        worktreePath: null,
++        latestTurn: null,
++        createdAt: NOW,
++        updatedAt: NOW,
++        archivedAt: null,
++        settledOverride: null,
++        settledAt: null,
++        deletedAt: null,
++        messages: [],
++        proposedPlans: [],
++        activities: [],
++        checkpoints: [],
++        session: null,
++        ...overrides,
++      },
++    ],
++    updatedAt: NOW,
++  };
++}
++
++it.layer(NodeServices.layer)("thread title ownership", (it) => {
++  it.effect("rejects automatic writes to user-owned and legacy titles", () =>
++    Effect.gen(function* () {
++      for (const titleSource of ["user", undefined] as const) {
++        const error = yield* decideOrchestrationCommand({
++          command: {
++            type: "thread.meta.update",
++            commandId: CommandId.make(`automatic-${titleSource ?? "legacy"}`),
++            threadId: THREAD_ID,
++            title: "Automatic title",
++            titleSource: "automatic",
++          },
++          readModel: makeReadModel(titleSource === undefined ? {} : { titleSource }),
++        }).pipe(Effect.flip);
++        expect(error).toMatchObject({
++          _tag: "OrchestrationCommandInvariantError",
++          commandType: "thread.meta.update",
++        });
++      }
++    }),
++  );
++
++  it.effect("rejects automatic writes after archival or deletion races", () =>
++    Effect.gen(function* () {
++      for (const lifecycle of [{ archivedAt: NOW }, { deletedAt: NOW }] satisfies ReadonlyArray<
++        Partial<OrchestrationThread>
++      >) {
++        const error = yield* decideOrchestrationCommand({
++          command: {
++            type: "thread.meta.update",
++            commandId: CommandId.make(`automatic-inactive-${Object.keys(lifecycle)[0]}`),
++            threadId: THREAD_ID,
++            title: "Automatic title",
++            titleSource: "automatic",
++          },
++          readModel: makeReadModel({ titleSource: "automatic", ...lifecycle }),
++        }).pipe(Effect.flip);
++        expect(error).toMatchObject({ _tag: "OrchestrationCommandInvariantError" });
++      }
++    }),
++  );
++
++  it.effect("marks ordinary title writes as user-owned", () =>
++    Effect.gen(function* () {
++      const readModel = makeReadModel({ titleSource: "automatic" });
++      const decided = yield* decideOrchestrationCommand({
++        command: {
++          type: "thread.meta.update",
++          commandId: CommandId.make("manual-title"),
++          threadId: THREAD_ID,
++          title: "Manual title",
++        },
++        readModel,
++      });
++      const event = Array.isArray(decided) ? decided[0]! : decided;
++      expect(event).toMatchObject({
++        type: "thread.meta-updated",
++        payload: { title: "Manual title", titleSource: "user" },
++      });
++      const projected = yield* projectEvent(readModel, { ...event, sequence: 1 });
++      expect(projected.threads[0]).toMatchObject({
++        title: "Manual title",
++        titleSource: "user",
++      });
++    }),
++  );
++
++  it.effect("treats replayed legacy title events as user-owned", () =>
++    Effect.gen(function* () {
++      const projected = yield* projectEvent(makeReadModel({ titleSource: "automatic" }), {
++        sequence: 1,
++        eventId: EventId.make("legacy-title-event"),
++        aggregateKind: "thread",
++        aggregateId: THREAD_ID,
++        occurredAt: NOW,
++        commandId: null,
++        causationEventId: null,
++        correlationId: null,
++        metadata: {},
++        type: "thread.meta-updated",
++        payload: { threadId: THREAD_ID, title: "Legacy update", updatedAt: NOW },
++      });
++      expect(projected.threads[0]).toMatchObject({
++        title: "Legacy update",
++        titleSource: "user",
++      });
++    }),
++  );
++
++  it.effect("lets explicit regeneration return a title to automatic ownership", () =>
++    Effect.gen(function* () {
++      const requestId = CommandId.make("regenerate-title");
++      const readModel = makeReadModel({
++        titleSource: "user",
++        titleRegeneration: { requestId, startedAt: NOW },
++      });
++      const decided = yield* decideOrchestrationCommand({
++        command: {
++          type: "thread.title.regeneration.complete",
++          commandId: CommandId.make("complete-regeneration"),
++          threadId: THREAD_ID,
++          requestId,
++          title: "Current title",
++        },
++        readModel,
++      });
++      const event = Array.isArray(decided) ? decided[0]! : decided;
++      expect(event).toMatchObject({
++        type: "thread.meta-updated",
++        payload: {
++          title: "Current title",
++          titleSource: "automatic",
++          titleRegeneration: null,
++        },
++      });
++    }),
++  );
++});
 diff --git a/apps/server/src/orchestration/decider.ts b/apps/server/src/orchestration/decider.ts
 index 304defb80..b64b47a43 100644
 --- a/apps/server/src/orchestration/decider.ts
@@ -851,6 +1390,193 @@ index bc176f62c..dee1d8450 100644
    const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
    yield* migrations.length === 0
      ? Effect.logDebug("Database schema is current")
+diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
+new file mode 100644
+index 000000000..ce4531e73
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
+@@ -0,0 +1,125 @@
++import { assert, it } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Migrator from "effect/unstable/sql/Migrator";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
++
++import { migrationManifest, runMigrations } from "../Migrations.ts";
++
++it.layer(NodeSqliteClient.layerMemory())("ForkProjectionThreadTitleSource", (it) => {
++  it.effect("round trips title ownership through an upstream v0.0.38-style write", () =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      yield* runMigrations({ toMigrationInclusive: 43 });
++      yield* sql`
++        INSERT INTO projection_threads (
++          thread_id, project_id, title, model_selection_json, runtime_mode,
++          created_at, updated_at
++        ) VALUES (
++          'thread-1', 'project-1', 'Automatic title',
++          '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access',
++          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
++        )
++      `;
++      yield* sql`
++        INSERT INTO orchestration_events (
++          event_id, aggregate_kind, stream_id, stream_version, event_type,
++          occurred_at, actor_kind, payload_json, metadata_json
++        ) VALUES (
++          'created', 'thread', 'thread-1', 1, 'thread.created',
++          '2026-01-01T00:00:00.000Z', 'system',
++          '{"threadId":"thread-1","title":"Automatic title"}', '{}'
++        )
++      `;
++
++      // Upgrade the v0.0.38 schema through current upstream migrations, then
++      // apply the unnumbered fork extension.
++      yield* runMigrations();
++      let rows = yield* sql<{ readonly titleSource: string | null }>`
++        SELECT title_source AS "titleSource" FROM projection_threads WHERE thread_id = 'thread-1'
++      `;
++      assert.deepEqual(rows, [{ titleSource: "user" }]);
++
++      // A title written by the fork records ownership in both the event and
++      // projection before switching back to upstream.
++      yield* sql`
++        INSERT INTO orchestration_events (
++          event_id, aggregate_kind, stream_id, stream_version, event_type,
++          occurred_at, actor_kind, payload_json, metadata_json
++        ) VALUES (
++          'fork-automatic-title', 'thread', 'thread-1', 2, 'thread.meta-updated',
++          '2026-01-01T12:00:00.000Z', 'system',
++          '{"threadId":"thread-1","title":"Fork automatic title","titleSource":"automatic"}', '{}'
++        )
++      `;
++      yield* sql`
++        UPDATE projection_threads
++        SET title = 'Fork automatic title', title_source = 'automatic',
++          updated_at = '2026-01-01T12:00:00.000Z'
++        WHERE thread_id = 'thread-1'
++      `;
++
++      // v0.0.38 ignores the extra projection column and emits no ownership
++      // field when it projects a manual rename.
++      yield* sql`
++        INSERT INTO orchestration_events (
++          event_id, aggregate_kind, stream_id, stream_version, event_type,
++          occurred_at, actor_kind, payload_json, metadata_json
++        ) VALUES (
++          'old-manual-rename', 'thread', 'thread-1', 3, 'thread.meta-updated',
++          '2026-01-02T00:00:00.000Z', 'user',
++          '{"threadId":"thread-1","title":"Renamed upstream"}', '{}'
++        )
++      `;
++      yield* sql`
++        UPDATE projection_threads
++        SET title = 'Renamed upstream', updated_at = '2026-01-02T00:00:00.000Z'
++        WHERE thread_id = 'thread-1'
++      `;
++
++      yield* runMigrations();
++      rows = yield* sql<{ readonly titleSource: string | null }>`
++        SELECT title_source AS "titleSource" FROM projection_threads WHERE thread_id = 'thread-1'
++      `;
++      assert.deepEqual(rows, [{ titleSource: "user" }]);
++
++      const forkMigrationRows = yield* sql<{ readonly migrationId: number }>`
++        SELECT migration_id AS "migrationId"
++        FROM effect_sql_migrations
++        WHERE name = 'ProjectionThreadTitleSource'
++      `;
++      assert.deepEqual(forkMigrationRows, []);
++      assert.isFalse(migrationManifest.map(([id]): number => id).includes(50));
++
++      const latestMigration = yield* sql<{ readonly migrationId: number }>`
++        SELECT MAX(migration_id) AS "migrationId" FROM effect_sql_migrations
++      `;
++      assert.deepEqual(latestMigration, [{ migrationId: 49 }]);
++
++      // A future upstream migration can still claim 50 because the extension
++      // left the shared high-water mark at 49.
++      const runUpstreamMigration = Migrator.make({});
++      const upstreamMigrations = yield* runUpstreamMigration({
++        loader: Migrator.fromRecord({
++          "50_FutureUpstreamMigration": Effect.gen(function* () {
++            const sql = yield* SqlClient.SqlClient;
++            yield* sql`CREATE TABLE future_upstream_table (id INTEGER PRIMARY KEY)`;
++          }),
++        }),
++      });
++      assert.deepEqual(upstreamMigrations, [[50, "FutureUpstreamMigration"]]);
++
++      // Returning to the fork after upstream 50 keeps the extension idempotent
++      // and does not disturb either the new upstream ledger row or ownership.
++      yield* runMigrations();
++      rows = yield* sql<{ readonly titleSource: string | null }>`
++        SELECT title_source AS "titleSource" FROM projection_threads WHERE thread_id = 'thread-1'
++      `;
++      assert.deepEqual(rows, [{ titleSource: "user" }]);
++      const upstreamTable = yield* sql<{ readonly name: string }>`
++        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'future_upstream_table'
++      `;
++      assert.deepEqual(upstreamTable, [{ name: "future_upstream_table" }]);
++    }),
++  );
++});
+diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
+new file mode 100644
+index 000000000..9a1717b57
+--- /dev/null
++++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
+@@ -0,0 +1,50 @@
++import * as Effect from "effect/Effect";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++
++/**
++ * Add and reconcile fork-owned projection state without consuming an upstream
++ * migration id. Extra SQLite columns are tolerated by upstream releases.
++ *
++ * Reconciliation matters after a round trip through an older upstream build:
++ * that build can project a title event but cannot update `title_source`. The
++ * latest title-bearing event remains canonical, and an event without ownership
++ * is deliberately treated as user-owned.
++ */
++export default Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const columns = yield* sql<{ readonly name: string }>`
++    PRAGMA table_info(projection_threads)
++  `;
++  if (!columns.some((column) => column.name === "title_source")) {
++    yield* sql`
++      ALTER TABLE projection_threads
++      ADD COLUMN title_source TEXT
++    `;
++  }
++
++  yield* sql`
++    WITH latest_title_events AS (
++      SELECT
++        stream_id AS thread_id,
++        json_extract(payload_json, '$.title') AS title,
++        CASE
++          WHEN json_extract(payload_json, '$.titleSource') = 'automatic'
++            THEN 'automatic'
++          ELSE 'user'
++        END AS title_source,
++        ROW_NUMBER() OVER (PARTITION BY stream_id ORDER BY sequence DESC) AS recency
++      FROM orchestration_events
++      WHERE aggregate_kind = 'thread'
++        AND event_type IN ('thread.created', 'thread.meta-updated')
++        AND json_valid(payload_json)
++        AND json_type(payload_json, '$.title') = 'text'
++    )
++    UPDATE projection_threads AS thread
++    SET title_source = latest.title_source
++    FROM latest_title_events AS latest
++    WHERE latest.recency = 1
++      AND latest.thread_id = thread.thread_id
++      AND latest.title = thread.title
++      AND thread.title_source IS NOT latest.title_source
++  `;
++});
 diff --git a/apps/server/src/persistence/Services/ProjectionThreads.ts b/apps/server/src/persistence/Services/ProjectionThreads.ts
 index 0a8b2e31c..2767e8eaf 100644
 --- a/apps/server/src/persistence/Services/ProjectionThreads.ts
@@ -1750,7 +2476,7 @@ index fbebc323a..77a0d289f 100644
          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
            const error = squashAtomCommandFailure(result);
 diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
-index 4c108b01d..459e6aeb7 100644
+index 4c108b01d..483ab1efa 100644
 --- a/apps/web/src/components/settings/SettingsPanels.tsx
 +++ b/apps/web/src/components/settings/SettingsPanels.tsx
 @@ -523,6 +523,9 @@ export function useSettingsRestore(onRestored?: () => void) {
@@ -1791,7 +2517,7 @@ index 4c108b01d..459e6aeb7 100644
    const diagnosticsDescription = formatDiagnosticsDescription({
      localTracingEnabled: observability?.localTracingEnabled ?? false,
      otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
-@@ -2112,6 +2118,35 @@ export function GeneralSettingsPanel() {
+@@ -2533,6 +2539,35 @@ export function GeneralSettingsPanel() {
            }
          />
  
@@ -1824,9 +2550,9 @@ index 4c108b01d..459e6aeb7 100644
 +          />
 +        ) : null}
 +
-         {supportsAutoSettlement ? (
-           <>
-             <SettingsRow
+         <SettingsRow
+           serverScoped
+           {...searchableSetting("start-from-origin")}
 diff --git a/apps/web/src/components/settings/settingsSearch.test.ts b/apps/web/src/components/settings/settingsSearch.test.ts
 index e03d624fd..dd872fe4e 100644
 --- a/apps/web/src/components/settings/settingsSearch.test.ts
@@ -1877,7 +2603,7 @@ index e03d624fd..dd872fe4e 100644
      const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
      expect(new Set(ids).size).toBe(ids.length);
 diff --git a/apps/web/src/components/settings/settingsSearch.ts b/apps/web/src/components/settings/settingsSearch.ts
-index e32baf6f3..ac39ae869 100644
+index e32baf6f3..bcacd109a 100644
 --- a/apps/web/src/components/settings/settingsSearch.ts
 +++ b/apps/web/src/components/settings/settingsSearch.ts
 @@ -33,6 +33,7 @@ export interface SettingsSearchItem {
@@ -1904,7 +2630,7 @@ index e32baf6f3..ac39ae869 100644
 +    id: "automatic-thread-titles",
 +    title: "Keep thread titles up to date",
 +    to: "/settings/general",
-+    searchTerms: ["agent automatic regenerate rename objective"],
++    searchTerms: ["agent automatic regenerate rename objective projects threads"],
 +    requiresAutomaticThreadTitles: true,
 +  },
    {
@@ -2287,729 +3013,3 @@ index 3491103da..217c89fb5 100644
    enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
    projectAgentBrowserAccessOverrides: Schema.optionalKey(
      Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
-diff --git a/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts b/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
-new file mode 100644
-index 000000000..0d620c6f0
---- /dev/null
-+++ b/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
-@@ -0,0 +1,229 @@
-+import { expect, it } from "@effect/vitest";
-+import * as NodeServices from "@effect/platform-node/NodeServices";
-+import {
-+  EnvironmentId,
-+  OrchestrationThreadShell,
-+  ProviderInstanceId,
-+  ThreadId,
-+  type OrchestrationCommand,
-+} from "@t3tools/contracts";
-+import * as Effect from "effect/Effect";
-+import * as Layer from "effect/Layer";
-+import * as Option from "effect/Option";
-+import * as Schema from "effect/Schema";
-+import * as Stream from "effect/Stream";
-+import { McpSchema, McpServer } from "effect/unstable/ai";
-+
-+import { OrchestrationCommandInvariantError } from "../../../orchestration/Errors.ts";
-+import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-+import * as ServerSettings from "../../../serverSettings.ts";
-+import { ThreadTitleToolkitRegistrationLive } from "../../McpHttpServer.ts";
-+import { McpInvocationContext, type McpInvocationScope } from "../../McpInvocationContext.ts";
-+
-+const decodeThreadShell = Schema.decodeUnknownSync(OrchestrationThreadShell);
-+
-+const scope: McpInvocationScope = {
-+  environmentId: EnvironmentId.make("environment-title-test"),
-+  threadId: ThreadId.make("current-thread"),
-+  providerInstanceId: ProviderInstanceId.make("codex"),
-+  providerSessionId: "title-test-session",
-+  capabilities: new Set(["thread-title"]),
-+  issuedAt: 1,
-+};
-+
-+const client = McpSchema.McpServerClient.of({
-+  clientId: 1,
-+  clientCapabilities: {},
-+  clientInfo: { name: "title-test", version: "1.0.0" },
-+  protocolVersion: "2025-06-18",
-+  initializePayload: {
-+    protocolVersion: "2025-06-18",
-+    capabilities: {},
-+    clientInfo: { name: "title-test", version: "1.0.0" },
-+  },
-+  getClient: Effect.die("unused"),
-+});
-+
-+function makeHarness(
-+  options: {
-+    enabled?: boolean;
-+    source?: "automatic" | "user" | "legacy";
-+    missing?: boolean;
-+    rejectDispatch?: boolean;
-+  } = {},
-+) {
-+  let thread = decodeThreadShell({
-+    id: scope.threadId,
-+    projectId: "project-title-test",
-+    title: "Investigate login",
-+    ...(options.source === "legacy" ? {} : { titleSource: options.source ?? "automatic" }),
-+    modelSelection: { instanceId: "codex", model: "gpt-5" },
-+    runtimeMode: "full-access",
-+    branch: null,
-+    worktreePath: null,
-+    latestTurn: null,
-+    createdAt: "2026-09-09T00:00:00.000Z",
-+    updatedAt: "2026-09-09T00:00:00.000Z",
-+    session: null,
-+    latestUserMessageAt: null,
-+    hasPendingApprovals: false,
-+    hasPendingUserInput: false,
-+    hasActionableProposedPlan: false,
-+  });
-+  const commands: OrchestrationCommand[] = [];
-+  const reads: ThreadId[] = [];
-+  const unused = () => Effect.die("unexpected query");
-+  const queries = ProjectionSnapshotQuery.of({
-+    getUserInputActivity: unused,
-+    getCommandReadModel: unused,
-+    getSnapshot: unused,
-+    getShellSnapshot: unused,
-+    getArchivedShellSnapshot: unused,
-+    searchThreads: unused,
-+    getSnapshotSequence: unused,
-+    getCounts: unused,
-+    getEventReplayStats: unused,
-+    getActiveProjectByWorkspaceRoot: unused,
-+    getProjectShellById: unused,
-+    getFirstActiveThreadIdByProjectId: unused,
-+    getImportedAgentSessionSources: unused,
-+    getThreadCheckpointContext: unused,
-+    getFullThreadDiffContext: unused,
-+    getThreadRuntimeContext: unused,
-+    getTurnStartMessage: unused,
-+    getThreadDetailById: unused,
-+    getThreadDetailSnapshot: unused,
-+    getThreadShellById: (id) =>
-+      Effect.sync(() => {
-+        reads.push(id);
-+        return options.missing ? Option.none() : Option.some(thread);
-+      }),
-+  });
-+  const engine = OrchestrationEngineService.of({
-+    readEvents: () => Stream.empty,
-+    readThreadEvents: () => Stream.empty,
-+    getThreadReplayStats: unused,
-+    streamDomainEvents: Stream.empty,
-+    subscribeDomainEvents: Effect.succeed(Stream.empty),
-+    latestSequence: Effect.succeed(0),
-+    dispatch: (command) =>
-+      Effect.gen(function* () {
-+        commands.push(command);
-+        if (options.rejectDispatch) {
-+          return yield* new OrchestrationCommandInvariantError({
-+            commandType: command.type,
-+            detail: "A user rename won the race.",
-+          });
-+        }
-+        if (command.type === "thread.meta.update" && command.title !== undefined) {
-+          thread = { ...thread, title: command.title };
-+        }
-+        return { sequence: commands.length };
-+      }),
-+  });
-+  const layer = ThreadTitleToolkitRegistrationLive.pipe(
-+    Layer.provideMerge(McpServer.McpServer.layer),
-+    Layer.provideMerge(
-+      ServerSettings.layerTest({ automaticThreadTitles: options.enabled ?? true }),
-+    ),
-+    Layer.provide(Layer.succeed(ProjectionSnapshotQuery, queries)),
-+    Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
-+    Layer.provide(NodeServices.layer),
-+  );
-+  return { layer, commands, reads };
-+}
-+
-+const call = (args: Record<string, unknown>, invocation = scope) =>
-+  Effect.gen(function* () {
-+    const server = yield* McpServer.McpServer;
-+    return yield* server
-+      .callTool({ name: "rename_current_thread", arguments: args })
-+      .pipe(
-+        Effect.provideService(McpInvocationContext, invocation),
-+        Effect.provideService(McpSchema.McpServerClient, client),
-+      );
-+  });
-+
-+it.effect("uses authenticated thread identity and avoids duplicate title writes", () => {
-+  const harness = makeHarness();
-+  return Effect.gen(function* () {
-+    const result = yield* call({ title: "Fix expired login sessions", threadId: "another-thread" });
-+    expect(result.structuredContent).toEqual({
-+      status: "updated",
-+      title: "Fix expired login sessions",
-+    });
-+    expect(harness.commands).toHaveLength(1);
-+    expect(harness.commands[0]).toMatchObject({
-+      threadId: scope.threadId,
-+      title: "Fix expired login sessions",
-+      titleSource: "automatic",
-+    });
-+    expect(harness.reads).toEqual([scope.threadId]);
-+    expect((yield* call({ title: "Fix expired login sessions" })).structuredContent).toMatchObject({
-+      status: "unchanged",
-+    });
-+    expect(harness.commands).toHaveLength(1);
-+  }).pipe(Effect.provide(harness.layer));
-+});
-+
-+it.effect("honors setting changes without restarting the MCP session", () => {
-+  const harness = makeHarness({ enabled: false });
-+  return Effect.gen(function* () {
-+    expect((yield* call({ title: "Fix login" })).structuredContent).toEqual({ status: "disabled" });
-+    expect(harness.reads).toHaveLength(0);
-+    const settings = yield* ServerSettings.ServerSettingsService;
-+    yield* settings.updateSettings({ automaticThreadTitles: true });
-+    expect((yield* call({ title: "Fix login" })).structuredContent).toMatchObject({
-+      status: "updated",
-+    });
-+    yield* settings.updateSettings({ automaticThreadTitles: false });
-+    expect((yield* call({ title: "Fix login again" })).structuredContent).toEqual({
-+      status: "disabled",
-+    });
-+    expect(harness.commands).toHaveLength(1);
-+  }).pipe(Effect.provide(harness.layer));
-+});
-+
-+it.effect.each(["user", "legacy"] as const)("protects %s titles without dispatching", (source) => {
-+  const harness = makeHarness({ source });
-+  return Effect.gen(function* () {
-+    expect((yield* call({ title: "New title" })).structuredContent).toMatchObject({
-+      status: "protected",
-+    });
-+    expect(harness.commands).toHaveLength(0);
-+  }).pipe(Effect.provide(harness.layer));
-+});
-+
-+it.effect("rejects credentials without the title capability before reading the thread", () => {
-+  const harness = makeHarness();
-+  return Effect.gen(function* () {
-+    expect(
-+      (yield* call({ title: "New title" }, { ...scope, capabilities: new Set(["preview"]) }))
-+        .structuredContent,
-+    ).toEqual({ status: "unavailable" });
-+    expect(harness.reads).toHaveLength(0);
-+    expect(harness.commands).toHaveLength(0);
-+  }).pipe(Effect.provide(harness.layer));
-+});
-+
-+it.effect("does not report success when the decider rejects a racing rename", () => {
-+  const harness = makeHarness({ rejectDispatch: true });
-+  return Effect.gen(function* () {
-+    expect((yield* call({ title: "New title" })).structuredContent).toEqual({
-+      status: "unavailable",
-+    });
-+  }).pipe(Effect.provide(harness.layer));
-+});
-+
-+it.effect.each(["", "  ", "first\nsecond", "x".repeat(121)])(
-+  "rejects invalid titles %#",
-+  (title) => {
-+    const harness = makeHarness();
-+    return Effect.gen(function* () {
-+      const result = yield* call({ title }).pipe(Effect.result);
-+      expect(result._tag === "Failure" || result.success.isError === true).toBe(true);
-+      expect(harness.commands).toHaveLength(0);
-+    }).pipe(Effect.provide(harness.layer));
-+  },
-+);
-diff --git a/apps/server/src/mcp/toolkits/threadTitle/handlers.ts b/apps/server/src/mcp/toolkits/threadTitle/handlers.ts
-new file mode 100644
-index 000000000..622b7c637
---- /dev/null
-+++ b/apps/server/src/mcp/toolkits/threadTitle/handlers.ts
-@@ -0,0 +1,71 @@
-+import { CommandId } from "@t3tools/contracts";
-+import * as Crypto from "effect/Crypto";
-+import * as Effect from "effect/Effect";
-+import * as Option from "effect/Option";
-+
-+import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-+import { ServerSettingsService } from "../../../serverSettings.ts";
-+import { McpInvocationContext } from "../../McpInvocationContext.ts";
-+import {
-+  type RenameCurrentThreadInput,
-+  type RenameCurrentThreadResult,
-+  ThreadTitleToolkit,
-+} from "./tools.ts";
-+
-+export const renameCurrentThread = Effect.fn("ThreadTitleToolkit.renameCurrentThread")(function* (
-+  input: typeof RenameCurrentThreadInput.Type,
-+): Effect.fn.Return<
-+  typeof RenameCurrentThreadResult.Type,
-+  string,
-+  | McpInvocationContext
-+  | ServerSettingsService
-+  | ProjectionSnapshotQuery
-+  | OrchestrationEngineService
-+  | Crypto.Crypto
-+> {
-+  const scope = yield* McpInvocationContext;
-+  if (!scope.capabilities.has("thread-title")) return { status: "unavailable" };
-+
-+  const settingsService = yield* ServerSettingsService;
-+  const settings = yield* settingsService.getSettings.pipe(
-+    Effect.mapError(() => "Could not read the automatic thread title setting."),
-+  );
-+  if (!settings.automaticThreadTitles) return { status: "disabled" };
-+
-+  const queries = yield* ProjectionSnapshotQuery;
-+  const result = yield* queries
-+    .getThreadShellById(scope.threadId)
-+    .pipe(Effect.mapError(() => "Could not read the current thread."));
-+  if (Option.isNone(result) || result.value.archivedAt !== null) {
-+    return { status: "unavailable" };
-+  }
-+  const thread = result.value;
-+  if (thread.titleSource !== "automatic") return { status: "protected", title: thread.title };
-+  if (thread.title === input.title) return { status: "unchanged", title: thread.title };
-+
-+  const engine = yield* OrchestrationEngineService;
-+  const crypto = yield* Crypto.Crypto;
-+  const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-+  return yield* engine
-+    .dispatch({
-+      type: "thread.meta.update",
-+      commandId: CommandId.make(`agent-thread-title:${uuid}`),
-+      threadId: scope.threadId,
-+      title: input.title,
-+      titleSource: "automatic",
-+    })
-+    .pipe(
-+      Effect.as({ status: "updated", title: input.title } as const),
-+      // The decider checks ownership again inside the serialized command queue.
-+      // A user rename that overtakes our read must win.
-+      Effect.catchTag("OrchestrationCommandInvariantError", () =>
-+        Effect.succeed({ status: "unavailable" } as const),
-+      ),
-+      Effect.mapError(() => "Could not update the thread title."),
-+    );
-+});
-+
-+export const ThreadTitleToolkitHandlersLive = ThreadTitleToolkit.toLayer({
-+  rename_current_thread: renameCurrentThread,
-+});
-diff --git a/apps/server/src/mcp/toolkits/threadTitle/tools.ts b/apps/server/src/mcp/toolkits/threadTitle/tools.ts
-new file mode 100644
-index 000000000..ccd663cf8
---- /dev/null
-+++ b/apps/server/src/mcp/toolkits/threadTitle/tools.ts
-@@ -0,0 +1,45 @@
-+import { TrimmedNonEmptyString } from "@t3tools/contracts";
-+import * as Schema from "effect/Schema";
-+import * as Crypto from "effect/Crypto";
-+import { Tool, Toolkit } from "effect/unstable/ai";
-+
-+import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-+import { ServerSettingsService } from "../../../serverSettings.ts";
-+import { McpInvocationContext } from "../../McpInvocationContext.ts";
-+
-+export const RenameCurrentThreadInput = Schema.Struct({
-+  title: TrimmedNonEmptyString.check(
-+    Schema.isMaxLength(120),
-+    Schema.isPattern(/^[^\r\n]+$/),
-+  ).annotate({
-+    description: "A concise, single-line title describing the thread's main objective.",
-+  }),
-+});
-+
-+export const RenameCurrentThreadResult = Schema.Struct({
-+  status: Schema.Literals(["updated", "unchanged", "disabled", "protected", "unavailable"]),
-+  title: Schema.optional(Schema.String),
-+});
-+
-+export const ThreadTitleToolkit = Toolkit.make(
-+  Tool.make("rename_current_thread", {
-+    description:
-+      "Rename only the current thread using the title you supply. Use only when T3's automatic-title instructions are enabled and the existing title no longer describes the main objective. Manually chosen titles are protected. If disabled, protected, or unavailable, do not retry during this turn.",
-+    parameters: RenameCurrentThreadInput,
-+    success: RenameCurrentThreadResult,
-+    failure: Schema.String,
-+    dependencies: [
-+      McpInvocationContext,
-+      ServerSettingsService,
-+      ProjectionSnapshotQuery,
-+      OrchestrationEngineService,
-+      Crypto.Crypto,
-+    ],
-+  })
-+    .annotate(Tool.Title, "Update thread title")
-+    .annotate(Tool.Readonly, false)
-+    .annotate(Tool.Destructive, false)
-+    .annotate(Tool.Idempotent, true)
-+    .annotate(Tool.OpenWorld, false),
-+);
-diff --git a/apps/server/src/orchestration/decider.titleOwnership.test.ts b/apps/server/src/orchestration/decider.titleOwnership.test.ts
-new file mode 100644
-index 000000000..f282d0e6a
---- /dev/null
-+++ b/apps/server/src/orchestration/decider.titleOwnership.test.ts
-@@ -0,0 +1,170 @@
-+import {
-+  CommandId,
-+  EventId,
-+  ProjectId,
-+  ProviderInstanceId,
-+  ThreadId,
-+  type OrchestrationReadModel,
-+  type OrchestrationThread,
-+} from "@t3tools/contracts";
-+import * as NodeServices from "@effect/platform-node/NodeServices";
-+import { expect, it } from "@effect/vitest";
-+import * as Effect from "effect/Effect";
-+
-+import { decideOrchestrationCommand } from "./decider.ts";
-+import { projectEvent } from "./projector.ts";
-+
-+const NOW = "2026-01-01T00:00:00.000Z";
-+const THREAD_ID = ThreadId.make("thread-title-ownership");
-+
-+function makeReadModel(overrides: Partial<OrchestrationThread> = {}): OrchestrationReadModel {
-+  return {
-+    snapshotSequence: 0,
-+    projects: [],
-+    threads: [
-+      {
-+        id: THREAD_ID,
-+        projectId: ProjectId.make("project-1"),
-+        title: "Current title",
-+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-+        runtimeMode: "full-access",
-+        interactionMode: "default",
-+        branch: null,
-+        worktreePath: null,
-+        latestTurn: null,
-+        createdAt: NOW,
-+        updatedAt: NOW,
-+        archivedAt: null,
-+        settledOverride: null,
-+        settledAt: null,
-+        deletedAt: null,
-+        messages: [],
-+        proposedPlans: [],
-+        activities: [],
-+        checkpoints: [],
-+        session: null,
-+        ...overrides,
-+      },
-+    ],
-+    updatedAt: NOW,
-+  };
-+}
-+
-+it.layer(NodeServices.layer)("thread title ownership", (it) => {
-+  it.effect("rejects automatic writes to user-owned and legacy titles", () =>
-+    Effect.gen(function* () {
-+      for (const titleSource of ["user", undefined] as const) {
-+        const error = yield* decideOrchestrationCommand({
-+          command: {
-+            type: "thread.meta.update",
-+            commandId: CommandId.make(`automatic-${titleSource ?? "legacy"}`),
-+            threadId: THREAD_ID,
-+            title: "Automatic title",
-+            titleSource: "automatic",
-+          },
-+          readModel: makeReadModel(titleSource === undefined ? {} : { titleSource }),
-+        }).pipe(Effect.flip);
-+        expect(error).toMatchObject({
-+          _tag: "OrchestrationCommandInvariantError",
-+          commandType: "thread.meta.update",
-+        });
-+      }
-+    }),
-+  );
-+
-+  it.effect("rejects automatic writes after archival or deletion races", () =>
-+    Effect.gen(function* () {
-+      for (const lifecycle of [{ archivedAt: NOW }, { deletedAt: NOW }] satisfies ReadonlyArray<
-+        Partial<OrchestrationThread>
-+      >) {
-+        const error = yield* decideOrchestrationCommand({
-+          command: {
-+            type: "thread.meta.update",
-+            commandId: CommandId.make(`automatic-inactive-${Object.keys(lifecycle)[0]}`),
-+            threadId: THREAD_ID,
-+            title: "Automatic title",
-+            titleSource: "automatic",
-+          },
-+          readModel: makeReadModel({ titleSource: "automatic", ...lifecycle }),
-+        }).pipe(Effect.flip);
-+        expect(error).toMatchObject({ _tag: "OrchestrationCommandInvariantError" });
-+      }
-+    }),
-+  );
-+
-+  it.effect("marks ordinary title writes as user-owned", () =>
-+    Effect.gen(function* () {
-+      const readModel = makeReadModel({ titleSource: "automatic" });
-+      const decided = yield* decideOrchestrationCommand({
-+        command: {
-+          type: "thread.meta.update",
-+          commandId: CommandId.make("manual-title"),
-+          threadId: THREAD_ID,
-+          title: "Manual title",
-+        },
-+        readModel,
-+      });
-+      const event = Array.isArray(decided) ? decided[0]! : decided;
-+      expect(event).toMatchObject({
-+        type: "thread.meta-updated",
-+        payload: { title: "Manual title", titleSource: "user" },
-+      });
-+      const projected = yield* projectEvent(readModel, { ...event, sequence: 1 });
-+      expect(projected.threads[0]).toMatchObject({
-+        title: "Manual title",
-+        titleSource: "user",
-+      });
-+    }),
-+  );
-+
-+  it.effect("treats replayed legacy title events as user-owned", () =>
-+    Effect.gen(function* () {
-+      const projected = yield* projectEvent(makeReadModel({ titleSource: "automatic" }), {
-+        sequence: 1,
-+        eventId: EventId.make("legacy-title-event"),
-+        aggregateKind: "thread",
-+        aggregateId: THREAD_ID,
-+        occurredAt: NOW,
-+        commandId: null,
-+        causationEventId: null,
-+        correlationId: null,
-+        metadata: {},
-+        type: "thread.meta-updated",
-+        payload: { threadId: THREAD_ID, title: "Legacy update", updatedAt: NOW },
-+      });
-+      expect(projected.threads[0]).toMatchObject({
-+        title: "Legacy update",
-+        titleSource: "user",
-+      });
-+    }),
-+  );
-+
-+  it.effect("lets explicit regeneration return a title to automatic ownership", () =>
-+    Effect.gen(function* () {
-+      const requestId = CommandId.make("regenerate-title");
-+      const readModel = makeReadModel({
-+        titleSource: "user",
-+        titleRegeneration: { requestId, startedAt: NOW },
-+      });
-+      const decided = yield* decideOrchestrationCommand({
-+        command: {
-+          type: "thread.title.regeneration.complete",
-+          commandId: CommandId.make("complete-regeneration"),
-+          threadId: THREAD_ID,
-+          requestId,
-+          title: "Current title",
-+        },
-+        readModel,
-+      });
-+      const event = Array.isArray(decided) ? decided[0]! : decided;
-+      expect(event).toMatchObject({
-+        type: "thread.meta-updated",
-+        payload: {
-+          title: "Current title",
-+          titleSource: "automatic",
-+          titleRegeneration: null,
-+        },
-+      });
-+    }),
-+  );
-+});
-diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
-new file mode 100644
-index 000000000..ce4531e73
---- /dev/null
-+++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
-@@ -0,0 +1,125 @@
-+import { assert, it } from "@effect/vitest";
-+import * as Effect from "effect/Effect";
-+import * as Migrator from "effect/unstable/sql/Migrator";
-+import * as SqlClient from "effect/unstable/sql/SqlClient";
-+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-+
-+import { migrationManifest, runMigrations } from "../Migrations.ts";
-+
-+it.layer(NodeSqliteClient.layerMemory())("ForkProjectionThreadTitleSource", (it) => {
-+  it.effect("round trips title ownership through an upstream v0.0.38-style write", () =>
-+    Effect.gen(function* () {
-+      const sql = yield* SqlClient.SqlClient;
-+      yield* runMigrations({ toMigrationInclusive: 43 });
-+      yield* sql`
-+        INSERT INTO projection_threads (
-+          thread_id, project_id, title, model_selection_json, runtime_mode,
-+          created_at, updated_at
-+        ) VALUES (
-+          'thread-1', 'project-1', 'Automatic title',
-+          '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access',
-+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
-+        )
-+      `;
-+      yield* sql`
-+        INSERT INTO orchestration_events (
-+          event_id, aggregate_kind, stream_id, stream_version, event_type,
-+          occurred_at, actor_kind, payload_json, metadata_json
-+        ) VALUES (
-+          'created', 'thread', 'thread-1', 1, 'thread.created',
-+          '2026-01-01T00:00:00.000Z', 'system',
-+          '{"threadId":"thread-1","title":"Automatic title"}', '{}'
-+        )
-+      `;
-+
-+      // Upgrade the v0.0.38 schema through current upstream migrations, then
-+      // apply the unnumbered fork extension.
-+      yield* runMigrations();
-+      let rows = yield* sql<{ readonly titleSource: string | null }>`
-+        SELECT title_source AS "titleSource" FROM projection_threads WHERE thread_id = 'thread-1'
-+      `;
-+      assert.deepEqual(rows, [{ titleSource: "user" }]);
-+
-+      // A title written by the fork records ownership in both the event and
-+      // projection before switching back to upstream.
-+      yield* sql`
-+        INSERT INTO orchestration_events (
-+          event_id, aggregate_kind, stream_id, stream_version, event_type,
-+          occurred_at, actor_kind, payload_json, metadata_json
-+        ) VALUES (
-+          'fork-automatic-title', 'thread', 'thread-1', 2, 'thread.meta-updated',
-+          '2026-01-01T12:00:00.000Z', 'system',
-+          '{"threadId":"thread-1","title":"Fork automatic title","titleSource":"automatic"}', '{}'
-+        )
-+      `;
-+      yield* sql`
-+        UPDATE projection_threads
-+        SET title = 'Fork automatic title', title_source = 'automatic',
-+          updated_at = '2026-01-01T12:00:00.000Z'
-+        WHERE thread_id = 'thread-1'
-+      `;
-+
-+      // v0.0.38 ignores the extra projection column and emits no ownership
-+      // field when it projects a manual rename.
-+      yield* sql`
-+        INSERT INTO orchestration_events (
-+          event_id, aggregate_kind, stream_id, stream_version, event_type,
-+          occurred_at, actor_kind, payload_json, metadata_json
-+        ) VALUES (
-+          'old-manual-rename', 'thread', 'thread-1', 3, 'thread.meta-updated',
-+          '2026-01-02T00:00:00.000Z', 'user',
-+          '{"threadId":"thread-1","title":"Renamed upstream"}', '{}'
-+        )
-+      `;
-+      yield* sql`
-+        UPDATE projection_threads
-+        SET title = 'Renamed upstream', updated_at = '2026-01-02T00:00:00.000Z'
-+        WHERE thread_id = 'thread-1'
-+      `;
-+
-+      yield* runMigrations();
-+      rows = yield* sql<{ readonly titleSource: string | null }>`
-+        SELECT title_source AS "titleSource" FROM projection_threads WHERE thread_id = 'thread-1'
-+      `;
-+      assert.deepEqual(rows, [{ titleSource: "user" }]);
-+
-+      const forkMigrationRows = yield* sql<{ readonly migrationId: number }>`
-+        SELECT migration_id AS "migrationId"
-+        FROM effect_sql_migrations
-+        WHERE name = 'ProjectionThreadTitleSource'
-+      `;
-+      assert.deepEqual(forkMigrationRows, []);
-+      assert.isFalse(migrationManifest.map(([id]): number => id).includes(50));
-+
-+      const latestMigration = yield* sql<{ readonly migrationId: number }>`
-+        SELECT MAX(migration_id) AS "migrationId" FROM effect_sql_migrations
-+      `;
-+      assert.deepEqual(latestMigration, [{ migrationId: 49 }]);
-+
-+      // A future upstream migration can still claim 50 because the extension
-+      // left the shared high-water mark at 49.
-+      const runUpstreamMigration = Migrator.make({});
-+      const upstreamMigrations = yield* runUpstreamMigration({
-+        loader: Migrator.fromRecord({
-+          "50_FutureUpstreamMigration": Effect.gen(function* () {
-+            const sql = yield* SqlClient.SqlClient;
-+            yield* sql`CREATE TABLE future_upstream_table (id INTEGER PRIMARY KEY)`;
-+          }),
-+        }),
-+      });
-+      assert.deepEqual(upstreamMigrations, [[50, "FutureUpstreamMigration"]]);
-+
-+      // Returning to the fork after upstream 50 keeps the extension idempotent
-+      // and does not disturb either the new upstream ledger row or ownership.
-+      yield* runMigrations();
-+      rows = yield* sql<{ readonly titleSource: string | null }>`
-+        SELECT title_source AS "titleSource" FROM projection_threads WHERE thread_id = 'thread-1'
-+      `;
-+      assert.deepEqual(rows, [{ titleSource: "user" }]);
-+      const upstreamTable = yield* sql<{ readonly name: string }>`
-+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'future_upstream_table'
-+      `;
-+      assert.deepEqual(upstreamTable, [{ name: "future_upstream_table" }]);
-+    }),
-+  );
-+});
-diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
-new file mode 100644
-index 000000000..9a1717b57
---- /dev/null
-+++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
-@@ -0,0 +1,50 @@
-+import * as Effect from "effect/Effect";
-+import * as SqlClient from "effect/unstable/sql/SqlClient";
-+
-+/**
-+ * Add and reconcile fork-owned projection state without consuming an upstream
-+ * migration id. Extra SQLite columns are tolerated by upstream releases.
-+ *
-+ * Reconciliation matters after a round trip through an older upstream build:
-+ * that build can project a title event but cannot update `title_source`. The
-+ * latest title-bearing event remains canonical, and an event without ownership
-+ * is deliberately treated as user-owned.
-+ */
-+export default Effect.gen(function* () {
-+  const sql = yield* SqlClient.SqlClient;
-+  const columns = yield* sql<{ readonly name: string }>`
-+    PRAGMA table_info(projection_threads)
-+  `;
-+  if (!columns.some((column) => column.name === "title_source")) {
-+    yield* sql`
-+      ALTER TABLE projection_threads
-+      ADD COLUMN title_source TEXT
-+    `;
-+  }
-+
-+  yield* sql`
-+    WITH latest_title_events AS (
-+      SELECT
-+        stream_id AS thread_id,
-+        json_extract(payload_json, '$.title') AS title,
-+        CASE
-+          WHEN json_extract(payload_json, '$.titleSource') = 'automatic'
-+            THEN 'automatic'
-+          ELSE 'user'
-+        END AS title_source,
-+        ROW_NUMBER() OVER (PARTITION BY stream_id ORDER BY sequence DESC) AS recency
-+      FROM orchestration_events
-+      WHERE aggregate_kind = 'thread'
-+        AND event_type IN ('thread.created', 'thread.meta-updated')
-+        AND json_valid(payload_json)
-+        AND json_type(payload_json, '$.title') = 'text'
-+    )
-+    UPDATE projection_threads AS thread
-+    SET title_source = latest.title_source
-+    FROM latest_title_events AS latest
-+    WHERE latest.recency = 1
-+      AND latest.thread_id = thread.thread_id
-+      AND latest.title = thread.title
-+      AND thread.title_source IS NOT latest.title_source
-+  `;
-+});

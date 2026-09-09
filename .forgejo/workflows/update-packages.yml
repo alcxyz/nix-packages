@@ -144,6 +144,7 @@ jobs:
         id: update
         env:
           GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
+          T3CODE_CI_CLEAN_HOME: "true"
         run: |
           rm -rf /homeless-shelter
           bash scripts/update-packages/update-${{ matrix.package }}.sh
