@@ -99,7 +99,6 @@
           wcap = pkgs.callPackage ./tools/wcap { };
         }
         // lib.optionalAttrs isLinux {
-          jean = pkgs.callPackage ./pkgs/jean { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           inherit (pkgs) openzfs_7_1;
           stash = pkgs.callPackage ./pkgs/stash { };
