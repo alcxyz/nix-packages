@@ -128,6 +128,16 @@ assert_called 'eval .#packages.aarch64-linux.widget.drvPath'
 assert_not_called 'mac-only'
 assert_not_called 'build .#packages.aarch64'
 
+new_case tool-contract-change
+change_file tools/nix-deploy/test-deploy.py
+jq 'map_values(. + ["nix-deploy"])' exports >exports.new
+mv exports.new exports
+run_case 0
+assert_called 'build .#packages.x86_64-linux.nix-deploy'
+assert_called 'eval .#packages.aarch64-darwin.nix-deploy.drvPath'
+assert_not_called '.#packages.x86_64-linux.widget'
+assert_not_called '.#packages.x86_64-darwin.mac-only'
+
 for shared in flake.nix flake.lock pkgs/shared.nix lib/packages.nix scripts/ci/check.sh pkgs/claude-code/default.nix; do
   new_case "shared-${shared//\//-}"
   change_file "$shared"

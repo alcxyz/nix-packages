@@ -166,7 +166,7 @@
             }
             ''
               shellcheck ${./tools/nix-deploy/deploy}
-              python3 ${./scripts/ci/test-nix-deploy.py} ${./tools/nix-deploy/deploy}
+              python3 ${./tools/nix-deploy/test-deploy.py} ${./tools/nix-deploy/deploy}
               touch "$out"
             '';
       }
