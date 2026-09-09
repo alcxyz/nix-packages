@@ -64,6 +64,9 @@ jobs:
       - name: Evaluate all exported package platforms
         run: scripts/ci/validate-package-platforms.sh
 
+      - name: Test Nix GC maintenance
+        run: nix build .#checks.x86_64-linux.nix-gc-maintenance-contract
+
       - name: Build Go tools and changed packages
         run: scripts/ci/build-changed-packages.sh
 
