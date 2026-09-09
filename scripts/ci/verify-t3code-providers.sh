@@ -62,7 +62,7 @@ for flavor in t3code t3code-fork; do
   t3_out=$(nix_build .#${flavor} --no-link --print-out-paths)
   expected_version=$(nix eval --raw .#${flavor}.version)
   runtime_version=$("$t3_out/bin/t3" --version)
-  if [[ "$runtime_version" != "$expected_version" ]]; then
+  if [[ "$runtime_version" != "t3 v$expected_version" ]]; then
     echo "$flavor reports $runtime_version; package version is $expected_version" >&2
     exit 1
   fi
