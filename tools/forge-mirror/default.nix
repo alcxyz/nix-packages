@@ -1,4 +1,4 @@
-{ lib, buildGoModule }:
+{ lib, buildGoModule, git }:
 
 buildGoModule {
   pname = "forge-mirror";
@@ -7,6 +7,8 @@ buildGoModule {
   src = ./.;
 
   vendorHash = null;
+
+  nativeCheckInputs = [ git ];
 
   meta = {
     description = "Manage Forgejo-first remotes, GitHub mirrors, and drift auditing";
