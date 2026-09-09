@@ -52,7 +52,8 @@ new_case() {
   git commit -qm baseline
   git update-ref refs/remotes/origin/main HEAD
   export MOCK_STATE="$case_root"
-  unset MOCK_FAIL_EVAL MOCK_FAIL_BUILD
+  unset MOCK_FAIL_EVAL MOCK_FAIL_BUILD PACKAGE_BUILD_MODE \
+    PACKAGE_BUILD_SHARD_COUNT PACKAGE_BUILD_SHARD_INDEX
   cat >exports <<'JSON'
 {"x86_64-linux":["widget"],"aarch64-linux":["widget"],"aarch64-darwin":["widget","mac-only"],"x86_64-darwin":["mac-only"]}
 JSON
@@ -124,6 +125,9 @@ run_case 42
 new_case targeted-change
 change_file pkgs/widget/default.nix
 run_case 0
+for baseline in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
+  assert_called "build .#${baseline} -L"
+done
 assert_called 'build .#packages.x86_64-linux.widget -L'
 assert_called 'eval .#packages.aarch64-linux.widget.drvPath'
 assert_not_called 'mac-only'
@@ -162,6 +166,105 @@ new_case missing-export
 change_file pkgs/new-package/default.nix
 run_case 1
 grep -q 'has source files but no exported package' output
+
+new_case baseline-only
+export PACKAGE_BUILD_MODE=baseline
+run_case 0
+assert_not_called 'eval .#packages'
+if [[ "$(grep -c '^build \.#' calls)" != 6 ]]; then
+  echo 'Baseline mode did not build exactly the six baseline packages.' >&2
+  cat calls >&2
+  exit 1
+fi
+
+partition_root="$test_root/partition"
+mkdir -p "$partition_root"
+partition_exports='{"x86_64-linux":["alpha","bravo","charlie","delta","echo","foxtrot","golf","hotel","india","juliet"],"aarch64-linux":["alpha","delta"],"aarch64-darwin":["bravo","echo","hotel"],"x86_64-darwin":["charlie","foxtrot","india"]}'
+
+new_case partition-unsharded
+printf '%s\n' "$partition_exports" >exports
+change_file flake.nix
+export PACKAGE_BUILD_MODE=selected
+run_case 0
+grep -E '^(eval|build) \.#packages\.' calls | sort >"$partition_root/expected-calls"
+
+for shard in 0 1 2 3; do
+  new_case "partition-${shard}"
+  printf '%s\n' "$partition_exports" >exports
+  change_file flake.nix
+  export PACKAGE_BUILD_MODE=selected
+  export PACKAGE_BUILD_SHARD_COUNT=4
+  export PACKAGE_BUILD_SHARD_INDEX="$shard"
+  run_case 0
+  assert_not_called 'build .#agent-sync-check'
+  grep -E '^(eval|build) \.#packages\.' calls >>"$partition_root/sharded-calls"
+  sed -n 's/^::group::changed package /'"$shard"' /p' output >>"$partition_root/assignments"
+  sed -n 's/^::group::changed package //p' output >"$partition_root/shard-${shard}"
+done
+
+if [[ "$(cut -d' ' -f2 "$partition_root/assignments" | sort | uniq -d)" != '' ]]; then
+  echo 'A selected package was assigned to more than one shard.' >&2
+  cat "$partition_root/assignments" >&2
+  exit 1
+fi
+jq -r '[.[][]] | unique[]' "$case_root/exports" | sort >"$partition_root/expected"
+cut -d' ' -f2 "$partition_root/assignments" | sort >"$partition_root/actual"
+diff -u "$partition_root/expected" "$partition_root/actual"
+sort "$partition_root/sharded-calls" >"$partition_root/actual-calls"
+diff -u "$partition_root/expected-calls" "$partition_root/actual-calls"
+
+# A repeated shard calculation must select the same sorted attributes.
+run_case 0
+sed -n 's/^::group::changed package //p' output >"$partition_root/shard-3-repeat"
+diff -u "$partition_root/shard-3" "$partition_root/shard-3-repeat"
+
+for invalid in \
+  'selected 0 0' \
+  'selected 4 4' \
+  'selected four 0' \
+  'selected 04 0' \
+  'selected 4 00' \
+  'selected 4 08' \
+  'selected 999999999999999999999999 0' \
+  'selected 4 999999999999999999999999' \
+  'all 4 0' \
+  'unknown 1 0'; do
+  read -r mode count index <<<"$invalid"
+  new_case "invalid-${mode}-${count}-${index}"
+  export PACKAGE_BUILD_MODE="$mode"
+  export PACKAGE_BUILD_SHARD_COUNT="$count"
+  export PACKAGE_BUILD_SHARD_INDEX="$index"
+  run_case 2
+done
+
+new_case sharded-platform-failure
+printf '%s\n' "$partition_exports" >exports
+change_file flake.nix
+export PACKAGE_BUILD_MODE=selected PACKAGE_BUILD_SHARD_COUNT=4 PACKAGE_BUILD_SHARD_INDEX=2
+export MOCK_FAIL_EVAL='.#packages.x86_64-darwin.charlie.drvPath'
+run_case 42
+grep -q 'original supported-platform evaluation error' output
+
+new_case sharded-native-build-failure
+printf '%s\n' "$partition_exports" >exports
+change_file flake.nix
+export PACKAGE_BUILD_MODE=selected PACKAGE_BUILD_SHARD_COUNT=4 PACKAGE_BUILD_SHARD_INDEX=3
+export MOCK_FAIL_BUILD='.#packages.x86_64-linux.delta'
+run_case 43
+grep -q 'original native build error' output
+
+new_case sharded-missing-export
+change_file pkgs/new-package/default.nix
+export PACKAGE_BUILD_MODE=selected PACKAGE_BUILD_SHARD_COUNT=4 PACKAGE_BUILD_SHARD_INDEX=0
+run_case 1
+grep -q 'has source files but no exported package' output
+
+new_case sharded-removed-package
+git rm -q pkgs/removed/default.nix
+git commit -qm remove
+export PACKAGE_BUILD_MODE=selected PACKAGE_BUILD_SHARD_COUNT=4 PACKAGE_BUILD_SHARD_INDEX=0
+run_case 0
+grep -q 'skipping removed package' output
 
 new_case overlay-name
 change_file pkgs/openzfs-7_1/default.nix

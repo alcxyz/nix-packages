@@ -33,8 +33,8 @@ jobs:
             echo "::endgroup::"
           done < <(find tools -maxdepth 2 -name go.mod | sort)
 
-  nix-build:
-    name: Package build validation
+  nix-validation:
+    name: Package validation prerequisites
     runs-on: ubuntu-latest
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
@@ -51,6 +51,7 @@ jobs:
         run: |
           scripts/ci/test-auto-merge-update-prs.sh
           scripts/ci/test-build-changed-packages.sh
+          scripts/ci/test-require-package-validation.sh
           scripts/ci/test-helium-updater.sh
           python3 scripts/ci/test-t3code-updater.py
           python3 tools/nix-deploy/test-deploy.py tools/nix-deploy/deploy
@@ -72,10 +73,82 @@ jobs:
       - name: Test Kubernetes node lifecycle helpers
         run: nix build .#checks.x86_64-linux.k8s-node-reboot-contract
 
-      - name: Build Go tools and changed packages
-        run: scripts/ci/build-changed-packages.sh
-
       - name: Verify T3 Code provider wiring
         env:
           T3CODE_CI_CLEAN_HOME: "true"
         run: scripts/ci/verify-t3code-providers.sh
+
+  baseline-builds:
+    name: Baseline package builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          github-server-url: https://git.alc.xyz
+
+      - name: Install runner prerequisites
+        run: |
+          apt-get update
+          apt-get install -y sudo
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build baseline packages
+        env:
+          PACKAGE_BUILD_MODE: baseline
+        run: scripts/ci/build-changed-packages.sh
+
+  selected-package-builds:
+    name: Selected package builds (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          github-server-url: https://git.alc.xyz
+
+      - name: Install runner prerequisites
+        run: |
+          apt-get update
+          apt-get install -y jq sudo
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build and evaluate selected packages
+        env:
+          PACKAGE_BUILD_MODE: selected
+          PACKAGE_BUILD_SHARD_COUNT: 4
+          PACKAGE_BUILD_SHARD_INDEX: ${{ matrix.shard }}
+        run: scripts/ci/build-changed-packages.sh
+
+  package-build:
+    name: Package build validation
+    if: always()
+    needs:
+      - nix-validation
+      - baseline-builds
+      - selected-package-builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 1
+          github-server-url: https://git.alc.xyz
+
+      - name: Require every package validation job
+        env:
+          PACKAGE_PREREQUISITES_RESULT: ${{ needs.nix-validation.result }}
+          PACKAGE_BASELINE_RESULT: ${{ needs.baseline-builds.result }}
+          PACKAGE_SELECTED_RESULT: ${{ needs.selected-package-builds.result }}
+        run: scripts/ci/require-package-validation.sh

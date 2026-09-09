@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-09-07
+**Updated:** 2026-09-09
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -46,6 +46,12 @@ CI must:
 - expand selection to all exports when root flake files, shared inputs, CI scripts, or package inputs consumed by other packages change; keep the shared-package list in the selector aligned with dependencies in `flake.nix`
 - regression-test package selection and failure classification with mocked Nix commands in CI
 - evaluate every advertised package derivation on all four systems on every validation run, including default aliases
+- partition selected exports deterministically across independent CI jobs when a
+  complete matrix cannot fit within the runner limit; the ordinary script
+  invocation remains complete and unsharded
+- preserve the required package-validation context through an aggregate job
+  that succeeds only when its prerequisites, baseline builds, and every
+  selected-export shard succeed
 - keep unavailable optional assets out of named and default exports; required Helium asset download failures stop its updater before package edits
 - compare pull request heads against the target branch, and use a conservative promotion baseline when the runner does not expose a target branch variable
 - avoid stale references to deleted or retired packages
@@ -104,6 +110,10 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
 - **Build a fixed package list in CI** — Rejected. Fixed lists drift as packages are added or retired, and they do not prove the changed package works.
 - **Skip Darwin-only packages on Linux CI** — Rejected. Full Darwin builds are not available on the Linux runner, but metadata evaluation still catches missing attributes and obvious unsupported-system mistakes.
 - **Advertise placeholder or dependency-incompatible exports** — Rejected. Exporting a name promises a usable derivation; missing optional assets remain absent until verified. Choosing a replacement ARM Linux default would change product intent without solving the missing artifact.
+- **Increase the central runner limit** — Rejected for this workflow change.
+  A workflow timeout cannot extend the runner's outer limit, while changing the
+  shared runner would affect other jobs and require a separate host activation.
+  Sharding preserves the existing runner bound and isolation model.
 - **Plain merge update PRs** — Rejected. Squash merging keeps routine generated updates to one commit per package update and matches the manual recovery process used when stale update PRs failed to auto-merge.
 - **Skip stale-but-clean update PRs until a later updater run refreshes them** — Rejected. A successful update PR merge advances `dev`, which can make every other open update PR stale. Auto-merge should rebase those PRs instead of relying on manual repair.
 
@@ -116,6 +126,8 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
 - Darwin-only packages still need occasional real Darwin builds for full confidence.
 - Evaluation covers every advertised system, but native builds on ARM Linux and Darwin still require their own runners or manual validation.
 - Changes to shared package inputs build the full native matrix and can take longer than isolated package updates.
+- Sharded validation repeats job setup and can duplicate cached dependency work,
+  but reduces work per job while preserving complete coverage.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
@@ -128,6 +140,7 @@ tracks gaps found while reviewing the producer and its configuration consumer:
 
 - [Do not classify supported-platform evaluation errors as platform absence](https://git.alc.xyz/alcxyz/nix-packages/issues/320)
 - [Make advertised package platforms and defaults usable](https://git.alc.xyz/alcxyz/nix-packages/issues/321)
+- [Shard complete package validation within the runner limit](https://git.alc.xyz/alcxyz/nix-packages/issues/347)
 - [Validate packages in the actual consumer dependency context](https://git.alc.xyz/alcxyz/nix-config/issues/275)
 
 The proposed
