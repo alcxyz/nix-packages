@@ -50,6 +50,7 @@
           codex-app-server = pkgs.callPackage ./pkgs/codex-app-server { };
           codex-cli = pkgs.callPackage ./pkgs/codex-cli { };
           nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
+          nix-gc-maintenance = pkgs.callPackage ./tools/nix-gc-maintenance { };
           xonsh-direnv = pkgs.callPackage ./pkgs/xonsh-direnv { };
           xonsh-with-direnv = pkgs.callPackage ./pkgs/xonsh-with-direnv {
             inherit (allPackages) xonsh-direnv;
@@ -108,6 +109,25 @@
           // lib.optionalAttrs (allPackages ? helium) {
             default = allPackages.helium;
           };
+        checks.nix-gc-maintenance-contract =
+          pkgs.runCommand "nix-gc-maintenance-contract"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.diffutils
+                pkgs.findutils
+                pkgs.gawk
+                pkgs.gnugrep
+                pkgs.shellcheck
+              ];
+              source = lib.cleanSource ./tools/nix-gc-maintenance;
+            }
+            ''
+              shellcheck "$source/nix-gc-maintenance.sh" "$source/test"
+              MAINTENANCE="$source/nix-gc-maintenance.sh" bash "$source/test"
+              touch "$out"
+            '';
       }
     );
 }

@@ -37,6 +37,7 @@ Internal tools built from source, tracked in this repo.
 
 | Tool | Description | Platforms |
 |------|-------------|-----------|
+| nix-gc-maintenance | Guarded Nix profile retention and capped garbage collection | all |
 | zfs-auto-unlock | Automatic ZFS dataset unlocking | all |
 
 ## Automated updates
