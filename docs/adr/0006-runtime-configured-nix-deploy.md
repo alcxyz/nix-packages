@@ -67,7 +67,10 @@ interface; whitespace and shell metacharacters are rejected before planning.
 
 ## Consequences
 
-- One package owns CLI behavior and black-box contract tests.
+- One package owns CLI behavior and black-box contract tests. The contract lives
+  next to the executable under `tools/nix-deploy`, so a tool-specific test
+  change selects its owning package in CI. Shared CI/flake changes still
+  select the full native matrix, and all exported platforms are always evaluated.
 - Missing, malformed, or unsupported inventory fails before deployment work.
 - Schema changes require a new version or backward-compatible optional fields.
 - Fleet system and Home Manager phases derive independent candidates from the
