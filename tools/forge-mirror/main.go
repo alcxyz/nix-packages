@@ -14,76 +14,75 @@ import (
 )
 
 const (
-	defaultForgejoURL     = "https://git.alc.xyz"
-	defaultForgejoUser    = "alcxyz"
-	defaultGitHubUser     = "alcxyz"
-	defaultForgejoSSHHost = "git-ssh.alc.xyz"
-	defaultCodebergURL    = "https://codeberg.org"
-	defaultCodebergUser   = "alcxyz"
+	defaultCodebergURL = "https://codeberg.org"
 )
 
-var codebergAllowlist = map[string]bool{
-	"DankCalendar":          true,
-	"DankDiskUsage":         true,
-	"DankQuickSearch":       true,
-	"DankSpotify":           true,
-	"DankTranslate":         true,
-	"DankVault":             true,
-	"alcxyz":                true,
-	"alcxyz.github.io":      true,
-	"annaetattoo.github.io": true,
-	"arkade-lvlup":          true,
-	"canopy":                true,
-	"cooking":               true,
-	"dms-plugins":           true,
-	"grove":                 true,
-	"homebrew-tap":          true,
-	"keymap":                true,
-	"madideal.github.io":    true,
-	"my-awesome-stars":      true,
-	"nix-config":            true,
-	"nix-packages":          true,
-	"nvim":                  true,
-	"paperflow":             true,
-	"tmux":                  true,
-}
-
-var githubMirrorDenylist = map[string]string{
-	"annaetattoo.github.io": "ADR-022: private-source Cloudflare Pages site",
-	"annaetattoo-site":      "ADR-022: private-source Cloudflare Pages site",
-	"madideal.github.io":    "ADR-022: private-source Cloudflare Pages site",
-	"madideal-site":         "ADR-022: private-source Cloudflare Pages site",
-}
-
 func configuredGithubPrimaryRepos() (map[string]bool, error) {
-	envList := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS")
-	filePath := os.Getenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
+	return configuredRepoNames(
+		"github-primary",
+		"FORGE_MIRROR_GITHUB_PRIMARY_REPOS",
+		"FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE",
+		defaultGithubPrimaryReposFile(),
+	)
+}
 
-	if filePath == "" {
-		filePath = defaultGithubPrimaryReposFile()
-		// Keep the default file additive when present. An environment list can
-		// stand alone only when no default file exists, not when it is unreadable.
-		if filePath != "" && strings.TrimSpace(envList) != "" {
-			if _, err := os.Stat(filePath); os.IsNotExist(err) {
-				filePath = ""
+func configuredCodebergRepos() (map[string]bool, error) {
+	return configuredRepoNames(
+		"Codeberg mirror",
+		"FORGE_MIRROR_CODEBERG_REPOS",
+		"FORGE_MIRROR_CODEBERG_REPOS_FILE",
+		"",
+	)
+}
+
+func configuredGithubDeniedRepos() (map[string]bool, error) {
+	return configuredRepoNames(
+		"GitHub mirror denial",
+		"FORGE_MIRROR_GITHUB_DENIED_REPOS",
+		"FORGE_MIRROR_GITHUB_DENIED_REPOS_FILE",
+		"",
+	)
+}
+
+func configuredRequiredPrivateRepos() (map[string]bool, error) {
+	return configuredRepoNames(
+		"required-private",
+		"FORGE_MIRROR_REQUIRED_PRIVATE_REPOS",
+		"FORGE_MIRROR_REQUIRED_PRIVATE_REPOS_FILE",
+		"",
+	)
+}
+
+func configuredRepoNames(label, valueKey, fileKey, fallbackFile string) (map[string]bool, error) {
+	value, valueConfigured := os.LookupEnv(valueKey)
+	filePath, fileConfigured := os.LookupEnv(fileKey)
+	if !fileConfigured && fallbackFile != "" {
+		switch {
+		case !valueConfigured:
+			filePath = fallbackFile
+			fileConfigured = true
+		case strings.TrimSpace(value) != "":
+			if _, err := os.Stat(fallbackFile); err == nil || !os.IsNotExist(err) {
+				filePath = fallbackFile
+				fileConfigured = true
 			}
 		}
 	}
-	if filePath == "" && strings.TrimSpace(envList) == "" {
-		return nil, fmt.Errorf("github-primary repo config missing; set FORGE_MIRROR_GITHUB_PRIMARY_REPOS or FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
+	if !valueConfigured && !fileConfigured {
+		return nil, fmt.Errorf("%s repo config missing; set %s or %s", label, valueKey, fileKey)
 	}
 
 	repos := map[string]bool{}
-	addRepoList(repos, envList)
-
-	if filePath != "" {
+	if valueConfigured {
+		addRepoList(repos, value)
+	}
+	if fileConfigured && filePath != "" {
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			return nil, fmt.Errorf("cannot read github-primary repo config: %w", err)
+			return nil, fmt.Errorf("cannot read %s repo config: %w", label, err)
 		}
 		addRepoList(repos, string(data))
 	}
-
 	return repos, nil
 }
 
@@ -164,36 +163,55 @@ func main() {
 		os.Exit(1)
 	}
 
-	token := os.Getenv("FORGEJO_TOKEN")
-	forgejoURL := envOr("FORGEJO_URL", defaultForgejoURL)
-	forgejoUser := envOr("FORGEJO_USER", defaultForgejoUser)
+	command := os.Args[1]
+	if command == "create" && len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "usage: forge-mirror create <repo-name>")
+		os.Exit(1)
+	}
+	commandEnv, err := configuredCommandEnvironment(command)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", command, err)
+		os.Exit(1)
+	}
 
-	switch os.Args[1] {
+	token := os.Getenv("FORGEJO_TOKEN")
+	forgejoURL := commandEnv["FORGEJO_URL"]
+	forgejoUser := commandEnv["FORGEJO_USER"]
+
+	switch command {
 	case "sync":
-		scanPaths := defaultScanPaths()
+		var scanPaths []string
 		if len(os.Args) > 2 {
 			scanPaths = os.Args[2:]
+		} else {
+			scanPaths, err = configuredScanPaths()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "sync: %v\n", err)
+				os.Exit(1)
+			}
 		}
-		if err := cmdSync(forgejoURL, forgejoUser, scanPaths); err != nil {
+		if err := cmdSync(forgejoURL, forgejoUser, os.Getenv("FORGEJO_SSH_HOST"), scanPaths); err != nil {
 			fmt.Fprintf(os.Stderr, "sync: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "primary":
-		scanPaths := defaultScanPaths()
+		var scanPaths []string
 		if len(os.Args) > 2 {
 			scanPaths = os.Args[2:]
+		} else {
+			scanPaths, err = configuredScanPaths()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "primary: %v\n", err)
+				os.Exit(1)
+			}
 		}
-		if err := cmdPrimary(forgejoUser, scanPaths); err != nil {
+		if err := cmdPrimary(forgejoURL, forgejoUser, commandEnv["FORGEJO_SSH_HOST"], scanPaths); err != nil {
 			fmt.Fprintf(os.Stderr, "primary: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "create":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: forge-mirror create <repo-name>")
-			os.Exit(1)
-		}
 		if token == "" {
 			token = readTokenFile()
 		}
@@ -201,7 +219,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for create")
 			os.Exit(1)
 		}
-		if err := cmdCreate(forgejoURL, forgejoUser, token, os.Args[2]); err != nil {
+		if err := cmdCreate(forgejoURL, forgejoUser, commandEnv["GITHUB_USER"], token, os.Args[2]); err != nil {
 			fmt.Fprintf(os.Stderr, "create: %v\n", err)
 			os.Exit(1)
 		}
@@ -219,7 +237,7 @@ func main() {
 		if len(os.Args) > 2 {
 			names = os.Args[2:]
 		}
-		if err := cmdConvert(forgejoURL, forgejoUser, token, names); err != nil {
+		if err := cmdConvert(forgejoURL, forgejoUser, commandEnv["GITHUB_USER"], token, names); err != nil {
 			fmt.Fprintf(os.Stderr, "convert: %v\n", err)
 			os.Exit(1)
 		}
@@ -241,7 +259,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "       forge-mirror recreate --all")
 			os.Exit(1)
 		}
-		if err := cmdRecreate(forgejoURL, forgejoUser, token, names); err != nil {
+		if err := cmdRecreate(forgejoURL, forgejoUser, commandEnv["GITHUB_USER"], token, names); err != nil {
 			fmt.Fprintf(os.Stderr, "recreate: %v\n", err)
 			os.Exit(1)
 		}
@@ -279,7 +297,7 @@ func main() {
 		if len(names) == 1 && names[0] == "--all" {
 			names = nil
 		}
-		if err := cmdMirrorGitHub(forgejoURL, forgejoUser, token, names, refreshExisting); err != nil {
+		if err := cmdMirrorGitHub(forgejoURL, forgejoUser, commandEnv["GITHUB_USER"], token, names, refreshExisting); err != nil {
 			fmt.Fprintf(os.Stderr, "mirror-github: %v\n", err)
 			os.Exit(1)
 		}
@@ -296,17 +314,23 @@ func main() {
 		if len(os.Args) > 2 {
 			names = os.Args[2:]
 		}
-		if err := cmdMirrorCodeberg(forgejoURL, forgejoUser, token, names); err != nil {
+		if err := cmdMirrorCodeberg(forgejoURL, forgejoUser, commandEnv["CODEBERG_USER"], token, names); err != nil {
 			fmt.Fprintf(os.Stderr, "mirror-codeberg: %v\n", err)
 			os.Exit(1)
 		}
 
 	case "status":
-		scanPaths := defaultScanPaths()
+		var scanPaths []string
 		if len(os.Args) > 2 {
 			scanPaths = os.Args[2:]
+		} else {
+			scanPaths, err = configuredScanPaths()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "status: %v\n", err)
+				os.Exit(1)
+			}
 		}
-		if err := cmdStatus(forgejoURL, forgejoUser, scanPaths); err != nil {
+		if err := cmdStatus(forgejoURL, forgejoUser, commandEnv["FORGEJO_SSH_HOST"], scanPaths); err != nil {
 			fmt.Fprintf(os.Stderr, "status: %v\n", err)
 			os.Exit(1)
 		}
@@ -323,7 +347,7 @@ func main() {
 		if len(os.Args) > 2 {
 			names = os.Args[2:]
 		}
-		if err := cmdAudit(forgejoURL, forgejoUser, token, names); err != nil {
+		if err := cmdAudit(forgejoURL, forgejoUser, commandEnv["GITHUB_USER"], token, names); err != nil {
 			fmt.Fprintf(os.Stderr, "audit: %v\n", err)
 			os.Exit(1)
 		}
@@ -366,12 +390,15 @@ Commands:
 Environment:
   FORGEJO_TOKEN        API token (required for create/convert/recreate, takes precedence)
   FORGEJO_TOKEN_FILE   Path to file containing API token (alternative to FORGEJO_TOKEN)
-  FORGEJO_URL          Forgejo instance URL (default: https://git.alc.xyz)
-  FORGEJO_USER         Forgejo username (default: alcxyz)
-  FORGEJO_SSH_HOST     Forgejo SSH hostname for local origin URLs (default: git-ssh.alc.xyz)
-  GITHUB_USER          GitHub username (default: alcxyz)
+  FORGEJO_URL          Forgejo instance URL
+  FORGEJO_USER         Forgejo account name
+  FORGEJO_SSH_HOST     Forgejo SSH hostname for local origin URLs
+  GITHUB_USER          GitHub account name
   GITHUB_MIRROR_PAT    GitHub PAT for private repos (falls back to gh auth token)
   GITHUB_MIRROR_PAT_FILE Path to file containing GitHub PAT
+  FORGE_MIRROR_SCAN_ROOTS Search roots separated by the platform path-list separator
+  FORGE_MIRROR_SCAN_ROOTS_FILE File containing one search root per line
+                         Required by sync/primary/status when paths are not passed as arguments.
   FORGE_MIRROR_GITHUB_PRIMARY_REPOS Comma/space/newline-separated GitHub-primary repo names
   FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE File containing GitHub-primary repo names
                          Required for sync/primary/convert/recreate/mirror-github/audit;
@@ -379,15 +406,51 @@ Environment:
                          The list is additive with the file; the file defaults to
                          $XDG_CONFIG_HOME/forge-mirror/github-primary-repos when present.
                          An explicitly configured empty file permits an empty exception list.
+  FORGE_MIRROR_GITHUB_DENIED_REPOS Comma/space/newline-separated repos denied GitHub mirrors
+  FORGE_MIRROR_GITHUB_DENIED_REPOS_FILE File containing repos denied GitHub mirrors
+                         Required by mirror-github/audit.
+  FORGE_MIRROR_REQUIRED_PRIVATE_REPOS Comma/space/newline-separated repos required to be private
+  FORGE_MIRROR_REQUIRED_PRIVATE_REPOS_FILE File containing repos required to be private
+                         Required by audit.
+  FORGE_MIRROR_CODEBERG_REPOS Comma/space/newline-separated repos eligible for Codeberg mirrors
+  FORGE_MIRROR_CODEBERG_REPOS_FILE File containing repos eligible for Codeberg mirrors
+                         Required by mirror-codeberg.
   CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
-  CODEBERG_USER        Codeberg username (default: alcxyz)
+  CODEBERG_USER        Codeberg account name
   CODEBERG_MIRROR_PAT  Codeberg PAT for Forgejo push mirrors
   CODEBERG_MIRROR_PAT_FILE Path to file containing Codeberg PAT`)
 }
 
+var commandEnvironmentKeys = map[string][]string{
+	"sync":              {"FORGEJO_URL", "FORGEJO_USER"},
+	"primary":           {"FORGEJO_URL", "FORGEJO_USER", "FORGEJO_SSH_HOST"},
+	"create":            {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
+	"convert":           {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
+	"recreate":          {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
+	"pull":              {"FORGEJO_URL", "FORGEJO_USER"},
+	"mirror-github":     {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
+	"mirror-codeberg":   {"FORGEJO_URL", "FORGEJO_USER", "CODEBERG_USER"},
+	"status":            {"FORGEJO_URL", "FORGEJO_USER", "FORGEJO_SSH_HOST"},
+	"audit":             {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
+	"credential-helper": {"FORGEJO_USER"},
+}
+
+func configuredCommandEnvironment(command string) (map[string]string, error) {
+	configured := map[string]string{}
+	for _, key := range commandEnvironmentKeys[command] {
+		value, present := os.LookupEnv(key)
+		value = strings.TrimSpace(value)
+		if !present || value == "" {
+			return nil, fmt.Errorf("%s is required", key)
+		}
+		configured[key] = value
+	}
+	return configured, nil
+}
+
 // --- sync command ---
 
-func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
+func cmdSync(forgejoURL, forgejoUser, forgejoSSHHost string, scanPaths []string) error {
 	githubPrimaryRepos, err := configuredGithubPrimaryRepos()
 	if err != nil {
 		return err
@@ -419,7 +482,7 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 		if !ok {
 			continue
 		}
-		changed, err := ensurePushURL(repoPath, cloneURL)
+		changed, err := ensurePushURL(repoPath, cloneURL, forgejoURL, forgejoSSHHost)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", name, err)
 			continue
@@ -438,7 +501,7 @@ func cmdSync(forgejoURL, forgejoUser string, scanPaths []string) error {
 
 // --- primary command ---
 
-func cmdPrimary(forgejoUser string, scanPaths []string) error {
+func cmdPrimary(forgejoURL, forgejoUser, forgejoSSHHost string, scanPaths []string) error {
 	githubPrimaryRepos, err := configuredGithubPrimaryRepos()
 	if err != nil {
 		return err
@@ -450,7 +513,7 @@ func cmdPrimary(forgejoUser string, scanPaths []string) error {
 
 	repos := findLocalRepos(scanPaths)
 	forgejoRepos := make(map[string]bool)
-	remoteRepos, err := fetchForgejoRepos(defaultForgejoURL, forgejoUser, token)
+	remoteRepos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
 	if err != nil {
 		return fmt.Errorf("fetching Forgejo repos: %w", err)
 	}
@@ -468,7 +531,7 @@ func cmdPrimary(forgejoUser string, scanPaths []string) error {
 			continue
 		}
 
-		changed, err := ensureForgejoPrimary(repoPath, forgejoUser, name)
+		changed, err := ensureForgejoPrimary(repoPath, forgejoSSHHost, forgejoUser, name)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", name, err)
 			continue
@@ -487,8 +550,7 @@ func cmdPrimary(forgejoUser string, scanPaths []string) error {
 
 // --- create command ---
 
-func cmdCreate(forgejoURL, forgejoUser, token, repoName string) error {
-	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
+func cmdCreate(forgejoURL, forgejoUser, githubUser, token, repoName string) error {
 	cloneAddr := fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repoName)
 
 	// Check if already exists
@@ -513,7 +575,7 @@ func cmdCreate(forgejoURL, forgejoUser, token, repoName string) error {
 	}
 
 	// Add GitHub PAT if available for private repos
-	if ghToken := os.Getenv("GITHUB_MIRROR_PAT"); ghToken != "" {
+	if ghToken := getGitHubPAT(); ghToken != "" {
 		payload["auth_token"] = ghToken
 	}
 
@@ -541,7 +603,7 @@ func cmdCreate(forgejoURL, forgejoUser, token, repoName string) error {
 
 // --- convert command ---
 
-func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
+func cmdConvert(forgejoURL, forgejoUser, githubUser, token string, names []string) error {
 	githubPrimaryRepos, err := configuredGithubPrimaryRepos()
 	if err != nil {
 		return err
@@ -549,7 +611,6 @@ func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
 	if err := rejectGitHubPrimaryNames(names, githubPrimaryRepos); err != nil {
 		return err
 	}
-	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
 	ghToken := getGitHubPAT()
 
 	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
@@ -596,7 +657,7 @@ func cmdConvert(forgejoURL, forgejoUser, token string, names []string) error {
 
 // --- recreate command ---
 
-func cmdRecreate(forgejoURL, forgejoUser, token string, names []string) error {
+func cmdRecreate(forgejoURL, forgejoUser, githubUser, token string, names []string) error {
 	githubPrimaryRepos, err := configuredGithubPrimaryRepos()
 	if err != nil {
 		return err
@@ -604,7 +665,6 @@ func cmdRecreate(forgejoURL, forgejoUser, token string, names []string) error {
 	if err := rejectGitHubPrimaryNames(names, githubPrimaryRepos); err != nil {
 		return err
 	}
-	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
 	ghToken := getGitHubPAT()
 
 	// --all: fetch all repos from GitHub via gh CLI
@@ -769,21 +829,24 @@ func parseMirrorArgs(args []string) (bool, []string) {
 	return refreshExisting, names
 }
 
-func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string, refreshExisting bool) error {
+func cmdMirrorGitHub(forgejoURL, forgejoUser, githubUser, token string, names []string, refreshExisting bool) error {
 	githubPrimaryRepos, err := configuredGithubPrimaryRepos()
+	if err != nil {
+		return err
+	}
+	githubDeniedRepos, err := configuredGithubDeniedRepos()
 	if err != nil {
 		return err
 	}
 	if err := rejectGitHubPrimaryNames(names, githubPrimaryRepos); err != nil {
 		return err
 	}
-	if err := rejectDeniedGitHubMirrorNames(names); err != nil {
+	if err := rejectDeniedGitHubMirrorNames(names, githubDeniedRepos); err != nil {
 		return err
 	}
 	if len(names) == 1 && names[0] == "--all" {
 		names = nil
 	}
-	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
 	ghToken := getGitHubPAT()
 	if ghToken == "" {
 		return fmt.Errorf("GITHUB_MIRROR_PAT or gh auth token is required")
@@ -793,7 +856,7 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string, refr
 	if err != nil {
 		return fmt.Errorf("fetching repos: %w", err)
 	}
-	repos = filterGitHubMirrorRepos(repos, githubPrimaryRepos)
+	repos = filterGitHubMirrorRepos(repos, githubPrimaryRepos, githubDeniedRepos)
 
 	return cmdMirrorRemote(
 		forgejoURL,
@@ -810,10 +873,10 @@ func cmdMirrorGitHub(forgejoURL, forgejoUser, token string, names []string, refr
 	)
 }
 
-func rejectDeniedGitHubMirrorNames(names []string) error {
+func rejectDeniedGitHubMirrorNames(names []string, githubDeniedRepos map[string]bool) error {
 	for _, name := range names {
-		if reason, denied := githubMirrorDenylist[name]; denied {
-			return fmt.Errorf("GitHub mirror denied for %q (%s)", name, reason)
+		if githubDeniedRepos[strings.ToLower(name)] {
+			return fmt.Errorf("GitHub mirror denied for %q by repository policy", name)
 		}
 	}
 	return nil
@@ -828,14 +891,14 @@ func rejectGitHubPrimaryNames(names []string, githubPrimaryRepos map[string]bool
 	return nil
 }
 
-func filterGitHubMirrorRepos(repos []forgejoRepo, githubPrimaryRepos map[string]bool) []forgejoRepo {
+func filterGitHubMirrorRepos(repos []forgejoRepo, githubPrimaryRepos, githubDeniedRepos map[string]bool) []forgejoRepo {
 	filtered := make([]forgejoRepo, 0, len(repos))
 	for _, repo := range repos {
 		if githubPrimaryRepos[strings.ToLower(repo.Name)] {
 			fmt.Printf("  %s: outgoing GitHub mirror denied (GitHub-primary)\n", repo.Name)
 			continue
 		}
-		if _, denied := githubMirrorDenylist[repo.Name]; denied {
+		if githubDeniedRepos[strings.ToLower(repo.Name)] {
 			fmt.Printf("  %s: GitHub mirror denied by policy\n", repo.Name)
 			continue
 		}
@@ -844,8 +907,11 @@ func filterGitHubMirrorRepos(repos []forgejoRepo, githubPrimaryRepos map[string]
 	return filtered
 }
 
-func cmdMirrorCodeberg(forgejoURL, forgejoUser, token string, names []string) error {
-	codebergUser := envOr("CODEBERG_USER", defaultCodebergUser)
+func cmdMirrorCodeberg(forgejoURL, forgejoUser, codebergUser, token string, names []string) error {
+	codebergRepos, err := configuredCodebergRepos()
+	if err != nil {
+		return err
+	}
 	codebergToken := getCodebergPAT()
 	if codebergToken == "" {
 		return fmt.Errorf("CODEBERG_MIRROR_PAT or CODEBERG_MIRROR_PAT_FILE is required")
@@ -856,11 +922,11 @@ func cmdMirrorCodeberg(forgejoURL, forgejoUser, token string, names []string) er
 		return fmt.Errorf("fetching repos: %w", err)
 	}
 
-	filteredNames, err := filterCodebergRepoNames(names)
+	filteredNames, err := filterCodebergRepoNames(names, codebergRepos)
 	if err != nil {
 		return err
 	}
-	filteredRepos := filterCodebergRepos(repos)
+	filteredRepos := filterCodebergRepos(repos, codebergRepos)
 
 	return cmdMirrorRemote(
 		forgejoURL,
@@ -877,14 +943,14 @@ func cmdMirrorCodeberg(forgejoURL, forgejoUser, token string, names []string) er
 	)
 }
 
-func filterCodebergRepoNames(names []string) ([]string, error) {
+func filterCodebergRepoNames(names []string, codebergRepos map[string]bool) ([]string, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
 
 	filtered := make([]string, 0, len(names))
 	for _, name := range names {
-		if !codebergAllowlist[name] {
+		if !codebergRepos[strings.ToLower(name)] {
 			return nil, fmt.Errorf("repo %q is not allowlisted for Codeberg", name)
 		}
 		filtered = append(filtered, name)
@@ -892,10 +958,10 @@ func filterCodebergRepoNames(names []string) ([]string, error) {
 	return filtered, nil
 }
 
-func filterCodebergRepos(repos []forgejoRepo) []forgejoRepo {
+func filterCodebergRepos(repos []forgejoRepo, codebergRepos map[string]bool) []forgejoRepo {
 	filtered := make([]forgejoRepo, 0, len(repos))
 	for _, repo := range repos {
-		if codebergAllowlist[repo.Name] {
+		if codebergRepos[strings.ToLower(repo.Name)] {
 			filtered = append(filtered, repo)
 		}
 	}
@@ -1055,7 +1121,7 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 
 // --- status command ---
 
-func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
+func cmdStatus(forgejoURL, forgejoUser, forgejoSSHHost string, scanPaths []string) error {
 	token := os.Getenv("FORGEJO_TOKEN")
 	if token == "" {
 		token = readTokenFile()
@@ -1086,7 +1152,7 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 		pushURLs := getExplicitPushURLs(repoPath)
 		hasForgejo := false
 		for _, u := range pushURLs {
-			if strings.Contains(u, "git.alc.xyz") {
+			if remoteMatchesForgejo(u, forgejoURL, forgejoSSHHost) {
 				hasForgejo = true
 				break
 			}
@@ -1111,12 +1177,19 @@ func cmdStatus(forgejoURL, forgejoUser string, scanPaths []string) error {
 
 // --- audit command ---
 
-func cmdAudit(forgejoURL, forgejoUser, token string, names []string) error {
+func cmdAudit(forgejoURL, forgejoUser, githubUser, token string, names []string) error {
 	githubPrimaryRepos, err := configuredGithubPrimaryRepos()
 	if err != nil {
 		return err
 	}
-	githubUser := envOr("GITHUB_USER", defaultGitHubUser)
+	githubDeniedRepos, err := configuredGithubDeniedRepos()
+	if err != nil {
+		return err
+	}
+	requiredPrivateRepos, err := configuredRequiredPrivateRepos()
+	if err != nil {
+		return err
+	}
 	ghToken := getGitHubPAT()
 
 	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
@@ -1135,12 +1208,13 @@ func cmdAudit(forgejoURL, forgejoUser, token string, names []string) error {
 		if len(filter) > 0 && !filter[repo.Name] {
 			continue
 		}
-		reason, denied := githubMirrorDenylist[repo.Name]
+		denied := githubDeniedRepos[strings.ToLower(repo.Name)]
+		requiredPrivate := requiredPrivateRepos[strings.ToLower(repo.Name)]
 		if githubPrimaryRepos[strings.ToLower(repo.Name)] || denied {
 			var result auditResult
 			var err error
 			if denied {
-				result, err = auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, token, githubUser, repo, reason)
+				result, err = auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, token, githubUser, repo)
 			} else {
 				result, err = auditGitHubPrimaryRepo(forgejoURL, forgejoUser, token, repo)
 			}
@@ -1149,6 +1223,9 @@ func cmdAudit(forgejoURL, forgejoUser, token string, names []string) error {
 				driftCount++
 				checked++
 				continue
+			}
+			if requiredPrivate && !repo.Private {
+				result.issues = append(result.issues, "Forgejo repository is public but repository policy requires private visibility")
 			}
 			checked++
 			if len(result.issues) == 0 {
@@ -1173,6 +1250,9 @@ func cmdAudit(forgejoURL, forgejoUser, token string, names []string) error {
 			driftCount++
 			checked++
 			continue
+		}
+		if requiredPrivate && !repo.Private {
+			result.issues = append(result.issues, "Forgejo repository is public but repository policy requires private visibility")
 		}
 		checked++
 
@@ -1218,28 +1298,66 @@ func auditGitHubPrimaryRepo(forgejoURL, forgejoUser, token string, repo forgejoR
 }
 
 func isGitHubRemote(address string) bool {
-	if !strings.Contains(address, "://") {
-		// Git also accepts scp-style [user@]host:path remotes.
-		host, _, ok := strings.Cut(address, ":")
-		if ok {
-			if _, name, hasUser := strings.Cut(host, "@"); hasUser {
-				host = name
-			}
-			return isGitHubHost(host)
-		}
-	}
-	parsed, err := url.Parse(address)
-	return err == nil && isGitHubHost(parsed.Hostname())
+	return isGitHubHost(remoteHost(address))
 }
 
 func isGitHubHost(host string) bool {
 	return strings.EqualFold(host, "github.com") || strings.EqualFold(host, "ssh.github.com")
 }
 
-func auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, forgejoToken, githubUser string, repo forgejoRepo, reason string) (auditResult, error) {
+func remoteHost(address string) string {
+	if !strings.Contains(address, "://") {
+		// Git also accepts scp-style [user@]host:path remotes.
+		host, _, ok := strings.Cut(address, ":")
+		if !ok {
+			return ""
+		}
+		if _, name, hasUser := strings.Cut(host, "@"); hasUser {
+			host = name
+		}
+		return host
+	}
+	parsed, err := url.Parse(address)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+func isSSHRemote(address string) bool {
+	if strings.Contains(address, "://") {
+		parsed, err := url.Parse(address)
+		return err == nil && strings.EqualFold(parsed.Scheme, "ssh")
+	}
+	_, _, ok := strings.Cut(address, ":")
+	return ok
+}
+
+func remoteMatchesForgejo(address string, forgejoURL string, additionalAddresses ...string) bool {
+	host := remoteHost(address)
+	if host == "" {
+		return false
+	}
+	forgejoHost := remoteHost(forgejoURL)
+	if forgejoHost != "" && strings.EqualFold(host, forgejoHost) {
+		return true
+	}
+	for _, candidate := range additionalAddresses {
+		candidateHost := remoteHost(candidate)
+		if candidateHost == "" {
+			candidateHost = strings.TrimSpace(candidate)
+		}
+		if candidateHost != "" && strings.EqualFold(host, candidateHost) {
+			return true
+		}
+	}
+	return false
+}
+
+func auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, forgejoToken, githubUser string, repo forgejoRepo) (auditResult, error) {
 	var result auditResult
 	if repo.Mirror && repo.OriginalURL != "" && strings.Contains(repo.OriginalURL, "github.com") {
-		result.issues = append(result.issues, fmt.Sprintf("Forgejo repo is still a GitHub pull mirror (%s)", reason))
+		result.issues = append(result.issues, "Forgejo repository is still a GitHub pull mirror but outbound GitHub publication is denied")
 	}
 	mirror, err := fetchGitHubPushMirror(forgejoURL, forgejoUser, forgejoToken, repo.Name, fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repo.Name))
 	if err != nil {
@@ -1247,10 +1365,7 @@ func auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, forgejoToken, githubUs
 		return result, nil
 	}
 	if mirror != nil {
-		result.issues = append(result.issues, fmt.Sprintf("Forgejo GitHub push mirror present but denied by policy (%s)", reason))
-	}
-	if !repo.Private {
-		result.issues = append(result.issues, fmt.Sprintf("Forgejo repo is public but should be private-source (%s)", reason))
+		result.issues = append(result.issues, "Forgejo GitHub push mirror is present but denied by repository policy")
 	}
 	return result, nil
 }
@@ -1390,26 +1505,29 @@ func isGitRepo(path string) bool {
 	return err == nil // .git can be a directory (regular) or file (submodule/worktree)
 }
 
-func ensurePushURL(repoPath, forgejoHTTPS string) (bool, error) {
+func ensurePushURL(repoPath, forgejoHTTPS, forgejoURL, forgejoSSHHost string) (bool, error) {
 	// Check if pushurl is explicitly configured in git config (not just
 	// the implicit fallback from the fetch url).
 	explicitPushURLs := getExplicitPushURLs(repoPath)
 
 	// Migrate: remove any old SSH push URLs for Forgejo
 	migrated := false
+	removed := make(map[string]struct{})
 	for _, u := range explicitPushURLs {
-		if strings.Contains(u, "git.alc.xyz") && strings.HasPrefix(u, "ssh://") {
-			gitCmd(repoPath, "remote", "set-url", "--delete", "--push", "origin", u)
+		if isSSHRemote(u) && remoteMatchesForgejo(u, forgejoURL, forgejoSSHHost, forgejoHTTPS) {
+			if _, alreadyRemoved := removed[u]; alreadyRemoved {
+				continue
+			}
+			if err := gitCmd(repoPath, "config", "--fixed-value", "--unset-all", "remote.origin.pushurl", u); err != nil {
+				return false, fmt.Errorf("remove old Forgejo SSH push URL: %w", err)
+			}
+			removed[u] = struct{}{}
 			migrated = true
 		}
 	}
 	if migrated {
 		// Re-read after cleanup
 		explicitPushURLs = getExplicitPushURLs(repoPath)
-		// If we removed all push URLs (only had SSH), reset to clean state
-		if len(explicitPushURLs) == 0 {
-			// No explicit URLs left — git falls back to fetch URL, which is fine
-		}
 	}
 
 	// Already has the correct HTTPS push URL
@@ -1490,9 +1608,8 @@ func getGitRemoteURL(repoPath, remoteName string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func ensureForgejoPrimary(repoPath, forgejoUser, repoName string) (bool, error) {
-	sshHost := envOr("FORGEJO_SSH_HOST", defaultForgejoSSHHost)
-	forgejoSSH := fmt.Sprintf("git@%s:%s/%s.git", sshHost, forgejoUser, repoName)
+func ensureForgejoPrimary(repoPath, forgejoSSHHost, forgejoUser, repoName string) (bool, error) {
+	forgejoSSH := fmt.Sprintf("git@%s:%s/%s.git", forgejoSSHHost, forgejoUser, repoName)
 	originURL := getGitOriginURL(repoPath)
 	if originURL == "" {
 		return false, fmt.Errorf("no origin remote")
@@ -1641,16 +1758,33 @@ func gitCmd(repoPath string, args ...string) error {
 	return cmd.Run()
 }
 
-func defaultScanPaths() []string {
-	home := os.Getenv("HOME")
-	return []string{
-		filepath.Join(home, "src", "infra"),
-		filepath.Join(home, "src", "apps"),
-		filepath.Join(home, "src", "tools"),
-		filepath.Join(home, "src", "forks"),
-		filepath.Join(home, "src", "personal"),
-		filepath.Join(home, "src", "sites"),
+func configuredScanPaths() ([]string, error) {
+	value, valueConfigured := os.LookupEnv("FORGE_MIRROR_SCAN_ROOTS")
+	filePath, fileConfigured := os.LookupEnv("FORGE_MIRROR_SCAN_ROOTS_FILE")
+	if !valueConfigured && !fileConfigured {
+		return nil, fmt.Errorf("scan roots missing; set FORGE_MIRROR_SCAN_ROOTS or FORGE_MIRROR_SCAN_ROOTS_FILE")
 	}
+
+	paths := []string{}
+	if valueConfigured && value != "" {
+		for _, path := range filepath.SplitList(value) {
+			if path = strings.TrimSpace(path); path != "" {
+				paths = append(paths, path)
+			}
+		}
+	}
+	if fileConfigured && filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read scan roots: %w", err)
+		}
+		for _, path := range strings.Split(string(data), "\n") {
+			if path = strings.TrimSpace(path); path != "" {
+				paths = append(paths, path)
+			}
+		}
+	}
+	return paths, nil
 }
 
 func expandHome(path string) string {
