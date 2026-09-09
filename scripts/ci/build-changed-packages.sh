@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+mode="${PACKAGE_BUILD_MODE:-all}"
+shard_count="${PACKAGE_BUILD_SHARD_COUNT:-1}"
+shard_index="${PACKAGE_BUILD_SHARD_INDEX:-0}"
+
+case "$mode" in
+  all|baseline|selected) ;;
+  *)
+    echo "PACKAGE_BUILD_MODE must be all, baseline, or selected (got: ${mode})." >&2
+    exit 2
+    ;;
+esac
+
+if [[ ! "$shard_count" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]]; then
+  echo "PACKAGE_BUILD_SHARD_COUNT must be a canonical integer from 1 to 64 (got: ${shard_count})." >&2
+  exit 2
+fi
+if [[ ! "$shard_index" =~ ^(0|[1-9]|[1-5][0-9]|6[0-3])$ ]] || ((shard_index >= shard_count)); then
+  echo "PACKAGE_BUILD_SHARD_INDEX must be between 0 and $((shard_count - 1)) (got: ${shard_index})." >&2
+  exit 2
+fi
+if [[ "$mode" != selected && ("$shard_count" != 1 || "$shard_index" != 0) ]]; then
+  echo "Package shards are only valid in selected mode." >&2
+  exit 2
+fi
+
 clean_homeless_shelter() {
   local attempt
 
@@ -37,11 +62,15 @@ nix_build() {
   done
 }
 
-for attr in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
-  echo "::group::nix build ${attr}"
-  nix_build ".#${attr}"
-  echo "::endgroup::"
-done
+if [[ "$mode" != selected ]]; then
+  for attr in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
+    echo "::group::nix build ${attr}"
+    nix_build ".#${attr}"
+    echo "::endgroup::"
+  done
+fi
+
+[[ "$mode" == baseline ]] && exit 0
 
 base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
 ref_name="${GITHUB_REF_NAME:-${GITEA_REF_NAME:-${FORGEJO_REF_NAME:-}}}"
@@ -97,8 +126,14 @@ else
   selected=$(printf '%s\n' "${changed_attrs[@]}" | sort -u)
 fi
 
+selected_index=0
 while IFS= read -r attr; do
   [[ -z "$attr" ]] && continue
+  if ((selected_index % shard_count != shard_index)); then
+    ((selected_index += 1))
+    continue
+  fi
+  ((selected_index += 1))
   echo "::group::changed package ${attr}"
   systems=$(jq -r --arg attr "$attr" 'to_entries[] | select(.value | index($attr)) | .key' <<<"$exports")
   if [[ -z "$systems" ]]; then
