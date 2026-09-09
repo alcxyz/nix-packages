@@ -23,7 +23,7 @@ nix_build() {
 
   for attempt in 1 2 3; do
     clean_homeless_shelter
-    if nix build "$@"; then
+    if nix build "$@" -L; then
       return 0
     else
       status=$?
@@ -72,6 +72,10 @@ while IFS= read -r path; do
     pkgs/claude-code/*|pkgs/codex-cli/*|pkgs/xonsh-direnv/*)
       full_matrix=true
       ;;
+    pkgs/t3code/*)
+      # Both exports share this source pin and recipe; the fork adds a patch.
+      changed_attrs+=(t3code t3code-fork)
+      ;;
     pkgs/*/*|tools/*/*)
       attr=${path#*/}
       attr=${attr%%/*}
@@ -110,6 +114,12 @@ while IFS= read -r attr; do
     echo "Evaluating ${package}.drvPath"
     nix eval "${package}.drvPath" >/dev/null
     if [[ "$system" == x86_64-linux ]]; then
+      if [[ "$attr" == t3code || "$attr" == t3code-fork ]]; then
+        # These dependency builds may create Nix's dummy home on unsandboxed
+        # runners. Finish them separately so nix_build cleans between phases.
+        nix_build "${package}.pnpmDeps" --no-link
+        nix_build "${package}.resourceMonitor" --no-link
+      fi
       nix_build "$package"
     else
       echo "${system}: derivation evaluated only; no native build on this runner."

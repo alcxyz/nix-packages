@@ -31,6 +31,7 @@ MOCK
 cat >"$test_root/bin/rm" <<'MOCK'
 #!/usr/bin/env bash
 [[ "$*" == '-rf /homeless-shelter' ]] || exit 99
+printf 'cleanup\n' >>"$MOCK_STATE/calls"
 MOCK
 cat >"$test_root/bin/sleep" <<'MOCK'
 #!/usr/bin/env bash
@@ -123,7 +124,7 @@ run_case 42
 new_case targeted-change
 change_file pkgs/widget/default.nix
 run_case 0
-assert_called 'build .#packages.x86_64-linux.widget'
+assert_called 'build .#packages.x86_64-linux.widget -L'
 assert_called 'eval .#packages.aarch64-linux.widget.drvPath'
 assert_not_called 'mac-only'
 assert_not_called 'build .#packages.aarch64'
@@ -133,7 +134,7 @@ change_file tools/nix-deploy/test-deploy.py
 jq 'map_values(. + ["nix-deploy"])' exports >exports.new
 mv exports.new exports
 run_case 0
-assert_called 'build .#packages.x86_64-linux.nix-deploy'
+assert_called 'build .#packages.x86_64-linux.nix-deploy -L'
 assert_called 'eval .#packages.aarch64-darwin.nix-deploy.drvPath'
 assert_not_called '.#packages.x86_64-linux.widget'
 assert_not_called '.#packages.x86_64-darwin.mac-only'
@@ -142,7 +143,7 @@ for shared in flake.nix flake.lock pkgs/shared.nix lib/packages.nix scripts/ci/c
   new_case "shared-${shared//\//-}"
   change_file "$shared"
   run_case 0
-  assert_called 'build .#packages.x86_64-linux.widget'
+  assert_called 'build .#packages.x86_64-linux.widget -L'
   assert_called 'eval .#packages.x86_64-darwin.mac-only.drvPath'
 done
 
@@ -166,6 +167,37 @@ new_case overlay-name
 change_file pkgs/openzfs-7_1/default.nix
 printf '{"x86_64-linux":["openzfs_7_1"]}\n' >exports
 run_case 0
-assert_called 'build .#packages.x86_64-linux.openzfs_7_1'
+assert_called 'build .#packages.x86_64-linux.openzfs_7_1 -L'
+
+new_case t3-shared-source
+change_file pkgs/t3code/source.json
+printf '{"x86_64-linux":["t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+run_case 0
+python3 - <<'PYTEST'
+from pathlib import Path
+calls = Path("calls").read_text().splitlines()
+expected = [
+    f"build .#packages.x86_64-linux.{flavor}{suffix} -L"
+    for flavor in ("t3code", "t3code-fork")
+    for suffix in (".pnpmDeps --no-link", ".resourceMonitor --no-link", "")
+]
+actual = [call for call in calls if call.startswith("build .#packages.x86_64-linux.t3code")]
+assert actual == expected, actual
+for call in expected:
+    index = calls.index(call)
+    assert calls[index - 1] == "cleanup", (call, calls[index - 1])
+PYTEST
+assert_called 'eval .#packages.aarch64-darwin.t3code.drvPath'
+assert_called 'eval .#packages.aarch64-darwin.t3code-fork.drvPath'
+assert_not_called 'build .#packages.aarch64-darwin.'
+
+new_case t3-dependency-failure
+change_file pkgs/t3code/default.nix
+printf '{"x86_64-linux":["t3code","t3code-fork"]}\n' >exports
+export MOCK_FAIL_BUILD='.#packages.x86_64-linux.t3code.resourceMonitor'
+run_case 43
+assert_called 'build .#packages.x86_64-linux.t3code.pnpmDeps --no-link -L'
+assert_not_called 'build .#packages.x86_64-linux.t3code -L'
+assert_not_called 'build .#packages.x86_64-linux.t3code-fork'
 
 echo 'Changed-package validation regression tests passed.'
