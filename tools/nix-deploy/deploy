@@ -1,12 +1,126 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SELF="$(hostname)"
-KNOWN_HOSTS=(xyz nux nex rpi0 mac)
-REMOTE_HOSTS=(nux nex rpi0)
-DEPLOY_ALL_HOSTS=(xyz nux nex rpi0)
+CONFIG_FILE="${NIX_DEPLOY_CONFIG:-}"
+DEPLOY_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --config)
+      [[ $# -ge 2 ]] || { echo "deploy: --config requires a file" >&2; exit 1; }
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
+    --config=*)
+      CONFIG_FILE="${1#--config=}"
+      [[ -n "$CONFIG_FILE" ]] || { echo "deploy: --config requires a file" >&2; exit 1; }
+      shift
+      ;;
+    *)
+      DEPLOY_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${DEPLOY_ARGS[@]}"
+
+if [[ -z "$CONFIG_FILE" ]]; then
+  echo "deploy: no inventory configured; pass --config FILE or set NIX_DEPLOY_CONFIG" >&2
+  exit 1
+fi
+if [[ ! -r "$CONFIG_FILE" ]]; then
+  echo "deploy: cannot read inventory '$CONFIG_FILE'" >&2
+  exit 1
+fi
+# Read once so validation and loading use the same inventory snapshot.
+INVENTORY_JSON=$(cat -- "$CONFIG_FILE")
+inventory_query() {
+  jq "$@" <<<"$INVENTORY_JSON"
+}
+
+if ! SCHEMA_VERSION="$(inventory_query -er '.schemaVersion' 2>/dev/null)"; then
+  echo "deploy: inventory is not valid JSON with a schemaVersion" >&2
+  exit 1
+fi
+if [[ "$SCHEMA_VERSION" != "1" ]]; then
+  echo "deploy: unsupported inventory schemaVersion '$SCHEMA_VERSION' (expected 1)" >&2
+  exit 1
+fi
+
+# The dollar-prefixed identifiers below are jq variables.
+# shellcheck disable=SC2016
+if ! inventory_query -e '
+  def strings: type == "array" and all(.[]; type == "string");
+  def unique_strings: strings and (length == (unique | length));
+  def string_map: type == "object" and all(to_entries[]; .value | type == "string");
+  def member_of($known): all(.[]; . as $item | $known | index($item) != null);
+  def keys_in($known): all(keys[]; . as $item | $known | index($item) != null);
+  def safe_name: test("^[A-Za-z0-9][A-Za-z0-9._-]*$");
+  def safe_endpoint: test("^[A-Za-z0-9][A-Za-z0-9.-]*$");
+  def valid_color:
+    test("^[0-9]{1,3};[0-9]{1,3};[0-9]{1,3}$") and
+    (split(";") | all(.[]; (tonumber >= 0 and tonumber <= 255)));
+  .knownHosts as $known |
+  type == "object" and
+  .schemaVersion == 1 and
+  (.operatorHost | type == "string" and safe_name) and
+  (.homeManagerUser | type == "string" and safe_name) and
+  (.homeOutputPrefix | type == "string" and safe_name) and
+  (.knownHosts | unique_strings and length > 0 and all(.[]; safe_name)) and
+  (.homeManagerHosts | unique_strings and member_of($known)) and
+  (.remoteHosts | unique_strings and member_of($known)) and
+  (.deployAllHosts | unique_strings and member_of($known)) and
+  (.aliases | string_map and all(keys[]; safe_name) and all(keys[]; . as $alias | $known | index($alias) == null) and all(.[]; . as $item | $known | index($item) != null)) and
+  (.sshHosts | string_map and keys_in($known) and all(.[]; safe_endpoint)) and
+  (.systemSshUsers | string_map and keys_in($known) and all(.[]; safe_name)) and
+  (.systemRemoteSudoHosts | unique_strings and member_of($known)) and
+  (.systemActivationModes | string_map and keys_in($known) and all(.[]; . == "switch" or . == "boot")) and
+  ((.hostColors // {}) | string_map and keys_in($known) and all(.[]; valid_color)) and
+  (.operatorHost as $operator | .knownHosts | index($operator) != null)
+' >/dev/null 2>&1; then
+  echo "deploy: inventory does not satisfy schemaVersion 1" >&2
+  exit 1
+fi
+
+OPERATOR_HOST="$(inventory_query -r '.operatorHost')"
+HOME_MANAGER_USER="$(inventory_query -r '.homeManagerUser')"
+HOME_OUTPUT_PREFIX="$(inventory_query -r '.homeOutputPrefix')"
+mapfile -t KNOWN_HOSTS < <(inventory_query -r '.knownHosts[]')
+mapfile -t HOME_MANAGER_HOSTS < <(inventory_query -r '.homeManagerHosts[]')
+mapfile -t REMOTE_HOSTS < <(inventory_query -r '.remoteHosts[]')
+mapfile -t DEPLOY_ALL_HOSTS < <(inventory_query -r '.deployAllHosts[]')
+mapfile -t SYSTEM_REMOTE_SUDO_HOSTS < <(inventory_query -r '.systemRemoteSudoHosts[]')
+declare -A HOST_ALIASES=()
+declare -A SSH_HOSTS=()
+declare -A SYSTEM_SSH_USERS=()
+declare -A SYSTEM_ACTIVATION_MODES=()
+declare -A HOST_COLORS=()
+while IFS=$'\t' read -r key value; do HOST_ALIASES["$key"]="$value"; done < <(inventory_query -r '.aliases | to_entries[] | [.key, .value] | @tsv')
+while IFS=$'\t' read -r key value; do SSH_HOSTS["$key"]="$value"; done < <(inventory_query -r '.sshHosts | to_entries[] | [.key, .value] | @tsv')
+while IFS=$'\t' read -r key value; do SYSTEM_SSH_USERS["$key"]="$value"; done < <(inventory_query -r '.systemSshUsers | to_entries[] | [.key, .value] | @tsv')
+while IFS=$'\t' read -r key value; do SYSTEM_ACTIVATION_MODES["$key"]="$value"; done < <(inventory_query -r '.systemActivationModes | to_entries[] | [.key, .value] | @tsv')
+while IFS=$'\t' read -r key value; do HOST_COLORS["$key"]="$value"; done < <(inventory_query -r '(.hostColors // {}) | to_entries[] | [.key, .value] | @tsv')
+export NIX_DEPLOY_CONFIG="$CONFIG_FILE"
 SUDO_KEEPALIVE_PID=""
 COLOR_RESET=""
+BUILD_HERE=false
+PREFLIGHT=true
+FAIL_UNREACHABLE=false
+SELF_RAW="$(hostname -s)"
+SELF=""
+NIX_SSHOPTS="${NIX_SSHOPTS:--o ServerAliveInterval=10 -o ServerAliveCountMax=30 -o TCPKeepAlive=yes -o ConnectTimeout=30}"
+DEPLOY_SSH_CHECK_TIMEOUT="${DEPLOY_SSH_CHECK_TIMEOUT:-5}"
+DEPLOY_REMOTE_MIN_FREE_KIB="${DEPLOY_REMOTE_MIN_FREE_KIB:-4194304}"
+export NIX_SSHOPTS
+# shellcheck disable=SC2206
+SSH_ARGS=(${NIX_SSHOPTS})
+PREFLIGHT_AVAILABLE_HOSTS=()
+PREFLIGHT_SKIPPED_HOSTS=()
+SSH_PREFLIGHT_ERROR=""
+
+if ! [[ "$DEPLOY_REMOTE_MIN_FREE_KIB" =~ ^[0-9]+$ ]]; then
+  echo "deploy: DEPLOY_REMOTE_MIN_FREE_KIB must be an integer number of KiB" >&2
+  exit 1
+fi
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   COLOR_RESET=$'\033[0m'
@@ -14,15 +128,27 @@ fi
 
 usage() {
   cat <<EOF
-Usage: deploy [<host>]          Full rebuild (system + home-manager)
-       deploy --all             Parallel rebuild of provisioned hosts (from xyz)
-       deploy --nixos [<host>]  System rebuild only
-       deploy --hm [<host>]     Home Manager only
+Usage: deploy [--config FILE] [--here] [--no-preflight] [<host>]
+       deploy [--config FILE] [--here] [--no-preflight] [--fail-unreachable] --all
+       deploy [--config FILE] [--here] [--no-preflight] --nixos [<host>]
+       deploy [--config FILE] [--no-preflight] --hm [<host>]
 
 When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.
 Known hosts: ${KNOWN_HOSTS[*]}
---all runs parallel deploys to provisioned hosts: ${DEPLOY_ALL_HOSTS[*]} (must be run from xyz).
+
+Remote phases are checked over SSH before building. A single failed preflight
+phase fails early. For --all, hosts that fail preflight are skipped for that
+phase unless --fail-unreachable is set. Set DEPLOY_SSH_CHECK_TIMEOUT to tune the
+SSH preflight timeout.
+
+Remote NixOS phases also require free space on the target filesystem backing
+/nix. Set DEPLOY_REMOTE_MIN_FREE_KIB to tune the threshold, or 0 to disable it.
+
+By default, --all runs from ${OPERATOR_HOST} for the canonical fleet workflow.
+Use --here to run --all from the current machine and build locally before
+copying closures to the target hosts. On Darwin this requires a working Linux
+builder for Linux targets.
 EOF
   exit 1
 }
@@ -33,8 +159,53 @@ is_known() {
   return 1
 }
 
+uses_home_manager() {
+  local h="$1"
+  for k in "${HOME_MANAGER_HOSTS[@]}"; do [[ "$k" == "$h" ]] && return 0; done
+  return 1
+}
+
+canonical_host() {
+  local h="$1"
+
+  if [[ -n "${HOST_ALIASES[$h]:-}" ]]; then
+    printf '%s\n' "${HOST_ALIASES[$h]}"
+  else
+    printf '%s\n' "$h"
+  fi
+}
+
+ssh_host() {
+  local h="$1"
+  printf '%s\n' "${SSH_HOSTS[$h]:-$h}"
+}
+
+system_ssh_user() {
+  local h="$1"
+  printf '%s\n' "${SYSTEM_SSH_USERS[$h]:-root}"
+}
+
+uses_remote_sudo() {
+  local h="$1"
+  for k in "${SYSTEM_REMOTE_SUDO_HOSTS[@]}"; do [[ "$k" == "$h" ]] && return 0; done
+  return 1
+}
+
+system_activation_mode() {
+  local h="$1"
+  printf '%s\n' "${SYSTEM_ACTIVATION_MODES[$h]:-switch}"
+}
+
 is_darwin() {
   [[ "$(uname)" == "Darwin" ]]
+}
+
+nixos_rebuild_command() {
+  if command -v nixos-rebuild &>/dev/null; then
+    printf '%s' "nixos-rebuild"
+  else
+    printf '%s' "nix run nixpkgs#nixos-rebuild --"
+  fi
 }
 
 color() {
@@ -52,23 +223,16 @@ phase_label() {
   local phase="$1"
 
   case "$phase" in
-  system) color "116;199;236" "[system]" ;; # Catppuccin sapphire
-  hm) color "203;166;247" "[hm]" ;;         # Catppuccin mauve
-  *) color "205;214;244" "[${phase}]" ;;    # Catppuccin text
+    check) color "166;227;161" "[check]" ;;   # Catppuccin green
+    system) color "116;199;236" "[system]" ;; # Catppuccin sapphire
+    hm) color "203;166;247" "[hm]" ;;         # Catppuccin mauve
+    *) color "205;214;244" "[${phase}]" ;;    # Catppuccin text
   esac
 }
 
 host_label() {
   local host="$1"
-
-  case "$host" in
-  xyz) color "137;180;250" "[xyz]" ;;   # Catppuccin blue
-  nux) color "166;227;161" "[nux]" ;;   # Catppuccin green
-  nex) color "249;226;175" "[nex]" ;;   # Catppuccin yellow
-  rpi0) color "235;160;172" "[rpi0]" ;; # Catppuccin maroon
-  mac) color "203;166;247" "[mac]" ;;   # Catppuccin mauve
-  *) color "205;214;244" "[${host}]" ;;
-  esac
+  color "${HOST_COLORS[$host]:-205;214;244}" "[${host}]"
 }
 
 section() {
@@ -95,6 +259,178 @@ start_sudo_keepalive() {
 stop_sudo_keepalive() {
   if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  fi
+}
+
+check_ssh_endpoint() {
+  local endpoint="$1"
+  local output status
+
+  set +e
+  output="$(
+    ssh \
+      -o BatchMode=yes \
+      -o ConnectTimeout="$DEPLOY_SSH_CHECK_TIMEOUT" \
+      -o ConnectionAttempts=1 \
+      "${SSH_ARGS[@]}" \
+      "$endpoint" true 2>&1
+  )"
+  status=$?
+  set -e
+
+  SSH_PREFLIGHT_ERROR="$(printf '%s' "$output" | tr '\n' ' ' | sed -e 's/[[:space:]]\+/ /g' -e 's/^ //' -e 's/ $//')"
+  if [[ -z "$SSH_PREFLIGHT_ERROR" ]]; then
+    SSH_PREFLIGHT_ERROR="ssh exited with status ${status}"
+  fi
+
+  return "$status"
+}
+
+format_kib_gib() {
+  local kib="$1"
+  printf '%d.%01d GiB' "$((kib / 1048576))" "$((((kib % 1048576) * 10) / 1048576))"
+}
+
+check_remote_nix_capacity() {
+  local host="$1"
+  local endpoint output status free_kib
+
+  if [[ "$DEPLOY_REMOTE_MIN_FREE_KIB" -eq 0 ]]; then
+    return 0
+  fi
+
+  endpoint="$(system_ssh_user "$host")@$(ssh_host "$host")"
+
+  set +e
+  output="$(
+    ssh \
+      -o BatchMode=yes \
+      -o ConnectTimeout="$DEPLOY_SSH_CHECK_TIMEOUT" \
+      -o ConnectionAttempts=1 \
+      "${SSH_ARGS[@]}" \
+      "$endpoint" "df -Pk /nix | awk 'NR == 2 { print \$4 }'" 2>&1
+  )"
+  status=$?
+  set -e
+
+  free_kib="$(printf '%s' "$output" | tail -n 1 | tr -d '[:space:]')"
+  if [[ $status -ne 0 || ! "$free_kib" =~ ^[0-9]+$ ]]; then
+    printf '%s %s cannot check free space on %s: %s\n' \
+      "$(phase_label check)" \
+      "$(host_label "$host")" \
+      "$endpoint" \
+      "$(printf '%s' "$output" | tr '\n' ' ' | sed -e 's/[[:space:]]\+/ /g' -e 's/^ //' -e 's/ $//')" >&2
+    return 1
+  fi
+
+  if [[ "$free_kib" -lt "$DEPLOY_REMOTE_MIN_FREE_KIB" ]]; then
+    printf '%s %s only %s free on /nix filesystem; need at least %s. Clean old generations or set DEPLOY_REMOTE_MIN_FREE_KIB=0 to override.\n' \
+      "$(phase_label check)" \
+      "$(host_label "$host")" \
+      "$(format_kib_gib "$free_kib")" \
+      "$(format_kib_gib "$DEPLOY_REMOTE_MIN_FREE_KIB")" >&2
+    return 1
+  fi
+
+  printf '%s %s free on /nix filesystem: %s\n' \
+    "$(phase_label check)" \
+    "$(host_label "$host")" \
+    "$(format_kib_gib "$free_kib")"
+}
+
+preflight_host() {
+  local host="$1" mode="$2"
+  local endpoints=()
+  local checked=()
+  local endpoint checked_endpoint seen endpoints_text
+
+  if [[ "$host" == "$SELF" || "$PREFLIGHT" != true ]]; then
+    return 0
+  fi
+
+  if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+    endpoints+=("$(system_ssh_user "$host")@$(ssh_host "$host")")
+  fi
+
+  if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
+    endpoints+=("${HOME_MANAGER_USER}@$(ssh_host "$host")")
+  fi
+
+  for endpoint in "${endpoints[@]}"; do
+    seen=false
+    for checked_endpoint in "${checked[@]}"; do
+      if [[ "$checked_endpoint" == "$endpoint" ]]; then
+        seen=true
+        break
+      fi
+    done
+    $seen && continue
+
+    checked+=("$endpoint")
+
+    if ! check_ssh_endpoint "$endpoint"; then
+      printf '%s %s unavailable via %s: %s\n' \
+        "$(phase_label check)" \
+        "$(host_label "$host")" \
+        "$endpoint" \
+        "$SSH_PREFLIGHT_ERROR" >&2
+      return 1
+    fi
+  done
+
+  endpoints_text="${checked[*]}"
+  printf '%s %s SSH available: %s\n' \
+    "$(phase_label check)" \
+    "$(host_label "$host")" \
+    "$endpoints_text"
+
+  if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+    check_remote_nix_capacity "$host"
+  fi
+}
+
+filter_reachable_hosts() {
+  local mode="$1"
+  shift
+
+  local requested_hosts=("$@")
+  local host
+  PREFLIGHT_AVAILABLE_HOSTS=()
+  PREFLIGHT_SKIPPED_HOSTS=()
+
+  if [[ "$PREFLIGHT" != true ]]; then
+    PREFLIGHT_AVAILABLE_HOSTS=("${requested_hosts[@]}")
+    return 0
+  fi
+
+  section "preflight"
+
+  for host in "${requested_hosts[@]}"; do
+    if [[ "$host" == "$SELF" ]]; then
+      printf '%s %s local host\n' "$(phase_label check)" "$(host_label "$host")"
+      PREFLIGHT_AVAILABLE_HOSTS+=("$host")
+      continue
+    fi
+
+    if preflight_host "$host" "$mode"; then
+      PREFLIGHT_AVAILABLE_HOSTS+=("$host")
+    else
+      PREFLIGHT_SKIPPED_HOSTS+=("$host")
+    fi
+  done
+
+  if [[ ${#PREFLIGHT_SKIPPED_HOSTS[@]} -gt 0 ]]; then
+    if [[ "$FAIL_UNREACHABLE" == true ]]; then
+      echo "deploy: hosts failed preflight: ${PREFLIGHT_SKIPPED_HOSTS[*]}" >&2
+      return 1
+    fi
+
+    echo "deploy: skipping hosts that failed preflight: ${PREFLIGHT_SKIPPED_HOSTS[*]}" >&2
+  fi
+
+  if [[ ${#PREFLIGHT_AVAILABLE_HOSTS[@]} -eq 0 ]]; then
+    echo "deploy: no reachable hosts to deploy" >&2
+    return 1
   fi
 }
 
@@ -139,27 +475,47 @@ nixos_local() {
 
 nixos_remote() {
   local host="$1"
+  local rebuild_cmd remote_args remote_sudo_arg action
+  rebuild_cmd="$(nixos_rebuild_command)"
+  action="$(system_activation_mode "$host")"
+  remote_args="--flake .#${host} --target-host $(system_ssh_user "$host")@$(ssh_host "$host") --use-substitutes"
+  remote_sudo_arg=""
+  if uses_remote_sudo "$host"; then
+    remote_sudo_arg=" --ask-sudo-password"
+  fi
+
+  if [[ "$action" == "boot" ]]; then
+    eval "${rebuild_cmd} boot ${remote_args}${remote_sudo_arg}"
+    return
+  fi
+
   run_with_boot_fallback \
     "deploy(${host})" \
-    "nixos-rebuild switch --flake .#${host} --target-host root@${host}" \
-    "nixos-rebuild boot --flake .#${host} --target-host root@${host}"
+    "${rebuild_cmd} switch ${remote_args}${remote_sudo_arg}" \
+    "${rebuild_cmd} boot ${remote_args}${remote_sudo_arg}"
 }
 
 hm_local() {
   local host="$1"
-  home-manager switch --flake ".#alc-${host}"
+  home-manager switch --flake ".#${HOME_OUTPUT_PREFIX}${host}"
 }
 
 hm_remote() {
   local host="$1"
   local result
-  result=$(nix build --no-link --print-out-paths ".#homeConfigurations.alc-${host}.activationPackage")
-  nix copy --to "ssh://alc@${host}" "$result"
-  ssh "alc@${host}" "$result/activate"
+  result=$(nix build --no-link --print-out-paths ".#homeConfigurations.${HOME_OUTPUT_PREFIX}${host}.activationPackage")
+  nix copy --substitute-on-destination --to "ssh://${HOME_MANAGER_USER}@$(ssh_host "$host")" "$result"
+  # Home Manager creates a tiny profile-link derivation during activation.
+  # Permit that one local job even on appliances whose global max-jobs=0
+  # policy prevents package compilation on constrained hardware. The complete
+  # activation closure has already been built and copied above.
+  # shellcheck disable=SC2029
+  ssh "${SSH_ARGS[@]}" "${HOME_MANAGER_USER}@$(ssh_host "$host")" "env NIX_CONFIG='max-jobs = 1' '$result/activate'"
 }
 
 do_deploy() {
   local host="$1" mode="$2"
+  host="$(canonical_host "$host")"
 
   if ! is_known "$host"; then
     echo "deploy: unknown host '$host'" >&2
@@ -167,8 +523,35 @@ do_deploy() {
     exit 1
   fi
 
+  if [[ "$mode" == "hm" ]] && ! uses_home_manager "$host"; then
+    echo "deploy: ${host} is configured as a NixOS-only host" >&2
+    exit 1
+  fi
+
+  if [[ "$mode" == "full" ]] && ! uses_home_manager "$host"; then
+    mode="nixos"
+  fi
+
   local is_local=false
+  local hm_preflight_done=false
   [[ "$host" == "$SELF" ]] && is_local=true
+
+  if [[ "$PREFLIGHT" == true && "$is_local" == false ]]; then
+    if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
+      section "preflight"
+      if ! preflight_host "$host" "nixos"; then
+        echo "deploy: ${host} failed system preflight; use --no-preflight to attempt anyway" >&2
+        exit 1
+      fi
+    elif [[ "$mode" == "hm" ]]; then
+      section "preflight"
+      if ! preflight_host "$host" "hm"; then
+        echo "deploy: ${host} failed Home Manager preflight; use --no-preflight to attempt anyway" >&2
+        exit 1
+      fi
+      hm_preflight_done=true
+    fi
+  fi
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
     section "$(phase_label system) $(host_label "$host") rebuild"
@@ -180,6 +563,14 @@ do_deploy() {
   fi
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
+    if [[ "$PREFLIGHT" == true && "$is_local" == false && "$hm_preflight_done" == false ]]; then
+      section "preflight"
+      if ! preflight_host "$host" "hm"; then
+        echo "deploy: ${host} failed Home Manager preflight; use --no-preflight to attempt anyway" >&2
+        exit 1
+      fi
+    fi
+
     section "$(phase_label hm) $(host_label "$host") switch"
     if $is_local; then
       hm_local "$host"
@@ -191,10 +582,15 @@ do_deploy() {
 
 do_deploy_all() {
   local mode="$1"
+  local deploy_hosts=("${DEPLOY_ALL_HOSTS[@]}")
 
-  if [[ "$SELF" != "xyz" ]]; then
-    echo "deploy --all must be run from xyz" >&2
+  if [[ "$SELF" != "$OPERATOR_HOST" && "$BUILD_HERE" != true ]]; then
+    echo "deploy --all must be run from ${OPERATOR_HOST}, or pass --here to run from ${SELF}" >&2
     exit 1
+  fi
+
+  if [[ "$SELF" != "$OPERATOR_HOST" && "$BUILD_HERE" == true ]]; then
+    deploy_hosts=("${REMOTE_HOSTS[@]}")
   fi
 
   if ! command -v parallel &>/dev/null; then
@@ -204,36 +600,60 @@ do_deploy_all() {
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
     local system_jobs=()
+    local interactive_system_jobs=()
     local host cmd
+
+    filter_reachable_hosts "nixos" "${deploy_hosts[@]}"
+    deploy_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
 
     start_sudo_keepalive
     trap stop_sudo_keepalive EXIT
     section "system rebuilds"
 
-    for host in "${DEPLOY_ALL_HOSTS[@]}"; do
+    for host in "${deploy_hosts[@]}"; do
       if [[ "$host" == "$SELF" ]]; then
-        cmd="sudo -n nixos-rebuild switch --flake .#${host}"
+        if is_darwin; then
+          cmd="sudo -n /run/current-system/sw/bin/darwin-rebuild switch --flake .#${host}"
+        else
+          cmd="sudo -n nixos-rebuild switch --flake .#${host}"
+        fi
       else
-        cmd="nixos-rebuild switch --flake .#${host} --target-host root@${host}"
+        cmd="$(nixos_rebuild_command) $(system_activation_mode "$host") --flake .#${host} --target-host $(system_ssh_user "$host")@$(ssh_host "$host") --use-substitutes"
+        if uses_remote_sudo "$host"; then
+          cmd="${cmd} --ask-sudo-password"
+          interactive_system_jobs+=("$(phase_label system)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
+          continue
+        fi
       fi
 
       system_jobs+=("$(phase_label system)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
     done
 
-    run_parallel_jobs "${system_jobs[@]}"
+    if [[ ${#system_jobs[@]} -gt 0 ]]; then
+      run_parallel_jobs "${system_jobs[@]}"
+    fi
+
+    for job in "${interactive_system_jobs[@]}"; do
+      IFS=$'\t' read -r phase host_label_text cmd <<<"$job"
+      printf '%s %s %s\n' "$phase" "$host_label_text" "$cmd"
+      eval "$cmd"
+    done
   fi
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
     local hm_jobs=()
     local host cmd
 
+    filter_reachable_hosts "hm" "${deploy_hosts[@]}"
+    deploy_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
+
     section "home-manager switches"
 
-    for host in "${DEPLOY_ALL_HOSTS[@]}"; do
+    for host in "${deploy_hosts[@]}"; do
       if [[ "$host" == "$SELF" ]]; then
-        cmd="home-manager switch --flake .#alc-${host}"
+        cmd="home-manager switch --flake .#${HOME_OUTPUT_PREFIX}${host}"
       else
-        cmd="deploy --hm ${host}"
+        printf -v cmd '%q --config %q --no-preflight --hm %q' "$0" "$CONFIG_FILE" "$host"
       fi
 
       hm_jobs+=("$(phase_label hm)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
@@ -243,6 +663,8 @@ do_deploy_all() {
   fi
 }
 
+SELF="$(canonical_host "$SELF_RAW")"
+
 # --- arg parsing ---
 
 mode="full"
@@ -251,27 +673,39 @@ all=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  --nixos)
-    mode="nixos"
-    shift
-    ;;
-  --hm)
-    mode="hm"
-    shift
-    ;;
-  --all)
-    all=true
-    shift
-    ;;
-  --help | -h) usage ;;
-  -*)
-    echo "deploy: unknown option '$1'" >&2
-    usage
-    ;;
-  *)
-    target="$1"
-    shift
-    ;;
+    --nixos)
+      mode="nixos"
+      shift
+      ;;
+    --hm)
+      mode="hm"
+      shift
+      ;;
+    --all)
+      all=true
+      shift
+      ;;
+    --here)
+      BUILD_HERE=true
+      shift
+      ;;
+    --no-preflight)
+      PREFLIGHT=false
+      shift
+      ;;
+    --fail-unreachable)
+      FAIL_UNREACHABLE=true
+      shift
+      ;;
+    --help | -h) usage ;;
+    -*)
+      echo "deploy: unknown option '$1'" >&2
+      usage
+      ;;
+    *)
+      target="$1"
+      shift
+      ;;
   esac
 done
 

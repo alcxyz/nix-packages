@@ -150,6 +150,25 @@
               bash scripts/checks/test-k8s-node-network-audit.sh
               touch "$out"
             '';
+        checks.nix-deploy-contract =
+          pkgs.runCommand "nix-deploy-contract"
+            {
+              nativeBuildInputs = with pkgs; [
+                bash
+                coreutils
+                gawk
+                gnugrep
+                gnused
+                jq
+                python3
+                shellcheck
+              ];
+            }
+            ''
+              shellcheck ${./tools/nix-deploy/deploy}
+              python3 ${./scripts/ci/test-nix-deploy.py} ${./tools/nix-deploy/deploy}
+              touch "$out"
+            '';
       }
     );
 }

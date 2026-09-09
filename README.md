@@ -66,3 +66,11 @@ auto-merge workflow.
 Updater scripts must fail before committing invalid generated state. Empty SRI
 hashes such as `hash = "sha256-";` are rejected by both the updater scripts and
 CI; see [ADR-0003](docs/adr/0003-fail-loud-automated-package-updates.md).
+
+### Runtime-configured deployment
+
+`nix run .#nix-deploy -- --config ./inventory.json --help` selects deployment
+inventory explicitly. `NIX_DEPLOY_CONFIG` supplies the same default for direct
+CLI use; a consumer may generate the JSON and provide a configured wrapper.
+The package supplies no built-in fleet. See [ADR-0006](docs/adr/0006-runtime-configured-nix-deploy.md)
+for the versioned JSON fields and runtime command requirements.
