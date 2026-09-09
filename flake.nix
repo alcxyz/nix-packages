@@ -86,6 +86,9 @@
           t3code = unstablePkgs.callPackage ./pkgs/t3code {
             inherit (allPackages) claude-code codex-cli;
           };
+          t3code-fork = unstablePkgs.callPackage ./pkgs/t3code/fork.nix {
+            inherit (allPackages) claude-code codex-cli;
+          };
         }
         // lib.optionalAttrs (system == "aarch64-darwin") {
           omniwm = pkgs.callPackage ./pkgs/omniwm { };
