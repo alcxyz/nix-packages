@@ -35,9 +35,10 @@ constraints:
 ## Decision
 
 Expose two source-built variants on every supported platform. `t3code` tracks a
-pinned stable upstream release, while `t3code-fork` applies narrowly scoped,
-checked-in patches to a pinned upstream revision. Both variants use one shared
-build recipe so their provider wiring and platform-specific installation stay
+pinned published upstream nightly, while `t3code-fork` applies narrowly scoped,
+checked-in patches to the same source revision. A shared `source.json` records
+the nightly version, resolved commit, source hash, and dependency hashes. Both
+variants use one shared build recipe so their provider wiring and platform-specific installation stay
 identical.
 
 Consumers select the variant explicitly while retaining the same service,
@@ -106,7 +107,14 @@ not a successful GUI launch and must fail runtime verification.
   because the desktop launcher prepends its build-time runtime package set.
 - Switching desktop distribution identities can require one-time regeneration
   of encrypted connection metadata, while project data remains independent.
-- Update automation updates `t3code` without modifying the pinned revision or
-  patch set of `t3code-fork`. It must not replace either source build with
-  official artifacts or opt into a Codex prerelease channel without a
-  documented compatibility reason.
+- The overnight updater selects the latest published nightly and advances both
+  variants together. It validates the patch application, both builds, and
+  embedded provider closures before opening an update PR. A patch conflict or
+  failed build leaves the last promoted version in place; automation does not
+  rewrite feature patches. Runtime activation retains its idle-turn guard.
+- Nightly builds are intentionally newer than stable releases. Pinning one
+  validated nightly per daily scan limits churn while keeping both variants on
+  a comparable baseline. Stable-only updates and a separately frozen fork were
+  rejected because they let the active patched build fall behind silently.
+- Nightly selection applies to T3 Code only. It does not opt Codex into a
+  prerelease channel or replace source builds with official artifacts.
