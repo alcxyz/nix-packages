@@ -49,6 +49,7 @@
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
           codex-app-server = pkgs.callPackage ./pkgs/codex-app-server { };
           codex-cli = pkgs.callPackage ./pkgs/codex-cli { };
+          k8s-node-reboot = pkgs.callPackage ./tools/k8s-node-reboot { };
           nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
           nix-gc-maintenance = pkgs.callPackage ./tools/nix-gc-maintenance { };
           xonsh-direnv = pkgs.callPackage ./pkgs/xonsh-direnv { };
@@ -126,6 +127,27 @@
             ''
               shellcheck "$source/nix-gc-maintenance.sh" "$source/test"
               MAINTENANCE="$source/nix-gc-maintenance.sh" bash "$source/test"
+              touch "$out"
+            '';
+        checks.k8s-node-reboot-contract =
+          pkgs.runCommand "k8s-node-reboot-contract"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.gnugrep
+                pkgs.gnused
+                pkgs.jq
+                pkgs.shellcheck
+              ];
+              source = lib.cleanSource ./tools/k8s-node-reboot;
+            }
+            ''
+              cd "$source"
+              shellcheck scripts/ops/*.sh scripts/checks/*.sh
+              bash scripts/checks/test-k8s-node-reboot-workload-phases.sh
+              bash scripts/checks/test-k8s-node-reboot-network-audits.sh
+              bash scripts/checks/test-k8s-node-network-audit.sh
               touch "$out"
             '';
       }

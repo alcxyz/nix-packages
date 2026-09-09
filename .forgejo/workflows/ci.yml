@@ -67,6 +67,9 @@ jobs:
       - name: Test Nix GC maintenance
         run: nix build .#checks.x86_64-linux.nix-gc-maintenance-contract
 
+      - name: Test Kubernetes node lifecycle helpers
+        run: nix build .#checks.x86_64-linux.k8s-node-reboot-contract
+
       - name: Build Go tools and changed packages
         run: scripts/ci/build-changed-packages.sh
 
