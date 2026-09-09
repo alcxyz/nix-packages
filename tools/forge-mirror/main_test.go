@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,12 +14,21 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestMain(m *testing.M) {
+	if len(os.Args) >= 2 && os.Args[1] == "scoped-credential-helper" {
+		main()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func unsetEnv(t *testing.T, key string) {
 	t.Helper()
@@ -354,6 +365,311 @@ func TestEnsurePushURLReportsPushURLDeletionFailure(t *testing.T) {
 	}
 	if pushURLsAfter := getExplicitPushURLs(repoPath); !reflect.DeepEqual(pushURLsAfter, pushURLsBefore) {
 		t.Fatalf("push URLs changed after deletion failed: before=%v after=%v", pushURLsBefore, pushURLsAfter)
+	}
+}
+
+func TestCredentialedGitCommandKeepsCredentialsOutOfArguments(t *testing.T) {
+	const (
+		repositoryURL = "https://github.com/example/private-repo.git"
+		username      = "x-access-token"
+		token         = "synthetic-secret-token"
+	)
+	t.Setenv("GIT_ASKPASS", "/untrusted/askpass")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "credential.helper")
+	t.Setenv("GIT_CONFIG_VALUE_0", "untrusted-helper")
+	t.Setenv("GIT_CONFIG", "/untrusted/config")
+	t.Setenv("GIT_CURL_VERBOSE", "1")
+	t.Setenv("GIT_DIR", "/untrusted/repository")
+	t.Setenv("GIT_COMMON_DIR", "/untrusted/common")
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+	t.Setenv("GIT_TRACE", "1")
+	t.Setenv("GIT_WORK_TREE", "/untrusted/worktree")
+
+	cmd, err := credentialedGitCommand(repositoryURL, username, token, "clone", "--bare", repositoryURL, "/tmp/target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := strings.Join(cmd.Args, "\n")
+	if strings.Contains(arguments, token) || strings.Contains(arguments, username+":") {
+		t.Fatalf("credential leaked into Git arguments: %q", arguments)
+	}
+	for _, expected := range []string{
+		"credential.helper=",
+		"credential.interactive=false",
+		"credential.useHttpPath=true",
+		"http.followRedirects=false",
+		"credential." + repositoryURL + ".helper=",
+		repositoryURL,
+	} {
+		if !strings.Contains(arguments, expected) {
+			t.Fatalf("Git arguments missing %q: %q", expected, arguments)
+		}
+	}
+
+	environment := make(map[string]string)
+	for _, entry := range cmd.Env {
+		key, value, found := strings.Cut(entry, "=")
+		if found {
+			environment[key] = value
+		}
+	}
+	if environment["GIT_ASKPASS"] != "" || environment["GIT_TERMINAL_PROMPT"] != "0" {
+		t.Fatalf("interactive credential fallback was not disabled: askpass=%q terminal=%q", environment["GIT_ASKPASS"], environment["GIT_TERMINAL_PROMPT"])
+	}
+	for _, blocked := range []string{"GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CURL_VERBOSE", "GIT_DIR", "GIT_COMMON_DIR", "GIT_TRACE", "GIT_WORK_TREE"} {
+		if _, present := environment[blocked]; present {
+			t.Fatalf("unsafe inherited Git environment retained %s", blocked)
+		}
+	}
+	if environment["GIT_CONFIG_GLOBAL"] != os.DevNull || environment["GIT_CONFIG_SYSTEM"] != os.DevNull || environment["GIT_CONFIG_NOSYSTEM"] != "1" {
+		t.Fatal("inherited Git configuration was not isolated")
+	}
+	if environment["FORGE_MIRROR_GIT_CREDENTIAL_URL"] != repositoryURL || environment["FORGE_MIRROR_GIT_CREDENTIAL_USERNAME"] != username || environment["FORGE_MIRROR_GIT_CREDENTIAL_TOKEN"] != token {
+		t.Fatal("scoped credential environment was not configured")
+	}
+}
+
+func TestWriteScopedCredentialRequiresExactProviderAndPath(t *testing.T) {
+	const (
+		expectedURL = "https://github.com/example/private-repo.git"
+		username    = "x-access-token"
+		token       = "synthetic-secret-token"
+	)
+	tests := []struct {
+		name    string
+		request string
+		want    string
+	}{
+		{
+			name:    "exact",
+			request: "protocol=https\nhost=github.com\npath=example/private-repo.git\n\n",
+			want:    "username=" + username + "\npassword=" + token + "\n\n",
+		},
+		{name: "different provider", request: "protocol=https\nhost=github.com.evil\npath=example/private-repo.git\n\n"},
+		{name: "different port", request: "protocol=https\nhost=github.com:8443\npath=example/private-repo.git\n\n"},
+		{name: "different repository", request: "protocol=https\nhost=github.com\npath=example/other.git\n\n"},
+		{name: "different protocol", request: "protocol=http\nhost=github.com\npath=example/private-repo.git\n\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output strings.Builder
+			if err := writeScopedCredential(expectedURL, username, token, strings.NewReader(test.request), &output); err != nil {
+				t.Fatal(err)
+			}
+			if output.String() != test.want {
+				t.Fatalf("credential output = %q, want %q", output.String(), test.want)
+			}
+		})
+	}
+
+	var output strings.Builder
+	err := writeScopedCredential("https://user:"+token+"@github.com/example/private-repo.git", username, token, strings.NewReader(""), &output)
+	if err == nil || strings.Contains(err.Error(), token) || output.Len() != 0 {
+		t.Fatalf("invalid target error was not safely redacted: err=%v output=%q", err, output.String())
+	}
+	if _, err := credentialedGitCommand(expectedURL, username, token+"\npassword=attacker", "ls-remote", expectedURL); err == nil || strings.Contains(err.Error(), token) {
+		t.Fatalf("invalid credential value was not safely rejected: %v", err)
+	}
+}
+
+func TestCredentialedGitClonePersistsPlainOrigin(t *testing.T) {
+	const (
+		username = "test-user"
+		token    = "synthetic-secret-token"
+	)
+	root := t.TempDir()
+	source := filepath.Join(root, "source.git")
+	if output, err := exec.Command("git", "init", "--bare", "--quiet", source).CombinedOutput(); err != nil {
+		t.Fatalf("init bare repository: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", source, "update-server-info").CombinedOutput(); err != nil {
+		t.Fatalf("update server info: %v: %s", err, output)
+	}
+	fileServer := http.FileServer(http.Dir(root))
+	var authenticationMutex sync.Mutex
+	authenticatedRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestUser, requestToken, ok := r.BasicAuth()
+		if !ok {
+			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		if requestUser != username || requestToken != token {
+			http.Error(w, "invalid credentials", http.StatusForbidden)
+			return
+		}
+		authenticationMutex.Lock()
+		authenticatedRequests++
+		authenticationMutex.Unlock()
+		fileServer.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
+	cloneURL := server.URL + "/source.git"
+	destination := filepath.Join(t.TempDir(), "clone.git")
+	cmd, err := credentialedGitCommand(cloneURL, username, token, "clone", "--bare", "--quiet", cloneURL, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clone local HTTP fixture: %v: %s", err, output)
+	}
+	authenticationMutex.Lock()
+	requests := authenticatedRequests
+	authenticationMutex.Unlock()
+	if requests == 0 {
+		t.Fatal("Git did not authenticate through the scoped credential helper")
+	}
+	origin, err := exec.Command("git", "-C", destination, "remote", "get-url", "origin").Output()
+	if err != nil || strings.TrimSpace(string(origin)) != cloneURL {
+		t.Fatalf("persisted origin = %q, err=%v", origin, err)
+	}
+	config, err := os.ReadFile(filepath.Join(destination, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(config, []byte(token)) || bytes.Contains(config, []byte("test-user@")) {
+		t.Fatalf("credential persisted in bare clone config: %q", config)
+	}
+}
+
+func TestCredentialedGitCommandRejectsAuthenticatedSameHostRedirect(t *testing.T) {
+	const (
+		username = "test-user"
+		token    = "synthetic-secret-token"
+	)
+	t.Setenv("GIT_TRACE", "1")
+	t.Setenv("GIT_CURL_VERBOSE", "1")
+	var mutex sync.Mutex
+	authenticatedSourceRequests := 0
+	redirectTargetRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/redirected/") {
+			mutex.Lock()
+			redirectTargetRequests++
+			mutex.Unlock()
+			http.Error(w, "redirect target must not be reached", http.StatusInternalServerError)
+			return
+		}
+		requestUser, requestToken, ok := r.BasicAuth()
+		if !ok {
+			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		if requestUser != username || requestToken != token {
+			http.Error(w, "invalid credentials", http.StatusForbidden)
+			return
+		}
+		mutex.Lock()
+		authenticatedSourceRequests++
+		mutex.Unlock()
+		http.Redirect(w, r, "/redirected/info/refs", http.StatusFound)
+	}))
+	defer server.Close()
+
+	repositoryURL := server.URL + "/example/private-repo.git"
+	cmd, err := credentialedGitCommand(repositoryURL, username, token, "ls-remote", repositoryURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected redirected unauthenticated request to fail")
+	}
+	encodedCredential := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
+	if bytes.Contains(diagnostics, []byte(token)) || bytes.Contains(diagnostics, []byte(encodedCredential)) {
+		t.Fatalf("credential leaked in Git failure diagnostics: %q", diagnostics)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if authenticatedSourceRequests == 0 {
+		t.Fatal("source path did not authenticate before issuing its redirect")
+	}
+	if redirectTargetRequests != 0 {
+		t.Fatalf("redirect target received %d requests", redirectTargetRequests)
+	}
+}
+
+func TestTrustedGitHubRepoURLUsesExactProvider(t *testing.T) {
+	valid := "https://github.com/example/repository.git"
+	if got, ok := trustedGitHubRepoURL(valid); !ok || got != valid {
+		t.Fatalf("valid GitHub URL rejected: got=%q ok=%v", got, ok)
+	}
+	for _, candidate := range []string{
+		"https://github.com.evil/example/repository.git",
+		"https://github.com:8443/example/repository.git",
+		"https://user@github.com/example/repository.git",
+		"https://github.com/example/repository.git?token=value",
+		"ssh://git@github.com/example/repository.git",
+	} {
+		if _, ok := trustedGitHubRepoURL(candidate); ok {
+			t.Fatalf("untrusted GitHub URL accepted: %q", candidate)
+		}
+	}
+}
+
+func TestCmdPullUsesPlainGitArguments(t *testing.T) {
+	isolatedMirrorConfig(t)
+	gitLog := filepath.Join(t.TempDir(), "git-arguments")
+	fakeBin := t.TempDir()
+	fakeGit := filepath.Join(fakeBin, "git")
+	script := `#!/bin/sh
+printf '%s\n' COMMAND "$@" >> "$FORGE_MIRROR_TEST_GIT_LOG"
+is_clone=false
+last=
+for argument do
+  if [ "$argument" = clone ]; then
+    is_clone=true
+  fi
+  last=$argument
+done
+if $is_clone; then
+  mkdir -p "$last"
+fi
+`
+	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FORGE_MIRROR_TEST_GIT_LOG", gitLog)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "1" {
+			fmt.Fprint(w, `{"data":[{"name":"private-repo","original_url":"https://github.com/example/private-repo.git"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer server.Close()
+
+	if err := cmdPull(server.URL, "forge-user", "synthetic-forge-token", nil); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(gitLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logData)
+	for _, secret := range []string{"synthetic-forge-token", "test-github-token", "x-access-token:", "forge-user:"} {
+		if strings.Contains(logText, secret) {
+			t.Fatalf("credential material found in Git arguments: %q", logText)
+		}
+	}
+	for _, expected := range []string{
+		"https://github.com/example/private-repo.git",
+		server.URL + "/forge-user/private-repo.git",
+		"--all",
+		"--tags",
+	} {
+		if !strings.Contains(logText, expected) {
+			t.Fatalf("Git arguments missing %q: %q", expected, logText)
+		}
+	}
+	if strings.Count(logText, "COMMAND\n") != 3 {
+		t.Fatalf("expected clone and two push commands: %q", logText)
 	}
 }
 
