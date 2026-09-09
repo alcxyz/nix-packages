@@ -52,6 +52,7 @@ jobs:
           scripts/ci/test-auto-merge-update-prs.sh
           scripts/ci/test-build-changed-packages.sh
           scripts/ci/test-helium-updater.sh
+          python3 scripts/ci/test-nix-deploy.py tools/nix-deploy/deploy
 
       - uses: https://github.com/cachix/install-nix-action@v30
         with:
