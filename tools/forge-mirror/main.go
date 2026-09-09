@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -363,6 +364,20 @@ func main() {
 			if tok != "" {
 				fmt.Printf("username=%s\n", forgejoUser)
 				fmt.Printf("password=%s\n", tok)
+			}
+		}
+
+	case "scoped-credential-helper":
+		if len(os.Args) >= 3 && os.Args[2] == "get" {
+			if err := writeScopedCredential(
+				os.Getenv("FORGE_MIRROR_GIT_CREDENTIAL_URL"),
+				os.Getenv("FORGE_MIRROR_GIT_CREDENTIAL_USERNAME"),
+				os.Getenv("FORGE_MIRROR_GIT_CREDENTIAL_TOKEN"),
+				os.Stdin,
+				os.Stdout,
+			); err != nil {
+				fmt.Fprintln(os.Stderr, "scoped-credential-helper: invalid credential request")
+				os.Exit(1)
 			}
 		}
 
@@ -1041,17 +1056,6 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 		filter[n] = true
 	}
 
-	// Build authenticated Forgejo push URL
-	forgejoAuthURL := forgejoURL
-	if token != "" {
-		for _, scheme := range []string{"https://", "http://"} {
-			if strings.HasPrefix(forgejoURL, scheme) {
-				forgejoAuthURL = strings.Replace(forgejoURL, scheme, fmt.Sprintf("%s%s:%s@", scheme, forgejoUser, token), 1)
-				break
-			}
-		}
-	}
-
 	tmpBase, err := os.MkdirTemp("", "forge-mirror-pull-")
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
@@ -1061,26 +1065,25 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 	pulled := 0
 	failed := 0
 	for _, r := range repos {
-		if r.OriginalURL == "" || !strings.Contains(r.OriginalURL, "github.com") {
+		cloneURL, ok := trustedGitHubRepoURL(r.OriginalURL)
+		if !ok {
 			continue
 		}
 		if len(filter) > 0 && !filter[r.Name] {
 			continue
 		}
 
-		// GitHub clone URL with auth (fine-grained PATs use x-access-token as username)
-		cloneURL := r.OriginalURL
-		if ghToken != "" {
-			cloneURL = strings.Replace(cloneURL, "https://github.com/", fmt.Sprintf("https://x-access-token:%s@github.com/", ghToken), 1)
-		}
-
-		// Forgejo push URL with auth
-		pushURL := fmt.Sprintf("%s/%s/%s.git", forgejoAuthURL, forgejoUser, r.Name)
+		pushURL := fmt.Sprintf("%s/%s/%s.git", strings.TrimSuffix(forgejoURL, "/"), forgejoUser, r.Name)
 
 		tmpDir := filepath.Join(tmpBase, r.Name)
 
 		// Bare clone from GitHub
-		cmd := exec.Command("git", "clone", "--bare", "--quiet", cloneURL, tmpDir)
+		cmd, err := credentialedGitCommand(cloneURL, "x-access-token", ghToken, "clone", "--bare", "--quiet", cloneURL, tmpDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: clone failed: invalid credential target\n", r.Name)
+			failed++
+			continue
+		}
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s: clone failed: %v\n", r.Name, err)
@@ -1089,11 +1092,21 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 		}
 
 		// Push to Forgejo (non-force: only fast-forwards)
-		pushCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", pushURL, "--all")
+		pushCmd, err := credentialedGitCommand(pushURL, forgejoUser, token, "-C", tmpDir, "push", "--quiet", pushURL, "--all")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: push failed (branches: invalid credential target, tags: invalid credential target)\n", r.Name)
+			failed++
+			continue
+		}
 		pushCmd.Stderr = os.Stderr
 		pushErr := pushCmd.Run()
 
-		tagCmd := exec.Command("git", "-C", tmpDir, "push", "--quiet", pushURL, "--tags")
+		tagCmd, err := credentialedGitCommand(pushURL, forgejoUser, token, "-C", tmpDir, "push", "--quiet", pushURL, "--tags")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  %s: push failed (branches: %v, tags: invalid credential target)\n", r.Name, pushErr)
+			failed++
+			continue
+		}
 		tagCmd.Stderr = os.Stderr
 		tagErr := tagCmd.Run()
 
@@ -1117,6 +1130,145 @@ func cmdPull(forgejoURL, forgejoUser, token string, names []string) error {
 	}
 	// Best-effort: don't fail the service for partial sync failures
 	return nil
+}
+
+func trustedGitHubRepoURL(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || !strings.EqualFold(parsed.Hostname(), "github.com") || parsed.Port() != "" || parsed.RawQuery != "" || parsed.Fragment != "" || credentialPath(parsed.Path) == "" {
+		return "", false
+	}
+	return rawURL, true
+}
+
+func credentialedGitCommand(credentialURL, username, token string, args ...string) (*exec.Cmd, error) {
+	if _, err := parseCredentialTarget(credentialURL); err != nil {
+		return nil, err
+	}
+	if !validCredentialValue(username) || !validCredentialValue(token) {
+		return nil, fmt.Errorf("invalid credential value")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("locate credential helper")
+	}
+	helper := fmt.Sprintf("!%s scoped-credential-helper", shellQuote(executable))
+	gitArgs := []string{
+		"-c", "credential.helper=",
+		"-c", "credential.interactive=false",
+		"-c", "credential.useHttpPath=true",
+		"-c", "http.followRedirects=false",
+		"-c", fmt.Sprintf("credential.%s.helper=%s", credentialURL, helper),
+	}
+	cmd := exec.Command("git", append(gitArgs, args...)...)
+	cmd.Env = credentialGitEnvironment(os.Environ(), map[string]string{
+		"GIT_ASKPASS":                          "",
+		"GIT_CONFIG_GLOBAL":                    os.DevNull,
+		"GIT_CONFIG_NOSYSTEM":                  "1",
+		"GIT_CONFIG_SYSTEM":                    os.DevNull,
+		"GIT_TERMINAL_PROMPT":                  "0",
+		"GCM_INTERACTIVE":                      "Never",
+		"SSH_ASKPASS":                          "",
+		"FORGE_MIRROR_GIT_CREDENTIAL_URL":      credentialURL,
+		"FORGE_MIRROR_GIT_CREDENTIAL_USERNAME": username,
+		"FORGE_MIRROR_GIT_CREDENTIAL_TOKEN":    token,
+	})
+	return cmd, nil
+}
+
+type credentialTarget struct {
+	protocol string
+	host     string
+	path     string
+}
+
+func parseCredentialTarget(rawURL string) (credentialTarget, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.Host == "" || credentialPath(parsed.Path) == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return credentialTarget{}, fmt.Errorf("invalid credential target")
+	}
+	return credentialTarget{
+		protocol: strings.ToLower(parsed.Scheme),
+		host:     strings.ToLower(parsed.Host),
+		path:     credentialPath(parsed.Path),
+	}, nil
+}
+
+func credentialPath(value string) string {
+	return strings.TrimPrefix(value, "/")
+}
+
+func validCredentialValue(value string) bool {
+	return !strings.ContainsAny(value, "\x00\r\n")
+}
+
+func writeScopedCredential(expectedURL, username, token string, input io.Reader, output io.Writer) error {
+	expected, err := parseCredentialTarget(expectedURL)
+	if err != nil {
+		return err
+	}
+	request := credentialTarget{}
+	scanner := bufio.NewScanner(io.LimitReader(input, 64*1024))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			break
+		}
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		switch key {
+		case "protocol":
+			request.protocol = strings.ToLower(value)
+		case "host":
+			request.host = strings.ToLower(value)
+		case "path":
+			request.path = credentialPath(value)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read credential request")
+	}
+	if request != expected || username == "" || token == "" || !validCredentialValue(username) || !validCredentialValue(token) {
+		return nil
+	}
+	_, err = fmt.Fprintf(output, "username=%s\npassword=%s\n\n", username, token)
+	return err
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func credentialGitEnvironment(base []string, replacements map[string]string) []string {
+	environment := make([]string, 0, len(base)+len(replacements))
+	for _, entry := range base {
+		key, _, found := strings.Cut(entry, "=")
+		if credentialGitEnvironmentKeyBlocked(key) {
+			continue
+		}
+		if _, replaced := replacements[key]; found && replaced {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	for key, value := range replacements {
+		environment = append(environment, key+"="+value)
+	}
+	return environment
+}
+
+func credentialGitEnvironmentKeyBlocked(key string) bool {
+	return strings.HasPrefix(key, "GIT_TRACE") ||
+		strings.HasPrefix(key, "GIT_CONFIG_KEY_") ||
+		strings.HasPrefix(key, "GIT_CONFIG_VALUE_") ||
+		key == "GIT_CONFIG_COUNT" ||
+		key == "GIT_CONFIG_PARAMETERS" ||
+		key == "GIT_CURL_VERBOSE" ||
+		key == "GIT_DIR" ||
+		key == "GIT_WORK_TREE" ||
+		key == "GIT_COMMON_DIR" ||
+		key == "GIT_CONFIG"
 }
 
 // --- status command ---
