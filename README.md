@@ -37,6 +37,7 @@ Internal tools built from source, tracked in this repo.
 
 | Tool | Description | Platforms |
 |------|-------------|-----------|
+| k8s-node-reboot | Guarded Kubernetes node reboot, power, and network-path lifecycle helpers | all |
 | nix-gc-maintenance | Guarded Nix profile retention and capped garbage collection | all |
 | zfs-auto-unlock | Automatic ZFS dataset unlocking | all |
 
