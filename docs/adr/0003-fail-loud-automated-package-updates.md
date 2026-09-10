@@ -87,7 +87,7 @@ The flake explicitly exports the following combinations. "All four" means
 | Packages | Exported systems |
 |----------|------------------|
 | `agent-sync-check`, `claude-code`, `codex-app-server`, `codex-cli`, `forge-mirror`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `xonsh-direnv`, `xonsh-with-direnv` | All four |
-| `devlog`, `jean`, `ndrop`, `openzfs_7_1`, `stash`, `zfs-auto-unlock` | Both Linux systems |
+| `devlog`, `ndrop`, `openzfs_7_1`, `stash`, `zfs-auto-unlock` | Both Linux systems |
 | `herdr` | Both Linux systems, `aarch64-darwin` |
 | `helium`, `default` | `x86_64-linux`, both Darwin systems |
 | `ghostty` | Both Darwin systems |
