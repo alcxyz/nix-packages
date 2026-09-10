@@ -4,6 +4,8 @@
 # computes Nix SRI hashes, and patches pkgs/claude-code/default.nix.
 # Sets GITHUB_OUTPUT: updated, version.
 set -euo pipefail
+# shellcheck source=scripts/ci/ephemeral-nix-home.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../ci/ephemeral-nix-home.sh"
 
 PKG_DIR="pkgs/claude-code"
 PKG_FILE="$PKG_DIR/default.nix"
@@ -100,7 +102,7 @@ print(f"Patched {path} → {version}")
 PYEOF
 
 echo "Validating claude-code derivation build..."
-rm -rf /homeless-shelter
+clean_ephemeral_nix_home
 out_path=$(nix build .#claude-code --no-link --print-out-paths)
 
 echo "Validating claude-code runtime..."

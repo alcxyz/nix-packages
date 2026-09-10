@@ -5,7 +5,7 @@ base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
 if [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
   git fetch origin "$base_ref"
   if ! git diff --name-only "origin/${base_ref}"...HEAD | grep -Eq \
-    '^(flake\.(nix|lock)|pkgs/(claude-code|codex-app-server|codex-cli|t3code)/|scripts/ci/(verify-t3code-providers|t3code-nix-home)\.sh$)'
+    '^(flake\.(nix|lock)|pkgs/(claude-code|codex-app-server|codex-cli|t3code)/|scripts/ci/(verify-t3code-providers|t3code-nix-home|ephemeral-nix-home)\.sh$)'
   then
     echo "No T3 Code provider inputs changed; skipping provider closure verification."
     exit 0

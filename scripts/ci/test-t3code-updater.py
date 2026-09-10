@@ -77,7 +77,9 @@ class UpdaterTests(unittest.TestCase):
             work = Path(directory)
             for name in ("scripts/update-packages", "scripts/ci", "pkgs/t3code", "bin"):
                 (work / name).mkdir(parents=True)
-            for name in ("scripts/update-packages/update-t3code.sh", "scripts/ci/t3code-nix-home.sh"):
+            for name in ("scripts/update-packages/update-t3code.sh",
+                         "scripts/ci/t3code-nix-home.sh",
+                         "scripts/ci/ephemeral-nix-home.sh"):
                 shutil.copyfile(root / name, work / name)
             # Use the production pin validation/writer, replacing only network discovery.
             helper = (root / "scripts/update-packages/t3code-source.py").read_text()
@@ -104,7 +106,7 @@ else:
             verify.chmod(0o755)
             output = work / "output"
             result = subprocess.run(["bash", "scripts/update-packages/update-t3code.sh"], cwd=work,
-                                    env=os.environ | {"PATH": str(work / "bin") + ":" + os.environ["PATH"], "GITHUB_OUTPUT": str(output), "T3CODE_CI_CLEAN_HOME": "false"},
+                                    env=os.environ | {"PATH": str(work / "bin") + ":" + os.environ["PATH"], "GITHUB_OUTPUT": str(output), "T3CODE_CI_CLEAN_HOME": "false", "NIX_CI_EPHEMERAL_CONTAINER": "0"},
                                     capture_output=True, text=True)
             self.assertTrue((work / "verified").exists(), result.stderr)
             if fail:
@@ -120,7 +122,8 @@ else:
         helper = Path(__file__).parent / "t3code-nix-home.sh"
         for enabled, expected in (("false", 0), ("true", 1)):
             result = subprocess.run(["bash", "-c", 'source "$1"; rm() { exit 99; }; clean_homeless_shelter', "test", str(helper)],
-                                    env=os.environ | {"T3CODE_CI_CLEAN_HOME": enabled, "GITHUB_ACTIONS": "false"},
+                                    env=os.environ | {"T3CODE_CI_CLEAN_HOME": enabled,
+                                                      "NIX_CI_EPHEMERAL_CONTAINER": "0"},
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, expected, result.stderr)
 

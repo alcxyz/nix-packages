@@ -144,9 +144,11 @@ jobs:
         id: update
         env:
           GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
           T3CODE_CI_CLEAN_HOME: "true"
         run: |
-          rm -rf /homeless-shelter
+          source scripts/ci/ephemeral-nix-home.sh
+          clean_ephemeral_nix_home
           bash scripts/update-packages/update-${{ matrix.package }}.sh
 
       - name: Open or refresh Forgejo PR

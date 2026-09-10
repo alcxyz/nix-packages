@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Shared workaround for the explicitly opted-in ephemeral CI runner.
+# shellcheck source=scripts/ci/ephemeral-nix-home.sh
+source "$(dirname "${BASH_SOURCE[0]}")/ephemeral-nix-home.sh"
+
 clean_homeless_shelter() {
   local _attempt
 
@@ -8,20 +11,22 @@ clean_homeless_shelter() {
   if [[ "${T3CODE_CI_CLEAN_HOME:-false}" != true ]]; then
     return 0
   fi
-  if [[ "${GITHUB_ACTIONS:-false}" != true || -L /homeless-shelter ]]; then
-    echo "Refusing CI home cleanup outside an Actions runner." >&2
+  if [[ "${NIX_CI_EPHEMERAL_CONTAINER:-0}" != "1" ||
+        ! -e "$nix_ci_container_marker" ||
+        -L "$nix_ci_homeless_shelter" ]]; then
+    echo "Refusing T3 Code home cleanup outside the declared ephemeral CI container." >&2
     return 1
   fi
 
   for _attempt in {1..10}; do
-    rm -rf /homeless-shelter
+    clean_ephemeral_nix_home
     sleep 1
-    if [[ ! -e /homeless-shelter ]]; then
+    if [[ ! -e "$nix_ci_homeless_shelter" ]]; then
       sleep 1
-      [[ ! -e /homeless-shelter ]] && return 0
+      [[ ! -e "$nix_ci_homeless_shelter" ]] && return 0
     fi
   done
 
-  echo "Unable to keep /homeless-shelter absent before a non-sandboxed Nix build." >&2
+  echo "Unable to keep ${nix_ci_homeless_shelter} absent before a non-sandboxed Nix build." >&2
   return 1
 }

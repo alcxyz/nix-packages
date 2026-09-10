@@ -4,6 +4,8 @@
 # and patches pkgs/codex-app-server/default.nix.
 # Sets GITHUB_OUTPUT: updated, version.
 set -euo pipefail
+# shellcheck source=scripts/ci/ephemeral-nix-home.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../ci/ephemeral-nix-home.sh"
 
 PKG_FILE="pkgs/codex-app-server/default.nix"
 
@@ -116,7 +118,7 @@ print(f"Patched {path} -> {os.environ['NEW_VERSION']}")
 PYEOF
 
 echo "Validating codex-app-server derivation build..."
-rm -rf /homeless-shelter
+clean_ephemeral_nix_home
 nix build .#codex-app-server --no-link
 
 echo "updated=true" >> "$GITHUB_OUTPUT"

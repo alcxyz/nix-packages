@@ -51,6 +51,8 @@ jobs:
         run: |
           scripts/ci/test-auto-merge-update-prs.sh
           scripts/ci/test-build-changed-packages.sh
+          scripts/ci/test-ephemeral-nix-home.sh
+          scripts/ci/test-t3code-nix-home.sh
           scripts/ci/test-require-package-validation.sh
           scripts/ci/test-helium-updater.sh
           python3 scripts/ci/test-t3code-updater.py
@@ -75,6 +77,7 @@ jobs:
 
       - name: Verify T3 Code provider wiring
         env:
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
           T3CODE_CI_CLEAN_HOME: "true"
         run: scripts/ci/verify-t3code-providers.sh
 
