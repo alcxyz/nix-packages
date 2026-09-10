@@ -49,6 +49,7 @@ paths=(
   apps/server/src/provider/Layers/AntigravityAdapter.ts
   apps/server/src/provider/Layers/ClaudeAdapter.ts
   apps/server/src/provider/Layers/CodexAdapter.ts
+  apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
   apps/server/src/provider/Layers/CodexSessionRuntime.ts
   apps/server/src/provider/Layers/CursorAdapter.ts
   apps/server/src/provider/Layers/GrokAdapter.ts

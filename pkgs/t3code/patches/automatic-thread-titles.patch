@@ -1392,10 +1392,10 @@ index bc176f62c..dee1d8450 100644
      ? Effect.logDebug("Database schema is current")
 diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
 new file mode 100644
-index 000000000..ce4531e73
+index 000000000..3f96546f9
 --- /dev/null
 +++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,221 @@
 +import { assert, it } from "@effect/vitest";
 +import * as Effect from "effect/Effect";
 +import * as Migrator from "effect/unstable/sql/Migrator";
@@ -1403,6 +1403,102 @@ index 000000000..ce4531e73
 +import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 +
 +import { migrationManifest, runMigrations } from "../Migrations.ts";
++import reconcileTitleSource from "./ForkProjectionThreadTitleSource.ts";
++
++it.layer(NodeSqliteClient.layerMemory())("historical generated title ownership", (it) => {
++  it.effect("recovers proven server titles while preserving manual and ambiguous titles", () =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      yield* runMigrations();
++      const cases = [
++        {
++          id: "generated",
++          command: "server:thread-title-rename:old",
++          actor: "server",
++          expected: "automatic",
++        },
++        {
++          id: "regenerated",
++          command: "server:thread-title-regeneration-complete:old",
++          actor: "server",
++          expected: "automatic",
++        },
++        { id: "manual", command: "manual-rename", actor: "user", expected: "user" },
++        { id: "unknown-server", command: "server:unknown:old", actor: "server", expected: "user" },
++        {
++          id: "wrong-actor",
++          command: "server:thread-title-rename:old",
++          actor: "user",
++          expected: "user",
++        },
++        {
++          id: "explicit-user",
++          command: "server:thread-title-rename:old",
++          actor: "server",
++          source: "user",
++          expected: "user",
++        },
++        {
++          id: "manual-after-generated",
++          command: "server:thread-title-rename:old",
++          actor: "server",
++          manualAfter: true,
++          expected: "user",
++        },
++      ];
++      for (const entry of cases) {
++        const title = `Title ${entry.id}`;
++        yield* sql`
++          INSERT INTO projection_threads (
++            thread_id, project_id, title, model_selection_json, runtime_mode,
++            created_at, updated_at, title_source
++          ) VALUES (
++            ${entry.id}, 'project-1', ${title},
++            '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access',
++            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'user'
++          )
++        `;
++        const payload = JSON.stringify({
++          title,
++          ...(entry.source ? { titleSource: entry.source } : {}),
++        });
++        yield* sql`
++          INSERT INTO orchestration_events (
++            event_id, aggregate_kind, stream_id, stream_version, event_type,
++            occurred_at, command_id, actor_kind, payload_json, metadata_json
++          ) VALUES (
++            ${entry.id}, 'thread', ${entry.id}, 1, 'thread.meta-updated',
++            '2026-01-01T00:00:00.000Z', ${entry.command}, ${entry.actor}, ${payload}, '{}'
++          )
++        `;
++        if (entry.manualAfter) {
++          // Even choosing the same title manually transfers ownership.
++          yield* sql`
++            INSERT INTO orchestration_events (
++              event_id, aggregate_kind, stream_id, stream_version, event_type,
++              occurred_at, command_id, actor_kind, payload_json, metadata_json
++            ) VALUES (
++              ${`${entry.id}-manual`}, 'thread', ${entry.id}, 2, 'thread.meta-updated',
++              '2026-01-02T00:00:00.000Z', 'manual-newer', 'user', ${payload}, '{}'
++            )
++          `;
++        }
++      }
++      for (const _ of [1, 2]) {
++        yield* reconcileTitleSource;
++        const rows = yield* sql<{ readonly id: string; readonly source: string }>`
++          SELECT thread_id AS id, title_source AS source FROM projection_threads ORDER BY thread_id
++        `;
++        assert.deepEqual(
++          rows,
++          cases
++            .map(({ id, expected }) => ({ id, source: expected }))
++            .sort((a, b) => a.id.localeCompare(b.id)),
++        );
++      }
++    }),
++  );
++});
 +
 +it.layer(NodeSqliteClient.layerMemory())("ForkProjectionThreadTitleSource", (it) => {
 +  it.effect("round trips title ownership through an upstream v0.0.38-style write", () =>
@@ -1523,10 +1619,10 @@ index 000000000..ce4531e73
 +});
 diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
 new file mode 100644
-index 000000000..9a1717b57
+index 000000000..b52a35c3a
 --- /dev/null
 +++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,59 @@
 +import * as Effect from "effect/Effect";
 +import * as SqlClient from "effect/unstable/sql/SqlClient";
 +
@@ -1536,8 +1632,9 @@ index 000000000..9a1717b57
 + *
 + * Reconciliation matters after a round trip through an older upstream build:
 + * that build can project a title event but cannot update `title_source`. The
-+ * latest title-bearing event remains canonical, and an event without ownership
-+ * is deliberately treated as user-owned.
++ * latest title-bearing event remains canonical. Older server-generated titles
++ * have no ownership field, but their dedicated command identifies the writer.
++ * Unknown writers remain protected, as do later manual renames.
 + */
 +export default Effect.gen(function* () {
 +  const sql = yield* SqlClient.SqlClient;
@@ -1558,6 +1655,14 @@ index 000000000..9a1717b57
 +        json_extract(payload_json, '$.title') AS title,
 +        CASE
 +          WHEN json_extract(payload_json, '$.titleSource') = 'automatic'
++            THEN 'automatic'
++          WHEN json_type(payload_json, '$.titleSource') IS NULL
++            AND event_type = 'thread.meta-updated'
++            AND actor_kind = 'server'
++            AND (
++              command_id GLOB 'server:thread-title-rename:*'
++              OR command_id GLOB 'server:thread-title-regeneration-complete:*'
++            )
 +            THEN 'automatic'
 +          ELSE 'user'
 +        END AS title_source,
@@ -1703,6 +1808,47 @@ index 2d88e58dc..c083f5649 100644
          ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
        })
        .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+diff --git a/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts b/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
+index 3385137a2..dcb41f9dc 100644
+--- a/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
++++ b/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
+@@ -195,6 +195,36 @@ describe("buildTurnStartParams", () => {
+     NodeAssert.ok(settings?.developer_instructions?.includes(`as ${DEFAULT_MODEL} with medium`));
+   });
+ 
++  it.effect("refreshes automatic thread-title guidance in each turn payload", () =>
++    Effect.gen(function* () {
++      const titledTurn = yield* buildTurnStartParams({
++        threadId: "provider-thread-1",
++        runtimeMode: "full-access",
++        prompt: "Continue the task",
++        interactionMode: "default",
++        currentThreadTitle: "Investigate websocket reconnects",
++      });
++      const titledInstructions = titledTurn.collaborationMode?.settings.developer_instructions;
++
++      NodeAssert.ok(titledInstructions?.includes("<thread_title_updates>"));
++      NodeAssert.ok(titledInstructions?.includes('"Investigate websocket reconnects"'));
++      NodeAssert.ok(titledInstructions?.includes("rename_current_thread"));
++
++      const untitledTurn = yield* buildTurnStartParams({
++        threadId: "provider-thread-1",
++        runtimeMode: "full-access",
++        prompt: "Continue the task",
++        interactionMode: "default",
++      });
++      const untitledInstructions = untitledTurn.collaborationMode?.settings.developer_instructions;
++
++      NodeAssert.ok(untitledInstructions);
++      NodeAssert.doesNotMatch(untitledInstructions, /<thread_title_updates>/);
++      NodeAssert.doesNotMatch(untitledInstructions, /rename_current_thread/);
++      NodeAssert.doesNotMatch(untitledInstructions, /Investigate websocket reconnects/);
++    }),
++  );
++
+   it.effect("routes approvals to the auto reviewer in auto mode", () =>
+     Effect.gen(function* () {
+       const params = yield* buildTurnStartParams({
 diff --git a/apps/server/src/provider/Layers/CodexSessionRuntime.ts b/apps/server/src/provider/Layers/CodexSessionRuntime.ts
 index 78f4b9aa8..a6210be2a 100644
 --- a/apps/server/src/provider/Layers/CodexSessionRuntime.ts
