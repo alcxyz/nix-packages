@@ -26,19 +26,30 @@ if [[ "$mode" != selected && ("$shard_count" != 1 || "$shard_index" != 0) ]]; th
   exit 2
 fi
 
+homeless_shelter=/homeless-shelter
+container_marker=/.dockerenv
+can_clean_homeless_shelter=false
+if [[ "${NIX_CI_EPHEMERAL_CONTAINER:-0}" == "1" && -e "$container_marker" ]]; then
+  can_clean_homeless_shelter=true
+fi
+
 clean_homeless_shelter() {
   local attempt
 
+  if [[ ! -e "$homeless_shelter" || "$can_clean_homeless_shelter" != true ]]; then
+    return 0
+  fi
+
   for attempt in {1..10}; do
-    rm -rf /homeless-shelter
+    rm --recursive --force --one-file-system -- "$homeless_shelter"
     sleep 1
-    if [[ ! -e /homeless-shelter ]]; then
+    if [[ ! -e "$homeless_shelter" ]]; then
       sleep 1
-      [[ ! -e /homeless-shelter ]] && return 0
+      [[ ! -e "$homeless_shelter" ]] && return 0
     fi
   done
 
-  echo "Unable to keep /homeless-shelter absent before a non-sandboxed Nix build." >&2
+  echo "Unable to keep ${homeless_shelter} absent before a non-sandboxed Nix build." >&2
   return 1
 }
 
@@ -54,11 +65,11 @@ nix_build() {
       status=$?
     fi
 
-    if [[ ! -e /homeless-shelter || "$attempt" -eq 3 ]]; then
+    if [[ "$can_clean_homeless_shelter" != true || ! -e "$homeless_shelter" || "$attempt" -eq 3 ]]; then
       return "$status"
     fi
 
-    echo "Retrying Nix build after /homeless-shelter was recreated (attempt $((attempt + 1))/3)." >&2
+    echo "Retrying Nix build after ${homeless_shelter} was recreated (attempt $((attempt + 1))/3)." >&2
   done
 }
 

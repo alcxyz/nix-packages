@@ -5,11 +5,27 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/bin"
+real_rm=$(command -v rm)
+
+test_script="$test_root/build-changed-packages.sh"
+sed \
+  -e "s|^homeless_shelter=/homeless-shelter$|homeless_shelter=$test_root/homeless-shelter|" \
+  -e "s|^container_marker=/.dockerenv$|container_marker=$test_root/.dockerenv|" \
+  "$repo_root/scripts/ci/build-changed-packages.sh" >"$test_script"
+if cmp -s "$repo_root/scripts/ci/build-changed-packages.sh" "$test_script"; then
+  echo "Cleanup fixture did not replace the production paths." >&2
+  exit 1
+fi
 
 cat >"$test_root/bin/nix" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$MOCK_STATE/calls"
+if [[ "$*" == "${MOCK_RECREATE_HOME_ONCE:-unused}" && ! -e "$MOCK_STATE/recreated-home" ]]; then
+  touch "$MOCK_STATE/recreated-home"
+  mkdir -p "$CLEANUP_TEST_ROOT/homeless-shelter"
+  exit 44
+fi
 case "$1 $2" in
   'eval .#packages') cat "$MOCK_STATE/exports" ;;
   "eval ${MOCK_FAIL_EVAL:-unused}")
@@ -23,15 +39,22 @@ case "$1 $2" in
   'eval '*.drvPath) echo '"/nix/store/mock.drv"' ;;
   # The original bug would incorrectly succeed through this metadata fallback.
   'eval '*.meta.platforms) echo '["aarch64-darwin"]' ;;
-  'build '*) ;;
+  'build '*)
+    if [[ "${MOCK_RECREATE_HOME_AFTER_BUILD:-false}" == true ]]; then
+      mkdir -p "$CLEANUP_TEST_ROOT/homeless-shelter"
+    fi
+    ;;
   *) echo "Unexpected mock nix invocation: $*" >&2; exit 99 ;;
 esac
 MOCK
 # Never let the runner's existing cleanup helper touch the real host or sleep.
 cat >"$test_root/bin/rm" <<'MOCK'
 #!/usr/bin/env bash
-[[ "$*" == '-rf /homeless-shelter' ]] || exit 99
+set -euo pipefail
+printf '%s\n' "$*" >>"$MOCK_STATE/rm-calls"
+[[ "$*" == "--recursive --force --one-file-system -- $CLEANUP_TEST_ROOT/homeless-shelter" ]] || exit 99
 printf 'cleanup\n' >>"$MOCK_STATE/calls"
+"$REAL_RM" "$@"
 MOCK
 cat >"$test_root/bin/sleep" <<'MOCK'
 #!/usr/bin/env bash
@@ -41,6 +64,7 @@ chmod +x "$test_root/bin/"*
 
 new_case() {
   case_root="$test_root/$1"
+  "$real_rm" -rf "$test_root/homeless-shelter" "$test_root/.dockerenv"
   mkdir -p "$case_root"
   cd "$case_root"
   git init -q
@@ -52,7 +76,10 @@ new_case() {
   git commit -qm baseline
   git update-ref refs/remotes/origin/main HEAD
   export MOCK_STATE="$case_root"
-  unset MOCK_FAIL_EVAL MOCK_FAIL_BUILD PACKAGE_BUILD_MODE \
+  : >rm-calls
+  unset NIX_CI_EPHEMERAL_CONTAINER
+  unset MOCK_FAIL_EVAL MOCK_FAIL_BUILD MOCK_RECREATE_HOME_ONCE \
+    MOCK_RECREATE_HOME_AFTER_BUILD PACKAGE_BUILD_MODE \
     PACKAGE_BUILD_SHARD_COUNT PACKAGE_BUILD_SHARD_INDEX
   cat >exports <<'JSON'
 {"x86_64-linux":["widget"],"aarch64-linux":["widget"],"aarch64-darwin":["widget","mac-only"],"x86_64-darwin":["mac-only"]}
@@ -71,12 +98,37 @@ run_case() {
   PATH="$test_root/bin:$PATH" \
     GITHUB_BASE_REF='' GITEA_BASE_REF='' FORGEJO_BASE_REF='' \
     GITHUB_REF_NAME=dev GITEA_REF_NAME='' FORGEJO_REF_NAME='' \
-    bash "$repo_root/scripts/ci/build-changed-packages.sh" >output 2>&1 || status=$?
+    CLEANUP_TEST_ROOT="$test_root" REAL_RM="$real_rm" \
+    bash "$test_script" >output 2>&1 || status=$?
   if [[ "$status" != "$expected" ]]; then
     cat output >&2
     echo "$(basename "$case_root"): expected status $expected, got $status" >&2
     exit 1
   fi
+}
+
+assert_cleanup_not_called() {
+  if [[ -s rm-calls ]]; then
+    echo "Cleanup ran outside the permitted ephemeral container context." >&2
+    cat rm-calls >&2
+    exit 1
+  fi
+}
+
+assert_cleanup_called() {
+  grep -Fqx -- "--recursive --force --one-file-system -- $test_root/homeless-shelter" rm-calls
+}
+
+prepare_cleanup_fixture() {
+  mkdir -p "$test_root/homeless-shelter" "$test_root/outside"
+  printf 'preserve\n' >"$test_root/homeless-shelter/inside"
+  printf 'preserve\n' >"$test_root/outside/sentinel"
+}
+
+assert_cleanup_preserved() {
+  [[ -f "$test_root/homeless-shelter/inside" ]]
+  [[ -f "$test_root/outside/sentinel" ]]
+  assert_cleanup_not_called
 }
 
 assert_called() {
@@ -86,6 +138,44 @@ assert_called() {
     exit 1
   fi
 }
+
+new_case cleanup-neither-signal
+prepare_cleanup_fixture
+run_case 0
+assert_cleanup_preserved
+assert_called 'build .#agent-sync-check -L'
+
+new_case cleanup-opt-in-only
+prepare_cleanup_fixture
+export NIX_CI_EPHEMERAL_CONTAINER=1
+run_case 0
+assert_cleanup_preserved
+assert_called 'build .#agent-sync-check -L'
+
+new_case cleanup-identity-only
+prepare_cleanup_fixture
+touch "$test_root/.dockerenv"
+run_case 0
+assert_cleanup_preserved
+assert_called 'build .#agent-sync-check -L'
+
+new_case cleanup-local-failure
+prepare_cleanup_fixture
+export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
+run_case 44
+assert_cleanup_preserved
+[[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 1 ]]
+
+new_case cleanup-permitted-retry
+prepare_cleanup_fixture
+touch "$test_root/.dockerenv"
+export NIX_CI_EPHEMERAL_CONTAINER=1
+export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
+run_case 0
+assert_cleanup_called
+[[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 2 ]]
+[[ ! -e "$test_root/homeless-shelter" ]]
+[[ -f "$test_root/outside/sentinel" ]]
 
 assert_not_called() {
   if grep -Fq -- "$1" calls; then
@@ -273,6 +363,10 @@ run_case 0
 assert_called 'build .#packages.x86_64-linux.openzfs_7_1 -L'
 
 new_case t3-shared-source
+prepare_cleanup_fixture
+touch "$test_root/.dockerenv"
+export NIX_CI_EPHEMERAL_CONTAINER=1
+export MOCK_RECREATE_HOME_AFTER_BUILD=true
 change_file pkgs/t3code/source.json
 printf '{"x86_64-linux":["t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
 run_case 0
