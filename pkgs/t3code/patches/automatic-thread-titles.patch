@@ -1809,10 +1809,10 @@ index 2d88e58dc..c083f5649 100644
        })
        .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
 diff --git a/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts b/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
-index 3385137a2..dcb41f9dc 100644
+index 3385137a2..e77175261 100644
 --- a/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
 +++ b/apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
-@@ -195,6 +195,36 @@ describe("buildTurnStartParams", () => {
+@@ -195,6 +195,60 @@ describe("buildTurnStartParams", () => {
      NodeAssert.ok(settings?.developer_instructions?.includes(`as ${DEFAULT_MODEL} with medium`));
    });
  
@@ -1827,9 +1827,15 @@ index 3385137a2..dcb41f9dc 100644
 +      });
 +      const titledInstructions = titledTurn.collaborationMode?.settings.developer_instructions;
 +
-+      NodeAssert.ok(titledInstructions?.includes("<thread_title_updates>"));
-+      NodeAssert.ok(titledInstructions?.includes('"Investigate websocket reconnects"'));
-+      NodeAssert.ok(titledInstructions?.includes("rename_current_thread"));
++      NodeAssert.ok(titledInstructions);
++      NodeAssert.doesNotMatch(titledInstructions, /<thread_title_updates>/);
++      const titleInput = titledTurn.input[0];
++      NodeAssert.equal(titleInput?.type, "text");
++      if (titleInput?.type !== "text") throw new Error("Expected title guidance as text input");
++      NodeAssert.match(titleInput.text, /<thread_title_updates>/);
++      NodeAssert.match(titleInput.text, /rename_current_thread/);
++      NodeAssert.match(titleInput.text, /Investigate websocket reconnects/);
++      NodeAssert.equal(titledTurn.input[1]?.type, "text");
 +
 +      const untitledTurn = yield* buildTurnStartParams({
 +        threadId: "provider-thread-1",
@@ -1843,6 +1849,24 @@ index 3385137a2..dcb41f9dc 100644
 +      NodeAssert.doesNotMatch(untitledInstructions, /<thread_title_updates>/);
 +      NodeAssert.doesNotMatch(untitledInstructions, /rename_current_thread/);
 +      NodeAssert.doesNotMatch(untitledInstructions, /Investigate websocket reconnects/);
++      NodeAssert.deepStrictEqual(untitledTurn.input, [{ type: "text", text: "Continue the task" }]);
++    }),
++  );
++
++  it.effect("delivers title guidance even without collaboration-mode settings", () =>
++    Effect.gen(function* () {
++      const turn = yield* buildTurnStartParams({
++        threadId: "provider-thread-1",
++        runtimeMode: "full-access",
++        prompt: "Implement the fix",
++        currentThreadTitle: "Investigate the bug",
++      });
++      NodeAssert.equal(turn.collaborationMode, undefined);
++      const context = turn.input[0];
++      NodeAssert.equal(context?.type, "text");
++      if (context?.type !== "text") throw new Error("Expected title guidance as text input");
++      NodeAssert.match(context.text, /<thread_title_updates>/);
++      NodeAssert.deepStrictEqual(turn.input[1], { type: "text", text: "Implement the fix" });
 +    }),
 +  );
 +
@@ -1850,10 +1874,18 @@ index 3385137a2..dcb41f9dc 100644
      Effect.gen(function* () {
        const params = yield* buildTurnStartParams({
 diff --git a/apps/server/src/provider/Layers/CodexSessionRuntime.ts b/apps/server/src/provider/Layers/CodexSessionRuntime.ts
-index 78f4b9aa8..a6210be2a 100644
+index 78f4b9aa8..b7d2fe79b 100644
 --- a/apps/server/src/provider/Layers/CodexSessionRuntime.ts
 +++ b/apps/server/src/provider/Layers/CodexSessionRuntime.ts
-@@ -178,6 +178,8 @@ export interface CodexSessionRuntimeSendTurnInput {
+@@ -40,6 +40,7 @@ import { buildCodexInitializeParams } from "./CodexProvider.ts";
+ import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
+ import { expandHomePath } from "../../pathExpansion.ts";
+ import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
++import { buildThreadTitleInstructions } from "../RuntimeInstructions.ts";
+ const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
+ 
+ const PROVIDER = ProviderDriverKind.make("codex");
+@@ -178,6 +179,8 @@ export interface CodexSessionRuntimeSendTurnInput {
    readonly serviceTier?: CodexServiceTier | undefined;
    readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
    readonly interactionMode?: ProviderInteractionMode;
@@ -1862,15 +1894,7 @@ index 78f4b9aa8..a6210be2a 100644
  }
  
  export interface CodexThreadTurnSnapshot {
-@@ -570,6 +572,7 @@ function buildCodexCollaborationMode(input: {
-   readonly model?: string;
-   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-   readonly browserToolsAvailable?: boolean;
-+  readonly currentThreadTitle?: string;
- }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
-   if (input.interactionMode === undefined) {
-     return undefined;
-@@ -583,7 +586,11 @@ function buildCodexCollaborationMode(input: {
+@@ -583,7 +586,10 @@ function buildCodexCollaborationMode(input: {
        reasoning_effort: reasoningEffort,
        developer_instructions: buildCodexDeveloperInstructions(
          input.interactionMode,
@@ -1878,12 +1902,11 @@ index 78f4b9aa8..a6210be2a 100644
 +        {
 +          model,
 +          reasoningEffort,
-+          ...(input.currentThreadTitle ? { currentThreadTitle: input.currentThreadTitle } : {}),
 +        },
          input.browserToolsAvailable ?? true,
        ),
      },
-@@ -604,6 +611,7 @@ export function buildTurnStartParams(input: {
+@@ -604,11 +610,19 @@ export function buildTurnStartParams(input: {
    readonly interactionMode?: ProviderInteractionMode;
    /** Defaults to true so callers that predate the agent-access gate are unchanged. */
    readonly browserToolsAvailable?: boolean;
@@ -1891,15 +1914,19 @@ index 78f4b9aa8..a6210be2a 100644
  }): Effect.Effect<
    CodexTurnStartParamsWithCollaborationMode,
    CodexErrors.CodexAppServerProtocolParseError
-@@ -625,6 +633,7 @@ export function buildTurnStartParams(input: {
-     ...(input.model ? { model: input.model } : {}),
-     ...(input.effort ? { effort: input.effort } : {}),
-     browserToolsAvailable: input.browserToolsAvailable ?? true,
-+    ...(input.currentThreadTitle ? { currentThreadTitle: input.currentThreadTitle } : {}),
-   });
- 
-   return decodeCodexTurnStartParamsWithCollaborationMode({
-@@ -2352,7 +2361,9 @@ export const makeCodexSessionRuntime = (
+ > {
+   const turnInput: Array<EffectCodexSchema.V2TurnStartParams__UserInput> = [];
++  // Send turn-specific title guidance as input, as the Claude adapter does.
++  // Collaboration-mode settings can be recorded without their custom
++  // developer instructions reaching the model.
++  const titleInstructions = buildThreadTitleInstructions(input.currentThreadTitle);
++  if (titleInstructions) {
++    turnInput.push({ type: "text", text: titleInstructions });
++  }
+   if (input.prompt) {
+     turnInput.push({
+       type: "text",
+@@ -2352,7 +2366,9 @@ export const makeCodexSessionRuntime = (
              // Derived from the session's own MCP configuration rather than the
              // setting, so the prompt describes the tools this turn actually
              // has even if the setting changed after the session started.

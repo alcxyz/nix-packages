@@ -16,7 +16,7 @@
 
 let
   source = builtins.fromJSON (builtins.readFile ./source.json);
-  patchRevision = 2;
+  patchRevision = 3;
   patchHash = builtins.hashFile "sha256" ./patches/automatic-thread-titles.patch;
   patchId = builtins.substring 0 10 patchHash;
   version =
