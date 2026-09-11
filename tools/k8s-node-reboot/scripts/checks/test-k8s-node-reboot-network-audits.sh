@@ -50,4 +50,36 @@ grep -Fxq $'nux\t192.0.2.15\troot@nux' "$CALLS"
 grep -Fxq $'xev\t192.0.2.13\troot@xev' "$CALLS"
 [[ "$(wc -l <"$CALLS")" -eq 2 ]]
 
-printf 'k8s node reboot network audit fanout tests: PASS\n'
+# Node Ready can precede Flannel startup. Wait for the interface, then retain
+# the strict audit; neither timeout nor audit failure may advance recovery.
+attempts=0
+audits=0
+sleeps=0
+READY_TIMEOUT=30s
+ssh() {
+  [[ "$*" == *"ip link show dev flannel.1"* ]] || return 97
+  attempts=$((attempts + 1))
+  ((attempts >= 3))
+}
+sleep() { sleeps=$((sleeps + 1)); }
+verify_returned_node_network() { audits=$((audits + 1)); }
+wait_for_returned_node_network
+[[ "$attempts" -eq 3 && "$sleeps" -eq 2 && "$audits" -eq 1 ]]
+
+ssh() { return 1; }
+READY_TIMEOUT=0s
+if (wait_for_returned_node_network) >"$TMP/timeout" 2>&1; then
+  printf 'missing Flannel interface unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -Fq 'node remains cordoned' "$TMP/timeout"
+
+ssh() { return 0; }
+verify_returned_node_network() { die 'fixture strict network audit failed'; }
+if (wait_for_returned_node_network) >"$TMP/audit-failure" 2>&1; then
+  printf 'strict network audit failure unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -Fq 'fixture strict network audit failed' "$TMP/audit-failure"
+
+printf 'k8s node reboot network audit fanout and readiness tests: PASS\n'

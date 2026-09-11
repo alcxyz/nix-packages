@@ -1332,6 +1332,20 @@ settle_cluster() {
   wait_for_no_bad_pods
 }
 
+wait_for_returned_node_network() {
+  local deadline=$((SECONDS + $(duration_to_seconds "$READY_TIMEOUT")))
+
+  log "waiting for ${NODE} Flannel interface before the network audit"
+  until ssh -o BatchMode=yes -o ConnectTimeout=5 "$SSH_TARGET" \
+    'ip link show dev flannel.1 >/dev/null 2>&1'; do
+    ((SECONDS < deadline)) ||
+      die "${NODE} Flannel interface did not appear within ${READY_TIMEOUT}; node remains cordoned"
+    sleep "$POLL_SECONDS"
+  done
+
+  verify_returned_node_network
+}
+
 verify_returned_node_network() {
   local internal_ip
   local flannel_ip
@@ -1605,7 +1619,7 @@ run_reboot() {
 
   log "waiting for ${NODE} to report Ready"
   kubectl wait "node/${NODE}" --for=condition=Ready --timeout="$READY_TIMEOUT"
-  verify_returned_node_network
+  wait_for_returned_node_network
   wait_for_longhorn_survivability
   wait_for_cloudnativepg_survivability
 
@@ -1644,7 +1658,7 @@ run_poweron_finalize() {
   log "waiting for ${NODE} to report Ready"
   kubectl wait "node/${NODE}" --for=condition=Ready --timeout="$READY_TIMEOUT"
   verify_node_is_cordoned
-  verify_returned_node_network
+  wait_for_returned_node_network
   wait_for_longhorn_survivability
   wait_for_cloudnativepg_survivability
   collect_target_pinned_pending_workloads >"$WORKLOADS_FILE"
