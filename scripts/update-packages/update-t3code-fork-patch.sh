@@ -2,14 +2,16 @@
 # Regenerates the checked-in T3 Code feature patch from an explicit checkout.
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: $0 /path/to/t3code-checkout" >&2
+if [[ $# -ne 2 ]]; then
+  echo "usage: $0 /path/to/t3code-checkout prerequisite-base-revision" >&2
   exit 2
 fi
 
 checkout=$(realpath "$1")
+prerequisite_base_input="$2"
 package_root=$(realpath "$(dirname "$0")/../..")
 destination="$package_root/pkgs/t3code/patches/automatic-thread-titles.patch"
+prerequisite_patch="$package_root/pkgs/t3code/patches/upstream-pr-10720.patch"
 base_revision=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' "$package_root/pkgs/t3code/source.json")
 
 if [[ ! "$base_revision" =~ ^[0-9a-f]{40}$ ]]; then
@@ -44,11 +46,13 @@ paths=(
   apps/server/src/orchestration/Services/ProjectionSnapshotQuery.ts
   apps/server/src/orchestration/ThreadTitlePolicy.ts
   apps/server/src/orchestration/decider.titleOwnership.test.ts
+  apps/server/src/orchestration/decider.titleRegeneration.test.ts
   apps/server/src/orchestration/decider.ts
   apps/server/src/orchestration/projector.ts
   apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts
   apps/server/src/persistence/Layers/ProjectionThreads.ts
   apps/server/src/persistence/Migrations.ts
+  apps/server/src/persistence/Migrations/050_ProjectionThreadTitleState.ts
   apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
   apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
   apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts
@@ -105,6 +109,32 @@ if ! git -C "$checkout" cat-file -e "${base_revision}^{commit}"; then
   exit 1
 fi
 
+if ! prerequisite_base_revision=$(git -C "$checkout" rev-parse --verify "${prerequisite_base_input}^{commit}"); then
+  echo "prerequisite base revision is unavailable in checkout: $prerequisite_base_input" >&2
+  exit 1
+fi
+
+if ! git -C "$checkout" merge-base --is-ancestor "$base_revision" "$prerequisite_base_revision"; then
+  echo "pinned source is not an ancestor of prerequisite base: $prerequisite_base_revision" >&2
+  exit 1
+fi
+
+if ! git -C "$checkout" merge-base --is-ancestor "$prerequisite_base_revision" HEAD; then
+  echo "prerequisite base is not an ancestor of checkout HEAD: $prerequisite_base_revision" >&2
+  exit 1
+fi
+
+prerequisite_temporary=$(mktemp)
+temporary=$(mktemp)
+trap 'rm -f "$prerequisite_temporary" "$temporary"' EXIT
+
+git -C "$checkout" diff --binary --no-ext-diff \
+  "$base_revision" "$prerequisite_base_revision" -- >"$prerequisite_temporary"
+if ! cmp --silent "$prerequisite_patch" "$prerequisite_temporary"; then
+  echo "prerequisite base does not match $prerequisite_patch" >&2
+  exit 1
+fi
+
 declare -A allowed=()
 for path in "${paths[@]}"; do
   allowed["$path"]=1
@@ -112,7 +142,7 @@ done
 
 mapfile -t changed < <(
   {
-    git -C "$checkout" diff --name-only "$base_revision" --
+    git -C "$checkout" diff --name-only "$prerequisite_base_revision" --
     git -C "$checkout" ls-files --others --exclude-standard
   } | sort -u
 )
@@ -124,10 +154,7 @@ for path in "${changed[@]}"; do
   fi
 done
 
-temporary=$(mktemp)
-trap 'rm -f "$temporary"' EXIT
-
-git -C "$checkout" diff --binary --no-ext-diff "$base_revision" -- "${paths[@]}" >"$temporary"
+git -C "$checkout" diff --binary --no-ext-diff "$prerequisite_base_revision" -- "${paths[@]}" >"$temporary"
 while IFS= read -r path; do
   git -C "$checkout" diff --binary --no-index -- /dev/null "$path" >>"$temporary" || status=$?
   if [[ ${status:-0} -ne 1 ]]; then
@@ -143,5 +170,6 @@ if [[ ! -s "$temporary" ]]; then
 fi
 
 mv "$temporary" "$destination"
+rm -f "$prerequisite_temporary"
 trap - EXIT
 echo "updated $destination"

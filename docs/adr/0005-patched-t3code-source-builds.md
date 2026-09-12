@@ -4,6 +4,7 @@
 **Date:** 2026-07-11
 **Amended:** 2026-08-27
 **Amended:** 2026-09-09
+**Amended:** 2026-09-12
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
@@ -59,6 +60,19 @@ The package must:
 - verify the runtime-reported T3 and provider CLI versions, not only Nix
   derivation names.
 
+When a local feature depends on an upstream pull request that has not reached
+the shared source pin, keep that upstream change as a separate checked-in
+prerequisite patch. Apply prerequisite patches before the local feature patch,
+and verify the feature patch's declared base reproduces the checked-in
+prerequisite exactly. Compatibility fixes required for the upstream change to
+work on the pinned source belong with that prerequisite. Remove the
+prerequisite patch after the shared pin contains the merged upstream change and
+its required compatibility behavior.
+
+An unmerged schema prerequisite must not consume a numbered upstream migration
+identifier. Bootstrap its schema idempotently outside the numbered ledger, then
+explicitly reconcile that bootstrap when the upstream migration lands.
+
 Codex CLI follows npm's stable `latest` dist-tag. Prerelease channels create
 substantial update churn and may move between release lines, so the updater
 must reject a prerelease resolved from the default channel. `CODEX_NPM_TAG` may
@@ -97,6 +111,8 @@ not a successful GUI launch and must fail runtime verification.
 ## Consequences
 
 - Both supported platforms expose matching upstream and patched variants.
+- Unmerged upstream prerequisites remain distinguishable from local feature
+  changes while still sharing the same pinned source as the upstream variant.
 - Selecting a variant changes only the package used by the existing service;
   application state and network identity are retained.
 - Builds are slower than repackaging release binaries, especially on Darwin.

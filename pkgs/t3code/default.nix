@@ -16,8 +16,12 @@
 
 let
   source = builtins.fromJSON (builtins.readFile ./source.json);
-  patchRevision = 8;
+  patchRevision = 9;
   forkPatches = [
+    # Prerequisite from https://github.com/pingdotgg/t3code/pull/10720, plus
+    # compatibility for native initial-title generation on precreated threads.
+    # Remove this patch once the shared source pin contains the merged change.
+    ./patches/upstream-pr-10720.patch
     ./patches/automatic-thread-titles.patch
     # Temporary quota recovery, maintained independently of the title feature.
     # Core fix: https://github.com/pingdotgg/t3code/pull/10597
