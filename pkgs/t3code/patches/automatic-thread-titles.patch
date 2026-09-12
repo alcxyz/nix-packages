@@ -1,14 +1,18 @@
 diff --git a/apps/mobile/src/features/settings/SettingsRouteScreen.tsx b/apps/mobile/src/features/settings/SettingsRouteScreen.tsx
-index 77036c212..34f8f0655 100644
+index 77036c212..1db485c18 100644
 --- a/apps/mobile/src/features/settings/SettingsRouteScreen.tsx
 +++ b/apps/mobile/src/features/settings/SettingsRouteScreen.tsx
-@@ -39,10 +39,15 @@ import { useAtomCommand } from "../../state/use-atom-command";
+@@ -39,10 +39,19 @@ import { useAtomCommand } from "../../state/use-atom-command";
  import { useEnvironments } from "../../state/environments";
  import {
    DEFAULT_SERVER_SETTINGS,
++  MAX_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++  MAX_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
 +  MAX_AUTOMATIC_TITLE_RENAME_COUNT,
 +  MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
    MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
++  MIN_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++  MIN_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
 +  MIN_AUTOMATIC_TITLE_RENAME_COUNT,
 +  MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
    MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
@@ -18,7 +22,7 @@ index 77036c212..34f8f0655 100644
  import {
    filterSharedServerPatch,
    findSharedSettingsMismatches,
-@@ -579,21 +584,27 @@ function GeneralSettingsSection() {
+@@ -579,21 +588,27 @@ function GeneralSettingsSection() {
    return (
      <SettingsSection title="General">
        <SettingsRow icon="folder" label="Project Grouping" target="SettingsProjectGrouping" />
@@ -31,9 +35,9 @@ index 77036c212..34f8f0655 100644
  
  const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
 +const AUTOMATIC_TITLE_POLICY_OPTIONS = [
-+  { value: "rare", label: "Rare", detail: "Once / 24 hours" },
-+  { value: "balanced", label: "Balanced", detail: "Once / 12 hours" },
-+  { value: "often", label: "Often", detail: "Once / 6 hours" },
++  { value: "rare", label: "Rare", detail: "360 min + 10 turns" },
++  { value: "balanced", label: "Balanced", detail: "120 min + 5 turns" },
++  { value: "often", label: "Often", detail: "30 min + 3 turns" },
 +  { value: "custom", label: "Custom", detail: "Set limit" },
 +] as const;
  
@@ -52,7 +56,7 @@ index 77036c212..34f8f0655 100644
    const { environments } = useEnvironments();
    const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
      label: "server settings update",
-@@ -603,8 +614,15 @@ function AutoSettleSettingsRows() {
+@@ -603,8 +618,17 @@ function AutoSettleSettingsRows() {
    const syncTargets = environments.filter(supportsSharedSettingsSync);
    const reference = syncTargets[0] ?? null;
    const referenceSettings = reference?.serverConfig?.settings ?? null;
@@ -65,10 +69,12 @@ index 77036c212..34f8f0655 100644
    const [daysDraft, setDaysDraft] = useState<string | null>(null);
 +  const [titleCountDraft, setTitleCountDraft] = useState<string | null>(null);
 +  const [titleWindowDraft, setTitleWindowDraft] = useState<string | null>(null);
++  const [titleMinAgeDraft, setTitleMinAgeDraft] = useState<string | null>(null);
++  const [titleMinTurnsDraft, setTitleMinTurnsDraft] = useState<string | null>(null);
  
    if (reference === null || referenceSettings === null) {
      return null;
-@@ -616,6 +634,12 @@ function AutoSettleSettingsRows() {
+@@ -616,6 +640,12 @@ function AutoSettleSettingsRows() {
      }
    };
  
@@ -81,7 +87,7 @@ index 77036c212..34f8f0655 100644
    const mismatches = findSharedSettingsMismatches({
      primaryEnvironmentId: reference.environmentId,
      primarySettings: referenceSettings,
-@@ -630,6 +654,29 @@ function AutoSettleSettingsRows() {
+@@ -630,6 +660,33 @@ function AutoSettleSettingsRows() {
    });
  
    const afterDays = referenceSettings.sidebarAutoSettleAfterDays;
@@ -93,7 +99,11 @@ index 77036c212..34f8f0655 100644
 +    currentValue: number,
 +    minimum: number,
 +    maximum: number,
-+    patchKey: "automaticThreadTitleRenameMaxCount" | "automaticThreadTitleRenameWindowHours",
++    patchKey:
++      | "automaticThreadTitleRenameMaxCount"
++      | "automaticThreadTitleRenameWindowHours"
++      | "automaticThreadTitleRenameMinAgeMinutes"
++      | "automaticThreadTitleRenameMinCompletedTurns",
 +    clearDraft: () => void,
 +  ) => {
 +    const draft = (draftValue ?? "").trim();
@@ -111,7 +121,7 @@ index 77036c212..34f8f0655 100644
    const commitDays = () => {
      const draft = (daysDraft ?? "").trim();
      setDaysDraft(null);
-@@ -648,6 +695,130 @@ function AutoSettleSettingsRows() {
+@@ -648,6 +705,208 @@ function AutoSettleSettingsRows() {
  
    return (
      <>
@@ -129,12 +139,13 @@ index 77036c212..34f8f0655 100644
 +              <View className="gap-1">
 +                <Text className="text-lg text-foreground">Automatic title update frequency</Text>
 +                <Text className="text-sm leading-normal text-foreground-muted">
-+                  At most{" "}
++                  Eligible after {titleRenameLimit.minAgeMinutes} minutes and{" "}
++                  {titleRenameLimit.minCompletedTurns} completed{" "}
++                  {titleRenameLimit.minCompletedTurns === 1 ? "turn" : "turns"}. At most{" "}
 +                  {titleRenameLimit.maxCount === 1
 +                    ? "one update"
 +                    : `${titleRenameLimit.maxCount} updates`}{" "}
-+                  in any rolling {titleRenameLimit.windowHours}-hour window. This is a maximum, not
-+                  a schedule.
++                  per rolling {titleRenameLimit.windowHours}-hour window.
 +                </Text>
 +              </View>
 +              <View className="flex-row flex-wrap gap-2">
@@ -167,75 +178,152 @@ index 77036c212..34f8f0655 100644
 +          ) : null}
 +          {titleReferenceSettings.automaticThreadTitles &&
 +          titleReferenceSettings.automaticThreadTitleRenamePolicy === "custom" ? (
-+            <View className="gap-3 border-t border-border-subtle p-4">
-+              <Text className="text-lg text-foreground">Custom title update limit</Text>
-+              <View className="flex-row items-center gap-3">
-+                <TextInput
-+                  className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
-+                  keyboardType="number-pad"
-+                  returnKeyType="done"
-+                  value={
-+                    titleCountDraft ??
-+                    String(titleReferenceSettings.automaticThreadTitleRenameMaxCount)
-+                  }
-+                  onChangeText={setTitleCountDraft}
-+                  onBlur={() =>
-+                    commitTitleLimit(
-+                      titleCountDraft,
-+                      titleReferenceSettings.automaticThreadTitleRenameMaxCount,
-+                      MIN_AUTOMATIC_TITLE_RENAME_COUNT,
-+                      MAX_AUTOMATIC_TITLE_RENAME_COUNT,
-+                      "automaticThreadTitleRenameMaxCount",
-+                      () => setTitleCountDraft(null),
-+                    )
-+                  }
-+                  onSubmitEditing={() =>
-+                    commitTitleLimit(
-+                      titleCountDraft,
-+                      titleReferenceSettings.automaticThreadTitleRenameMaxCount,
-+                      MIN_AUTOMATIC_TITLE_RENAME_COUNT,
-+                      MAX_AUTOMATIC_TITLE_RENAME_COUNT,
-+                      "automaticThreadTitleRenameMaxCount",
-+                      () => setTitleCountDraft(null),
-+                    )
-+                  }
-+                  accessibilityLabel="Automatic title update count"
-+                />
-+                <Text className="text-base text-foreground-muted">updates per</Text>
-+                <TextInput
-+                  className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
-+                  keyboardType="number-pad"
-+                  returnKeyType="done"
-+                  value={
-+                    titleWindowDraft ??
-+                    String(titleReferenceSettings.automaticThreadTitleRenameWindowHours)
-+                  }
-+                  onChangeText={setTitleWindowDraft}
-+                  onBlur={() =>
-+                    commitTitleLimit(
-+                      titleWindowDraft,
-+                      titleReferenceSettings.automaticThreadTitleRenameWindowHours,
-+                      MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
-+                      MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
-+                      "automaticThreadTitleRenameWindowHours",
-+                      () => setTitleWindowDraft(null),
-+                    )
-+                  }
-+                  onSubmitEditing={() =>
-+                    commitTitleLimit(
-+                      titleWindowDraft,
-+                      titleReferenceSettings.automaticThreadTitleRenameWindowHours,
-+                      MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
-+                      MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
-+                      "automaticThreadTitleRenameWindowHours",
-+                      () => setTitleWindowDraft(null),
-+                    )
-+                  }
-+                  accessibilityLabel="Automatic title update window in hours"
-+                />
-+                <Text className="text-base text-foreground-muted">hours</Text>
++            <>
++              <View className="gap-3 border-t border-border-subtle p-4">
++                <Text className="text-lg text-foreground">Custom title update rate</Text>
++                <View className="flex-row items-center gap-3">
++                  <TextInput
++                    className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
++                    keyboardType="number-pad"
++                    returnKeyType="done"
++                    value={
++                      titleCountDraft ??
++                      String(titleReferenceSettings.automaticThreadTitleRenameMaxCount)
++                    }
++                    onChangeText={setTitleCountDraft}
++                    onBlur={() =>
++                      commitTitleLimit(
++                        titleCountDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameMaxCount,
++                        MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++                        MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++                        "automaticThreadTitleRenameMaxCount",
++                        () => setTitleCountDraft(null),
++                      )
++                    }
++                    onSubmitEditing={() =>
++                      commitTitleLimit(
++                        titleCountDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameMaxCount,
++                        MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++                        MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++                        "automaticThreadTitleRenameMaxCount",
++                        () => setTitleCountDraft(null),
++                      )
++                    }
++                    accessibilityLabel="Automatic title update count"
++                  />
++                  <Text className="text-base text-foreground-muted">updates per</Text>
++                  <TextInput
++                    className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
++                    keyboardType="number-pad"
++                    returnKeyType="done"
++                    value={
++                      titleWindowDraft ??
++                      String(titleReferenceSettings.automaticThreadTitleRenameWindowHours)
++                    }
++                    onChangeText={setTitleWindowDraft}
++                    onBlur={() =>
++                      commitTitleLimit(
++                        titleWindowDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameWindowHours,
++                        MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                        MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                        "automaticThreadTitleRenameWindowHours",
++                        () => setTitleWindowDraft(null),
++                      )
++                    }
++                    onSubmitEditing={() =>
++                      commitTitleLimit(
++                        titleWindowDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameWindowHours,
++                        MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                        MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                        "automaticThreadTitleRenameWindowHours",
++                        () => setTitleWindowDraft(null),
++                      )
++                    }
++                    accessibilityLabel="Automatic title update window in hours"
++                  />
++                  <Text className="text-base text-foreground-muted">hours</Text>
++                </View>
 +              </View>
-+            </View>
++              <View className="gap-3 border-t border-border-subtle p-4">
++                <View className="gap-1">
++                  <Text className="text-lg text-foreground">Custom title eligibility</Text>
++                  <Text className="text-sm leading-normal text-foreground-muted">
++                    Both thresholds are required. A turn is one completed agent response or work
++                    cycle; tool calls and progress updates do not count.
++                  </Text>
++                </View>
++                <View className="flex-row flex-wrap items-center gap-3">
++                  <TextInput
++                    className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
++                    keyboardType="number-pad"
++                    returnKeyType="done"
++                    value={
++                      titleMinAgeDraft ??
++                      String(titleReferenceSettings.automaticThreadTitleRenameMinAgeMinutes)
++                    }
++                    onChangeText={setTitleMinAgeDraft}
++                    onBlur={() =>
++                      commitTitleLimit(
++                        titleMinAgeDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameMinAgeMinutes,
++                        MIN_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++                        MAX_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++                        "automaticThreadTitleRenameMinAgeMinutes",
++                        () => setTitleMinAgeDraft(null),
++                      )
++                    }
++                    onSubmitEditing={() =>
++                      commitTitleLimit(
++                        titleMinAgeDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameMinAgeMinutes,
++                        MIN_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++                        MAX_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++                        "automaticThreadTitleRenameMinAgeMinutes",
++                        () => setTitleMinAgeDraft(null),
++                      )
++                    }
++                    accessibilityLabel="Minimum thread age in minutes"
++                  />
++                  <Text className="text-base text-foreground-muted">minutes old and</Text>
++                  <TextInput
++                    className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
++                    keyboardType="number-pad"
++                    returnKeyType="done"
++                    value={
++                      titleMinTurnsDraft ??
++                      String(titleReferenceSettings.automaticThreadTitleRenameMinCompletedTurns)
++                    }
++                    onChangeText={setTitleMinTurnsDraft}
++                    onBlur={() =>
++                      commitTitleLimit(
++                        titleMinTurnsDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameMinCompletedTurns,
++                        MIN_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
++                        MAX_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
++                        "automaticThreadTitleRenameMinCompletedTurns",
++                        () => setTitleMinTurnsDraft(null),
++                      )
++                    }
++                    onSubmitEditing={() =>
++                      commitTitleLimit(
++                        titleMinTurnsDraft,
++                        titleReferenceSettings.automaticThreadTitleRenameMinCompletedTurns,
++                        MIN_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
++                        MAX_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
++                        "automaticThreadTitleRenameMinCompletedTurns",
++                        () => setTitleMinTurnsDraft(null),
++                      )
++                    }
++                    accessibilityLabel="Minimum completed turns"
++                  />
++                  <Text className="text-base text-foreground-muted">completed turns</Text>
++                </View>
++              </View>
++            </>
 +          ) : null}
 +        </>
 +      ) : null}
@@ -895,10 +983,10 @@ index 000000000..efeef2da1
 +);
 diff --git a/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts
 new file mode 100644
-index 000000000..0b6fdf7f3
+index 000000000..79695207d
 --- /dev/null
 +++ b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,436 @@
 +import { expect, it } from "@effect/vitest";
 +import { ThreadId } from "@t3tools/contracts";
 +import * as DateTime from "effect/DateTime";
@@ -926,6 +1014,84 @@ index 000000000..0b6fdf7f3
 +);
 +
 +const tests = it.layer(TestLayer);
++
++const limit = {
++  maxCount: 1,
++  windowHours: 12,
++  minAgeMinutes: 120,
++  minCompletedTurns: 2,
++} as const;
++
++const insertThread = Effect.fn("insertAutomaticTitleThread")(function* (input: {
++  readonly threadId: ThreadId;
++  readonly createdAt: string;
++  readonly title?: string;
++}) {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`
++    INSERT INTO projection_threads (
++      thread_id,
++      project_id,
++      title,
++      model_selection_json,
++      created_at,
++      updated_at
++    ) VALUES (
++      ${input.threadId},
++      'rate-limit-project',
++      ${input.title ?? "Existing title"},
++      '{"provider":"codex","model":"gpt-5.4"}',
++      ${input.createdAt},
++      ${input.createdAt}
++    )
++  `;
++});
++
++const insertTurn = Effect.fn("insertAutomaticTitleTurn")(function* (input: {
++  readonly threadId: ThreadId;
++  readonly turnId: string | null;
++  readonly state: "pending" | "running" | "interrupted" | "completed" | "error";
++  readonly occurredAt: string;
++}) {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`
++    INSERT INTO projection_turns (
++      thread_id,
++      turn_id,
++      state,
++      requested_at,
++      started_at,
++      completed_at,
++      checkpoint_files_json
++    ) VALUES (
++      ${input.threadId},
++      ${input.turnId},
++      ${input.state},
++      ${input.occurredAt},
++      ${input.state === "pending" ? null : input.occurredAt},
++      ${input.state === "completed" || input.state === "interrupted" || input.state === "error" ? input.occurredAt : null},
++      '[]'
++    )
++  `;
++});
++
++const insertEligibleThread = Effect.fn("insertEligibleAutomaticTitleThread")(function* (
++  threadId: ThreadId,
++) {
++  yield* insertThread({ threadId, createdAt: "2026-09-12T09:00:00.000Z" });
++  yield* insertTurn({
++    threadId,
++    turnId: "completed-turn-1",
++    state: "completed",
++    occurredAt: "2026-09-12T09:10:00.000Z",
++  });
++  yield* insertTurn({
++    threadId,
++    turnId: "completed-turn-2",
++    state: "completed",
++    occurredAt: "2026-09-12T09:20:00.000Z",
++  });
++});
 +
 +const insertEvent = Effect.fn("insertAutomaticTitleEvent")(function* (input: {
 +  readonly eventId: string;
@@ -971,11 +1137,119 @@ index 000000000..0b6fdf7f3
 +});
 +
 +tests("AutomaticThreadTitleRateLimit", (it) => {
++  it.effect("requires the age and successfully completed turn thresholds", () =>
++    Effect.gen(function* () {
++      yield* TestClock.setTime(Date.parse("2026-09-12T12:00:00.000Z"));
++      const exactBoundaryThread = ThreadId.make("rate-eligibility-boundary-thread");
++      const tooYoungThread = ThreadId.make("rate-eligibility-young-thread");
++      const oneCompletionShortThread = ThreadId.make("rate-eligibility-turns-thread");
++
++      yield* insertThread({
++        threadId: exactBoundaryThread,
++        createdAt: "2026-09-12T10:00:00.000Z",
++      });
++      yield* insertThread({
++        threadId: tooYoungThread,
++        createdAt: "2026-09-12T10:00:00.001Z",
++      });
++      yield* insertThread({
++        threadId: oneCompletionShortThread,
++        createdAt: "2026-09-12T09:00:00.000Z",
++      });
++
++      for (const threadId of [exactBoundaryThread, tooYoungThread]) {
++        yield* insertTurn({
++          threadId,
++          turnId: `${threadId}-completed-1`,
++          state: "completed",
++          occurredAt: "2026-09-12T10:10:00.000Z",
++        });
++        yield* insertTurn({
++          threadId,
++          turnId: `${threadId}-completed-2`,
++          state: "completed",
++          occurredAt: "2026-09-12T10:20:00.000Z",
++        });
++      }
++
++      yield* insertTurn({
++        threadId: oneCompletionShortThread,
++        turnId: "completed-1",
++        state: "completed",
++        occurredAt: "2026-09-12T09:10:00.000Z",
++      });
++      yield* Effect.forEach(
++        [
++          { turnId: null, state: "pending" as const },
++          { turnId: "running-turn", state: "running" as const },
++          { turnId: "failed-turn", state: "error" as const },
++          { turnId: "interrupted-turn", state: "interrupted" as const },
++        ],
++        ({ turnId, state }) =>
++          insertTurn({
++            threadId: oneCompletionShortThread,
++            turnId,
++            state,
++            occurredAt: "2026-09-12T09:20:00.000Z",
++          }),
++        { discard: true },
++      );
++
++      const rateLimit = yield* AutomaticThreadTitleRateLimit;
++      expect(yield* rateLimit.isAvailable(exactBoundaryThread, limit)).toBe(true);
++      expect(yield* rateLimit.isAvailable(tooYoungThread, limit)).toBe(false);
++      expect(yield* rateLimit.isAvailable(oneCompletionShortThread, limit)).toBe(false);
++
++      yield* insertTurn({
++        threadId: oneCompletionShortThread,
++        turnId: "completed-2",
++        state: "completed",
++        occurredAt: "2026-09-12T09:30:00.000Z",
++      });
++      expect(yield* rateLimit.isAvailable(oneCompletionShortThread, limit)).toBe(true);
++    }),
++  );
++
++  it.effect("withholds permits while the initial placeholder title remains", () =>
++    Effect.gen(function* () {
++      yield* TestClock.setTime(Date.parse("2026-09-12T12:00:00.000Z"));
++      const threadId = ThreadId.make("rate-initial-title-thread");
++      yield* insertThread({
++        threadId,
++        createdAt: "2026-09-12T09:00:00.000Z",
++        title: "New thread",
++      });
++      yield* insertTurn({
++        threadId,
++        turnId: "completed-1",
++        state: "completed",
++        occurredAt: "2026-09-12T09:10:00.000Z",
++      });
++      yield* insertTurn({
++        threadId,
++        turnId: "completed-2",
++        state: "completed",
++        occurredAt: "2026-09-12T09:20:00.000Z",
++      });
++
++      const entered = yield* Ref.make(false);
++      const outcome = yield* (yield* AutomaticThreadTitleRateLimit).withPermit(
++        threadId,
++        limit,
++        Ref.set(entered, true),
++      );
++
++      expect(Option.isNone(outcome)).toBe(true);
++      expect(yield* Ref.get(entered)).toBe(false);
++    }),
++  );
++
 +  it.effect("counts only durable successful agent renames inside the rolling window", () =>
 +    Effect.gen(function* () {
 +      const now = "2026-09-12T12:00:00.000Z";
 +      yield* TestClock.setTime(Date.parse(now));
 +      const threadId = ThreadId.make("rate-count-thread");
++      yield* insertEligibleThread(threadId);
 +      const automaticPayload = {
 +        threadId,
 +        title: "Changed title",
@@ -1036,13 +1310,12 @@ index 000000000..0b6fdf7f3
 +      expect(yield* query.countSince({ threadId, since: "2026-09-12T00:00:00.000Z" })).toBe(1);
 +
 +      const rateLimit = yield* AutomaticThreadTitleRateLimit;
-+      expect(yield* rateLimit.isAvailable(threadId, { maxCount: 1, windowHours: 12 })).toBe(false);
-+      expect(yield* rateLimit.isAvailable(threadId, { maxCount: 2, windowHours: 12 })).toBe(true);
++      expect(yield* rateLimit.isAvailable(threadId, limit)).toBe(false);
++      expect(yield* rateLimit.isAvailable(threadId, { ...limit, maxCount: 2 })).toBe(true);
 +
 +      const availableAfterLimiterRestart = yield* Effect.gen(function* () {
 +        return yield* (yield* AutomaticThreadTitleRateLimit).isAvailable(threadId, {
-+          maxCount: 1,
-+          windowHours: 12,
++          ...limit,
 +        });
 +      }).pipe(
 +        Effect.provide(
@@ -1060,6 +1333,7 @@ index 000000000..0b6fdf7f3
 +      const now = "2026-09-12T12:00:00.000Z";
 +      yield* TestClock.setTime(Date.parse(now));
 +      const threadId = ThreadId.make("rate-concurrent-thread");
++      yield* insertEligibleThread(threadId);
 +      const nextId = yield* Ref.make(0);
 +      const rateLimit = yield* AutomaticThreadTitleRateLimit;
 +      const update = Effect.gen(function* () {
@@ -1081,8 +1355,8 @@ index 000000000..0b6fdf7f3
 +
 +      const outcomes = yield* Effect.all(
 +        [
-+          rateLimit.withPermit(threadId, { maxCount: 1, windowHours: 12 }, update),
-+          rateLimit.withPermit(threadId, { maxCount: 1, windowHours: 12 }, update),
++          rateLimit.withPermit(threadId, limit, update),
++          rateLimit.withPermit(threadId, limit, update),
 +        ],
 +        { concurrency: "unbounded" },
 +      );
@@ -1097,6 +1371,7 @@ index 000000000..0b6fdf7f3
 +      const now = "2026-09-12T12:00:00.000Z";
 +      yield* TestClock.setTime(Date.parse(now));
 +      const threadId = ThreadId.make("rate-cancelled-thread");
++      yield* insertEligibleThread(threadId);
 +      const firstStarted = yield* Deferred.make<void>();
 +      const releaseFirst = yield* Deferred.make<void>();
 +      const secondEntered = yield* Deferred.make<void>();
@@ -1118,7 +1393,7 @@ index 000000000..0b6fdf7f3
 +      const first = yield* Effect.forkChild(
 +        rateLimit.withPermit(
 +          threadId,
-+          { maxCount: 1, windowHours: 12 },
++          limit,
 +          Effect.gen(function* () {
 +            yield* Deferred.succeed(firstStarted, undefined);
 +            yield* Deferred.await(releaseFirst);
@@ -1131,7 +1406,7 @@ index 000000000..0b6fdf7f3
 +      const second = yield* Effect.forkChild(
 +        rateLimit.withPermit(
 +          threadId,
-+          { maxCount: 1, windowHours: 12 },
++          limit,
 +          Deferred.succeed(secondEntered, undefined).pipe(Effect.andThen(write("second"))),
 +        ),
 +      );
@@ -1150,10 +1425,10 @@ index 000000000..0b6fdf7f3
 +});
 diff --git a/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts
 new file mode 100644
-index 000000000..2f0b86507
+index 000000000..083ebcd90
 --- /dev/null
 +++ b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,106 @@
 +import { type ServerSettings, type ThreadId } from "@t3tools/contracts";
 +import { resolveAutomaticThreadTitleRenameLimit } from "@t3tools/shared/serverSettings";
 +import * as Context from "effect/Context";
@@ -1165,10 +1440,13 @@ index 000000000..2f0b86507
 +
 +import type { PersistenceSqlError } from "../persistence/Errors.ts";
 +import { AutomaticThreadTitleRenameQuery } from "../persistence/Services/AutomaticThreadTitleRenameQuery.ts";
++import { DEFAULT_THREAD_TITLE } from "./threadTitles.ts";
 +
 +export interface AutomaticThreadTitleRenameLimit {
 +  readonly maxCount: number;
 +  readonly windowHours: number;
++  readonly minAgeMinutes: number;
++  readonly minCompletedTurns: number;
 +}
 +
 +export interface AutomaticThreadTitleRateLimitShape {
@@ -1199,6 +1477,17 @@ index 000000000..2f0b86507
 +    limit: AutomaticThreadTitleRenameLimit,
 +  ) {
 +    const now = yield* DateTime.now;
++    const createdBefore = DateTime.formatIso(
++      DateTime.subtract(now, { minutes: limit.minAgeMinutes }),
++    );
++    const meetsInitialEligibility = yield* query.meetsInitialEligibility({
++      threadId,
++      createdBefore,
++      minCompletedTurns: limit.minCompletedTurns,
++      excludedTitle: DEFAULT_THREAD_TITLE,
++    });
++    if (!meetsInitialEligibility) return false;
++
 +    const since = DateTime.formatIso(DateTime.subtract(now, { hours: limit.windowHours }));
 +    const count = yield* query.countSince({ threadId, since });
 +    return count < limit.maxCount;
@@ -1235,6 +1524,8 @@ index 000000000..2f0b86507
 +      | "automaticThreadTitleRenamePolicy"
 +      | "automaticThreadTitleRenameMaxCount"
 +      | "automaticThreadTitleRenameWindowHours"
++      | "automaticThreadTitleRenameMinAgeMinutes"
++      | "automaticThreadTitleRenameMinCompletedTurns"
 +    >,
 +  ): Effect.fn.Return<boolean, PersistenceSqlError, AutomaticThreadTitleRateLimit> {
 +    if (!settings.automaticThreadTitles) return false;
@@ -2065,13 +2356,14 @@ index c048247f4..10d12f57b 100644
                : {}),
 diff --git a/apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts b/apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts
 new file mode 100644
-index 000000000..cf9d58937
+index 000000000..9aea3c7e3
 --- /dev/null
 +++ b/apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,92 @@
 +import { IsoDateTime, NonNegativeInt, ThreadId } from "@t3tools/contracts";
 +import * as Effect from "effect/Effect";
 +import * as Layer from "effect/Layer";
++import * as Option from "effect/Option";
 +import * as Schema from "effect/Schema";
 +import * as SqlClient from "effect/unstable/sql/SqlClient";
 +import * as SqlSchema from "effect/unstable/sql/SqlSchema";
@@ -2087,10 +2379,39 @@ index 000000000..cf9d58937
 +  since: IsoDateTime,
 +});
 +
++const InitialEligibilityInput = Schema.Struct({
++  threadId: ThreadId,
++  createdBefore: IsoDateTime,
++  minCompletedTurns: NonNegativeInt,
++  excludedTitle: Schema.String,
++});
++
++const EligibleThreadRow = Schema.Struct({ threadId: ThreadId });
 +const CountRow = Schema.Struct({ count: NonNegativeInt });
 +
 +const makeAutomaticThreadTitleRenameQuery = Effect.gen(function* () {
 +  const sql = yield* SqlClient.SqlClient;
++
++  const findInitiallyEligibleThread = SqlSchema.findOneOption({
++    Request: InitialEligibilityInput,
++    Result: EligibleThreadRow,
++    execute: (input) => sql`
++      SELECT thread.thread_id AS "threadId"
++      FROM projection_threads AS thread
++      WHERE thread.thread_id = ${input.threadId}
++        AND thread.title <> ${input.excludedTitle}
++        AND thread.created_at <= ${input.createdBefore}
++        AND (
++          SELECT COUNT(*)
++          FROM projection_turns AS turn
++          WHERE turn.thread_id = thread.thread_id
++            AND turn.turn_id IS NOT NULL
++            AND turn.state = 'completed'
++            AND turn.completed_at IS NOT NULL
++        ) >= ${input.minCompletedTurns}
++      LIMIT 1
++    `,
++  });
 +
 +  const countSinceRow = SqlSchema.findOne({
 +    Request: CountSinceInput,
@@ -2114,7 +2435,17 @@ index 000000000..cf9d58937
 +      Effect.mapError(toPersistenceSqlError("AutomaticThreadTitleRenameQuery.countSince")),
 +    );
 +
-+  return AutomaticThreadTitleRenameQuery.of({ countSince });
++  const meetsInitialEligibility: AutomaticThreadTitleRenameQueryShape["meetsInitialEligibility"] = (
++    input,
++  ) =>
++    findInitiallyEligibleThread(input).pipe(
++      Effect.map(Option.isSome),
++      Effect.mapError(
++        toPersistenceSqlError("AutomaticThreadTitleRenameQuery.meetsInitialEligibility"),
++      ),
++    );
++
++  return AutomaticThreadTitleRenameQuery.of({ meetsInitialEligibility, countSince });
 +});
 +
 +export const AutomaticThreadTitleRenameQueryLive = Layer.effect(
@@ -2511,10 +2842,10 @@ index 000000000..d31c8bf4d
 +});
 diff --git a/apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts b/apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts
 new file mode 100644
-index 000000000..523878337
+index 000000000..eeae9cce8
 --- /dev/null
 +++ b/apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,26 @@
 +import { IsoDateTime, ThreadId } from "@t3tools/contracts";
 +import * as Context from "effect/Context";
 +import type * as Effect from "effect/Effect";
@@ -2522,6 +2853,14 @@ index 000000000..523878337
 +import type { PersistenceSqlError } from "../Errors.ts";
 +
 +export interface AutomaticThreadTitleRenameQueryShape {
++  /** Whether the persisted thread is old enough and has enough successfully completed turns. */
++  readonly meetsInitialEligibility: (input: {
++    readonly threadId: ThreadId;
++    readonly createdBefore: IsoDateTime;
++    readonly minCompletedTurns: number;
++    readonly excludedTitle: string;
++  }) => Effect.Effect<boolean, PersistenceSqlError>;
++
 +  /** Count durable, successful agent title changes in the rolling window. */
 +  readonly countSince: (input: {
 +    readonly threadId: ThreadId;
@@ -2831,7 +3170,7 @@ index 742ee9b86..eadfb4732 100644
                  parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
                },
 diff --git a/apps/server/src/provider/Layers/ProviderService.test.ts b/apps/server/src/provider/Layers/ProviderService.test.ts
-index e7647866d..9dfe409dc 100644
+index e7647866d..70740fac3 100644
 --- a/apps/server/src/provider/Layers/ProviderService.test.ts
 +++ b/apps/server/src/provider/Layers/ProviderService.test.ts
 @@ -60,7 +60,11 @@ import {
@@ -2874,7 +3213,7 @@ index e7647866d..9dfe409dc 100644
    const revokedThreads: Array<ThreadId> = [];
    const projectId = ProjectId.make("project-browser-access");
  
-@@ -4804,9 +4812,17 @@ describe("agent browser access", () => {
+@@ -4804,9 +4812,18 @@ describe("agent browser access", () => {
      enableAgentBrowserAccess: boolean,
      threadId: ThreadId,
      projectOverride?: boolean,
@@ -2886,6 +3225,7 @@ index e7647866d..9dfe409dc 100644
 +    > = {},
 +    threadAvailable = true,
 +    titleRenameQuotaAvailable: boolean | "error" = true,
++    threadTitle = "Browser access test",
    ) =>
      Effect.gen(function* () {
 -      const issued: Array<ThreadId> = [];
@@ -2893,7 +3233,7 @@ index e7647866d..9dfe409dc 100644
        const codex = makeFakeCodexAdapter();
        const providerAdapterLayer = Layer.succeed(
          ProviderAdapterRegistry.ProviderAdapterRegistry,
-@@ -4818,6 +4834,11 @@ describe("agent browser access", () => {
+@@ -4818,6 +4835,11 @@ describe("agent browser access", () => {
        const directoryLayer = ProviderSessionDirectoryLive.pipe(
          Layer.provide(runtimeRepositoryLayer),
        );
@@ -2905,7 +3245,7 @@ index e7647866d..9dfe409dc 100644
        const projectionLayer = Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
          getTurnStartMessage: () => Effect.die("unused"),
          getImportedAgentSessionSources: () => Effect.die("unused"),
-@@ -4838,11 +4859,13 @@ describe("agent browser access", () => {
+@@ -4838,11 +4860,13 @@ describe("agent browser access", () => {
          getThreadShellById: (requestedThreadId) =>
            Effect.gen(function* () {
              assert.equal(requestedThreadId, threadId);
@@ -2914,12 +3254,13 @@ index e7647866d..9dfe409dc 100644
                yield* decodeBrowserAccessThreadShell({
                  id: threadId,
                  projectId,
-                 title: "Browser access test",
+-                title: "Browser access test",
++                title: threadTitle,
 +                ...(titleSource ? { titleSource } : {}),
                  modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
                  runtimeMode: "full-access",
                  branch: null,
-@@ -4850,6 +4873,7 @@ describe("agent browser access", () => {
+@@ -4850,6 +4874,7 @@ describe("agent browser access", () => {
                  latestTurn: null,
                  createdAt: "2026-01-01T00:00:00.000Z",
                  updatedAt: "2026-01-01T00:00:00.000Z",
@@ -2927,7 +3268,7 @@ index e7647866d..9dfe409dc 100644
                  session: null,
                  latestUserMessageAt: null,
                  hasPendingApprovals: false,
-@@ -4865,17 +4889,38 @@ describe("agent browser access", () => {
+@@ -4865,17 +4890,38 @@ describe("agent browser access", () => {
        const providerLayer = makeProviderServiceLive({
          issueMcpCredential: (request) =>
            Effect.sync(() => {
@@ -2968,7 +3309,7 @@ index e7647866d..9dfe409dc 100644
              projectAgentBrowserAccessOverrides:
                projectOverride === undefined ? {} : { [projectId]: projectOverride },
            }),
-@@ -4892,39 +4937,41 @@ describe("agent browser access", () => {
+@@ -4892,39 +4938,41 @@ describe("agent browser access", () => {
  
        yield* Effect.gen(function* () {
          const provider = yield* ProviderService.ProviderService;
@@ -3023,7 +3364,7 @@ index e7647866d..9dfe409dc 100644
      }).pipe(Effect.provide(NodeServices.layer)),
    );
  
-@@ -4932,9 +4979,9 @@ describe("agent browser access", () => {
+@@ -4932,9 +4980,9 @@ describe("agent browser access", () => {
      Effect.gen(function* () {
        const threadId = asThreadId("thread-browser-on");
  
@@ -3035,7 +3376,7 @@ index e7647866d..9dfe409dc 100644
      }).pipe(Effect.provide(NodeServices.layer)),
    );
  
-@@ -4942,17 +4989,178 @@ describe("agent browser access", () => {
+@@ -4942,17 +4990,203 @@ describe("agent browser access", () => {
      Effect.gen(function* () {
        const threadId = asThreadId("thread-project-browser-off");
        revokedThreads.length = 0;
@@ -3070,7 +3411,7 @@ index e7647866d..9dfe409dc 100644
 +
 +      assert.deepEqual(issued[0]?.capabilities, ["thread-title"]);
 +      assert.deepEqual(isTitleRenameAvailable.mock.calls, [
-+        [threadId, { maxCount: 1, windowHours: 12 }],
++        [threadId, { maxCount: 1, windowHours: 12, minAgeMinutes: 120, minCompletedTurns: 5 }],
 +      ]);
 +      const startInput = codex.startSession.mock.calls[0]?.[0] as
 +        | ProviderAdapterSessionStartInput
@@ -3102,6 +3443,31 @@ index e7647866d..9dfe409dc 100644
 +        | ProviderAdapterSessionStartInput
 +        | undefined;
 +      assert.deepEqual(startInput?.runtimeInstructions, { browserToolsAvailable: true });
++    }).pipe(Effect.provide(NodeServices.layer)),
++  );
++
++  it.effect("withholds title guidance during initial title seeding", () =>
++    Effect.gen(function* () {
++      const threadId = asThreadId("thread-title-initial-seeding");
++      const { issued, codex, isTitleRenameAvailable } = yield* startSessionWith(
++        false,
++        threadId,
++        undefined,
++        true,
++        "automatic",
++        false,
++        {},
++        true,
++        true,
++        "New thread",
++      );
++
++      assert.deepEqual(issued[0]?.capabilities, []);
++      assert.equal(isTitleRenameAvailable.mock.calls.length, 0);
++      const startInput = codex.startSession.mock.calls[0]?.[0] as
++        | ProviderAdapterSessionStartInput
++        | undefined;
++      assert.deepEqual(startInput?.runtimeInstructions, { browserToolsAvailable: false });
 +    }).pipe(Effect.provide(NodeServices.layer)),
 +  );
 +
@@ -3220,10 +3586,10 @@ index e7647866d..9dfe409dc 100644
    );
  });
 diff --git a/apps/server/src/provider/Layers/ProviderService.ts b/apps/server/src/provider/Layers/ProviderService.ts
-index 016bcd5c4..0925752c7 100644
+index 016bcd5c4..1079ef5a7 100644
 --- a/apps/server/src/provider/Layers/ProviderService.ts
 +++ b/apps/server/src/provider/Layers/ProviderService.ts
-@@ -79,6 +79,11 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+@@ -79,6 +79,12 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
  import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
  import * as ServerSettings from "../../serverSettings.ts";
  import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -3232,10 +3598,11 @@ index 016bcd5c4..0925752c7 100644
 +  hasAutomaticThreadTitleRenameQuota,
 +} from "../../orchestration/AutomaticThreadTitleRateLimit.ts";
 +import { allowsAutomaticThreadTitleUpdate } from "../../orchestration/ThreadTitlePolicy.ts";
++import { DEFAULT_THREAD_TITLE } from "../../orchestration/threadTitles.ts";
  const isModelSelection = Schema.is(ModelSelection);
  const encodePromptJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
  
-@@ -477,6 +482,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -477,6 +483,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
    const projectionQuery = yield* Effect.serviceOption(
      ProjectionSnapshotQuery.ProjectionSnapshotQuery,
    );
@@ -3243,7 +3610,7 @@ index 016bcd5c4..0925752c7 100644
    const issueMcpCredential =
      options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
    const revokeMcpCredential =
-@@ -852,64 +858,102 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -852,64 +859,103 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
      });
      yield* recordCompletedTurnProperties(properties);
    });
@@ -3283,6 +3650,7 @@ index 016bcd5c4..0925752c7 100644
 +        settings.automaticThreadTitles &&
 +        Option.isSome(thread) &&
 +        thread.value.titleSource === "automatic" &&
++        thread.value.title !== DEFAULT_THREAD_TITLE &&
 +        allowsAutomaticThreadTitleUpdate(thread.value, yield* nowIso) &&
 +        Option.isSome(automaticThreadTitleRateLimit);
 +      const automaticTitleUpdatesAllowed = automaticTitleLifecycleAllowsUpdates
@@ -3382,7 +3750,7 @@ index 016bcd5c4..0925752c7 100644
        Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
      );
  
-@@ -1191,7 +1235,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1191,7 +1237,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
        const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
        const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
  
@@ -3391,7 +3759,7 @@ index 016bcd5c4..0925752c7 100644
        const resumed = yield* adapter
          .startSession({
            threadId: input.binding.threadId,
-@@ -1201,6 +1245,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1201,6 +1247,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
            ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
            ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
            runtimeMode: input.binding.runtimeMode ?? "full-access",
@@ -3401,7 +3769,7 @@ index 016bcd5c4..0925752c7 100644
          })
          .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
        if (resumed.provider !== adapter.provider) {
-@@ -1422,13 +1469,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1422,13 +1471,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
          }
          const adapter = yield* registry.getByInstance(resolvedInstanceId);
          yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
@@ -3419,7 +3787,7 @@ index 016bcd5c4..0925752c7 100644
            })
            .pipe(Effect.onError(() => clearMcpSession(threadId)));
  
-@@ -1625,6 +1675,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1625,6 +1677,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
        // an already-spawned agent process, so we keep the existing token valid
        // rather than issuing a new one: sessions that go a long time between
        // browser tool calls used to lose the toolkit outright.
@@ -3431,7 +3799,7 @@ index 016bcd5c4..0925752c7 100644
        yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
        const analyticsModelSelection =
          input.modelSelection?.instanceId === routed.instanceId ? input.modelSelection : undefined;
-@@ -1639,7 +1694,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1639,7 +1696,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
          }),
          (turnMetadata) =>
            Effect.gen(function* () {
@@ -3950,7 +4318,7 @@ index fbebc323a..77a0d289f 100644
          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
            const error = squashAtomCommandFailure(result);
 diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
-index 4c108b01d..120c701ff 100644
+index 4c108b01d..48070f61f 100644
 --- a/apps/web/src/components/settings/SettingsPanels.tsx
 +++ b/apps/web/src/components/settings/SettingsPanels.tsx
 @@ -9,6 +9,7 @@ import {
@@ -3961,25 +4329,29 @@ index 4c108b01d..120c701ff 100644
    type ScopedThreadRef,
    type SidebarProjectGroupingMode,
  } from "@t3tools/contracts";
-@@ -24,6 +25,8 @@ import {
+@@ -24,6 +25,10 @@ import {
    type DiffLayout,
    type EnvironmentIdentificationMode,
    MAX_APPEARANCE_CONTRAST,
 +  MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++  MAX_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++  MAX_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
 +  MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
    MAX_CODE_FONT_SIZE,
    MAX_GLASS_OPACITY,
    MAX_INTERFACE_FONT_SIZE,
-@@ -33,6 +36,8 @@ import {
+@@ -33,6 +38,10 @@ import {
    MAX_TERMINAL_FONT_SIZE,
    MIN_CODE_FONT_SIZE,
    MIN_APPEARANCE_CONTRAST,
 +  MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++  MIN_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++  MIN_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
 +  MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
    MIN_GLASS_OPACITY,
    MIN_INTERFACE_FONT_SIZE,
    MIN_PANEL_ANIMATION_DURATION_MS,
-@@ -42,6 +47,7 @@ import {
+@@ -42,6 +51,7 @@ import {
    type QuitConfirmationMode,
  } from "@t3tools/contracts/settings";
  import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
@@ -3987,23 +4359,23 @@ index 4c108b01d..120c701ff 100644
  import { createModelSelection } from "@t3tools/shared/model";
  import * as Duration from "effect/Duration";
  import * as Equal from "effect/Equal";
-@@ -179,6 +185,15 @@ const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
+@@ -179,6 +189,15 @@ const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
    split: "Split",
  };
  
 +type AutomaticThreadTitleRenamePolicy = ServerSettings["automaticThreadTitleRenamePolicy"];
 +
 +const AUTOMATIC_TITLE_POLICY_LABELS: Record<AutomaticThreadTitleRenamePolicy, string> = {
-+  rare: "Rare · once / 24 hours",
-+  balanced: "Balanced · once / 12 hours",
-+  often: "Often · once / 6 hours",
++  rare: "Rare · 360 min + 10 turns",
++  balanced: "Balanced · 120 min + 5 turns",
++  often: "Often · 30 min + 3 turns",
 +  custom: "Custom",
 +};
 +
  const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
    direct: "Direct",
    hold: "Hold",
-@@ -523,6 +538,17 @@ export function useSettingsRestore(onRestored?: () => void) {
+@@ -523,6 +542,21 @@ export function useSettingsRestore(onRestored?: () => void) {
        DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
          ? ["Project Grouping"]
          : []),
@@ -4015,24 +4387,30 @@ index 4c108b01d..120c701ff 100644
 +      settings.automaticThreadTitleRenameMaxCount !==
 +        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount ||
 +      settings.automaticThreadTitleRenameWindowHours !==
-+        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours ||
++      settings.automaticThreadTitleRenameMinAgeMinutes !==
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinAgeMinutes ||
++      settings.automaticThreadTitleRenameMinCompletedTurns !==
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinCompletedTurns
 +        ? ["Automatic title update frequency"]
 +        : []),
        ...(settings.sidebarAutoSettleAfterDays !==
        DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
          ? ["Auto-settle inactive threads"]
-@@ -626,6 +652,10 @@ export function useSettingsRestore(onRestored?: () => void) {
+@@ -626,6 +660,12 @@ export function useSettingsRestore(onRestored?: () => void) {
        settings.continueThreadsAfterServerUpdate,
        settings.sidebarAutoSettleAfterDays,
        settings.sidebarAutoSettleOnMerge,
 +      settings.automaticThreadTitles,
 +      settings.automaticThreadTitleRenamePolicy,
 +      settings.automaticThreadTitleRenameMaxCount,
++      settings.automaticThreadTitleRenameMinAgeMinutes,
++      settings.automaticThreadTitleRenameMinCompletedTurns,
 +      settings.automaticThreadTitleRenameWindowHours,
        settings.sidebarProjectGroupingMode,
        settings.sidebarThreadPreviewCount,
        settings.showSkillsInSlashMenu,
-@@ -714,6 +744,12 @@ export function useSettingsRestore(onRestored?: () => void) {
+@@ -714,6 +754,16 @@ export function useSettingsRestore(onRestored?: () => void) {
        panelAnimationDurationMs: DEFAULT_UNIFIED_SETTINGS.panelAnimationDurationMs,
        sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
        sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
@@ -4042,10 +4420,14 @@ index 4c108b01d..120c701ff 100644
 +        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount,
 +      automaticThreadTitleRenameWindowHours:
 +        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours,
++      automaticThreadTitleRenameMinAgeMinutes:
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinAgeMinutes,
++      automaticThreadTitleRenameMinCompletedTurns:
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinCompletedTurns,
        sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
        sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
        enableLegacyTokenStreaming: DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming,
-@@ -2017,8 +2053,10 @@ export function GeneralSettingsPanel() {
+@@ -2017,8 +2067,10 @@ export function GeneralSettingsPanel() {
    );
    const observability = useAtomValue(primaryServerObservabilityAtom);
    const serverProviders = useAtomValue(primaryServerProvidersAtom);
@@ -4058,7 +4440,7 @@ index 4c108b01d..120c701ff 100644
    const diagnosticsDescription = formatDiagnosticsDescription({
      localTracingEnabled: observability?.localTracingEnabled ?? false,
      otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
-@@ -2533,6 +2571,157 @@ export function GeneralSettingsPanel() {
+@@ -2533,6 +2585,216 @@ export function GeneralSettingsPanel() {
            }
          />
  
@@ -4096,14 +4478,18 @@ index 4c108b01d..120c701ff 100644
 +              <SettingsRow
 +                serverScoped
 +                {...searchableSetting("automatic-thread-title-frequency")}
-+                description={`Allows at most ${automaticTitleRenameLimit.maxCount === 1 ? "one update" : `${automaticTitleRenameLimit.maxCount} updates`} in any rolling ${automaticTitleRenameLimit.windowHours}-hour window. This is a maximum, not a schedule.`}
++                description={`Eligible after ${automaticTitleRenameLimit.minAgeMinutes} minutes and ${automaticTitleRenameLimit.minCompletedTurns} completed ${automaticTitleRenameLimit.minCompletedTurns === 1 ? "turn" : "turns"}. Allows at most ${automaticTitleRenameLimit.maxCount === 1 ? "one update" : `${automaticTitleRenameLimit.maxCount} updates`} per rolling ${automaticTitleRenameLimit.windowHours}-hour window.`}
 +                resetAction={
 +                  settings.automaticThreadTitleRenamePolicy !==
 +                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenamePolicy ||
 +                  settings.automaticThreadTitleRenameMaxCount !==
 +                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount ||
 +                  settings.automaticThreadTitleRenameWindowHours !==
-+                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours ? (
++                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours ||
++                  settings.automaticThreadTitleRenameMinAgeMinutes !==
++                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinAgeMinutes ||
++                  settings.automaticThreadTitleRenameMinCompletedTurns !==
++                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinCompletedTurns ? (
 +                    <SettingResetButton
 +                      label="automatic title update frequency"
 +                      onClick={() =>
@@ -4114,6 +4500,10 @@ index 4c108b01d..120c701ff 100644
 +                            DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount,
 +                          automaticThreadTitleRenameWindowHours:
 +                            DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours,
++                          automaticThreadTitleRenameMinAgeMinutes:
++                            DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinAgeMinutes,
++                          automaticThreadTitleRenameMinCompletedTurns:
++                            DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMinCompletedTurns,
 +                        })
 +                      }
 +                    />
@@ -4135,7 +4525,7 @@ index 4c108b01d..120c701ff 100644
 +                  >
 +                    <SelectTrigger
 +                      size="sm"
-+                      className="w-full sm:w-48"
++                      className="w-full sm:w-60"
 +                      aria-label="Automatic title update frequency"
 +                    >
 +                      <SelectValue>
@@ -4160,55 +4550,106 @@ index 4c108b01d..120c701ff 100644
 +
 +            {settings.automaticThreadTitles &&
 +            settings.automaticThreadTitleRenamePolicy === "custom" ? (
-+              <SettingsRow
-+                serverScoped
-+                title="Custom title update limit"
-+                description="Choose the number of updates allowed during the rolling window."
-+                control={
-+                  <div className="flex flex-wrap items-center justify-end gap-2">
-+                    <NumberField
-+                      value={settings.automaticThreadTitleRenameMaxCount}
-+                      min={MIN_AUTOMATIC_TITLE_RENAME_COUNT}
-+                      max={MAX_AUTOMATIC_TITLE_RENAME_COUNT}
-+                      step={1}
-+                      size="sm"
-+                      className="w-24"
-+                      onValueChange={(value) => {
-+                        if (typeof value === "number" && Number.isInteger(value)) {
-+                          updateSettings({ automaticThreadTitleRenameMaxCount: value });
-+                        }
-+                      }}
-+                    >
-+                      <NumberFieldGroup>
-+                        <NumberFieldDecrement aria-label="Decrease automatic title update count" />
-+                        <NumberFieldInput aria-label="Automatic title update count" />
-+                        <NumberFieldIncrement aria-label="Increase automatic title update count" />
-+                      </NumberFieldGroup>
-+                    </NumberField>
-+                    <span className="text-xs text-muted-foreground">updates per</span>
-+                    <NumberField
-+                      value={settings.automaticThreadTitleRenameWindowHours}
-+                      min={MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS}
-+                      max={MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS}
-+                      step={1}
-+                      size="sm"
-+                      className="w-24"
-+                      onValueChange={(value) => {
-+                        if (typeof value === "number" && Number.isInteger(value)) {
-+                          updateSettings({ automaticThreadTitleRenameWindowHours: value });
-+                        }
-+                      }}
-+                    >
-+                      <NumberFieldGroup>
-+                        <NumberFieldDecrement aria-label="Decrease automatic title window" />
-+                        <NumberFieldInput aria-label="Automatic title window in hours" />
-+                        <NumberFieldIncrement aria-label="Increase automatic title window" />
-+                      </NumberFieldGroup>
-+                    </NumberField>
-+                    <span className="text-xs text-muted-foreground">hours</span>
-+                  </div>
-+                }
-+              />
++              <>
++                <SettingsRow
++                  serverScoped
++                  title="Custom title update rate"
++                  description="Choose the number of updates allowed during the rolling window."
++                  control={
++                    <div className="flex flex-wrap items-center justify-end gap-2">
++                      <NumberField
++                        value={settings.automaticThreadTitleRenameMaxCount}
++                        min={MIN_AUTOMATIC_TITLE_RENAME_COUNT}
++                        max={MAX_AUTOMATIC_TITLE_RENAME_COUNT}
++                        step={1}
++                        size="sm"
++                        className="w-24"
++                        onValueChange={(value) => {
++                          if (typeof value === "number" && Number.isInteger(value)) {
++                            updateSettings({ automaticThreadTitleRenameMaxCount: value });
++                          }
++                        }}
++                      >
++                        <NumberFieldGroup>
++                          <NumberFieldDecrement aria-label="Decrease automatic title update count" />
++                          <NumberFieldInput aria-label="Automatic title update count" />
++                          <NumberFieldIncrement aria-label="Increase automatic title update count" />
++                        </NumberFieldGroup>
++                      </NumberField>
++                      <span className="text-xs text-muted-foreground">updates per</span>
++                      <NumberField
++                        value={settings.automaticThreadTitleRenameWindowHours}
++                        min={MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS}
++                        max={MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS}
++                        step={1}
++                        size="sm"
++                        className="w-24"
++                        onValueChange={(value) => {
++                          if (typeof value === "number" && Number.isInteger(value)) {
++                            updateSettings({ automaticThreadTitleRenameWindowHours: value });
++                          }
++                        }}
++                      >
++                        <NumberFieldGroup>
++                          <NumberFieldDecrement aria-label="Decrease automatic title window" />
++                          <NumberFieldInput aria-label="Automatic title window in hours" />
++                          <NumberFieldIncrement aria-label="Increase automatic title window" />
++                        </NumberFieldGroup>
++                      </NumberField>
++                      <span className="text-xs text-muted-foreground">hours</span>
++                    </div>
++                  }
++                />
++                <SettingsRow
++                  serverScoped
++                  title="Custom title eligibility"
++                  description="Both thresholds are required. A turn is one completed agent response or work cycle; tool calls and progress updates do not count."
++                  control={
++                    <div className="flex flex-wrap items-center justify-end gap-2">
++                      <NumberField
++                        value={settings.automaticThreadTitleRenameMinAgeMinutes}
++                        min={MIN_AUTOMATIC_TITLE_RENAME_AGE_MINUTES}
++                        max={MAX_AUTOMATIC_TITLE_RENAME_AGE_MINUTES}
++                        step={1}
++                        size="sm"
++                        className="w-24"
++                        onValueChange={(value) => {
++                          if (typeof value === "number" && Number.isInteger(value)) {
++                            updateSettings({ automaticThreadTitleRenameMinAgeMinutes: value });
++                          }
++                        }}
++                      >
++                        <NumberFieldGroup>
++                          <NumberFieldDecrement aria-label="Decrease minimum thread age" />
++                          <NumberFieldInput aria-label="Minimum thread age in minutes" />
++                          <NumberFieldIncrement aria-label="Increase minimum thread age" />
++                        </NumberFieldGroup>
++                      </NumberField>
++                      <span className="text-xs text-muted-foreground">minutes old and</span>
++                      <NumberField
++                        value={settings.automaticThreadTitleRenameMinCompletedTurns}
++                        min={MIN_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS}
++                        max={MAX_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS}
++                        step={1}
++                        size="sm"
++                        className="w-24"
++                        onValueChange={(value) => {
++                          if (typeof value === "number" && Number.isInteger(value)) {
++                            updateSettings({ automaticThreadTitleRenameMinCompletedTurns: value });
++                          }
++                        }}
++                      >
++                        <NumberFieldGroup>
++                          <NumberFieldDecrement aria-label="Decrease minimum completed turns" />
++                          <NumberFieldInput aria-label="Minimum completed turns" />
++                          <NumberFieldIncrement aria-label="Increase minimum completed turns" />
++                        </NumberFieldGroup>
++                      </NumberField>
++                      <span className="text-xs text-muted-foreground">completed turns</span>
++                    </div>
++                  }
++                />
++              </>
 +            ) : null}
 +          </>
 +        ) : null}
@@ -4217,7 +4658,7 @@ index 4c108b01d..120c701ff 100644
            serverScoped
            {...searchableSetting("start-from-origin")}
 diff --git a/apps/web/src/components/settings/settingsSearch.test.ts b/apps/web/src/components/settings/settingsSearch.test.ts
-index e03d624fd..a6d46fd8d 100644
+index e03d624fd..26fed2da4 100644
 --- a/apps/web/src/components/settings/settingsSearch.test.ts
 +++ b/apps/web/src/components/settings/settingsSearch.test.ts
 @@ -148,6 +148,7 @@ describe("searchSettings", () => {
@@ -4228,16 +4669,18 @@ index e03d624fd..a6d46fd8d 100644
      });
  
      const gatedIds = new Set<string>([
-@@ -164,6 +165,8 @@ describe("searchSettings", () => {
+@@ -164,6 +165,10 @@ describe("searchSettings", () => {
        "auto-settle-inactive-threads",
        "auto-settle-merged-threads",
        "days-before-auto-settle",
 +      "automatic-thread-titles",
 +      "automatic-thread-title-frequency",
++      "automatic-thread-title-minimum-age",
++      "automatic-thread-title-minimum-turns",
      ]);
      expect(available.map((item) => item.id).filter((id) => gatedIds.has(id))).toEqual([]);
    });
-@@ -176,6 +179,7 @@ describe("searchSettings", () => {
+@@ -176,6 +181,7 @@ describe("searchSettings", () => {
        canManageLocalBackend: false,
        isWslSettingsRowVisible: false,
        hasThreadAutoSettlement: true,
@@ -4245,7 +4688,7 @@ index e03d624fd..a6d46fd8d 100644
      });
  
      expect(searchSettings("auto-settle", available).map((item) => item.id)).toEqual([
-@@ -185,6 +189,21 @@ describe("searchSettings", () => {
+@@ -185,6 +191,27 @@ describe("searchSettings", () => {
      ]);
    });
  
@@ -4262,13 +4705,19 @@ index e03d624fd..a6d46fd8d 100644
 +
 +    expect(available.map((item) => item.id)).toContain("automatic-thread-titles");
 +    expect(available.map((item) => item.id)).toContain("automatic-thread-title-frequency");
++    expect(searchSettings("completed turns", available).map((item) => item.id)).toContain(
++      "automatic-thread-title-minimum-turns",
++    );
++    expect(searchSettings("minimum age", available).map((item) => item.id)).toContain(
++      "automatic-thread-title-minimum-age",
++    );
 +  });
 +
    it("keeps catalog result ids unique", () => {
      const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
      expect(new Set(ids).size).toBe(ids.length);
 diff --git a/apps/web/src/components/settings/settingsSearch.ts b/apps/web/src/components/settings/settingsSearch.ts
-index e32baf6f3..3e48a2cca 100644
+index e32baf6f3..2e1213358 100644
 --- a/apps/web/src/components/settings/settingsSearch.ts
 +++ b/apps/web/src/components/settings/settingsSearch.ts
 @@ -33,6 +33,7 @@ export interface SettingsSearchItem {
@@ -4287,7 +4736,7 @@ index e32baf6f3..3e48a2cca 100644
  }
  
  /**
-@@ -162,6 +164,21 @@ export const SETTINGS_SEARCH_ITEMS = [
+@@ -162,6 +164,41 @@ export const SETTINGS_SEARCH_ITEMS = [
      to: "/settings/general",
      searchTerms: ["combine matching repositories environments sidebar"],
    },
@@ -4300,16 +4749,36 @@ index e32baf6f3..3e48a2cca 100644
 +  },
 +  {
 +    id: "automatic-thread-title-frequency",
-+    title: "Automatic title update frequency",
++    title: "Automatic title update policy",
 +    to: "/settings/general",
 +    targetId: "automatic-thread-titles",
-+    searchTerms: ["rename rate limit rare balanced often custom rolling window projects threads"],
++    searchTerms: [
++      "rename rate limit rare balanced often custom rolling window minimum age completed turns eligibility projects threads",
++    ],
++    requiresAutomaticThreadTitles: true,
++  },
++  {
++    id: "automatic-thread-title-minimum-age",
++    title: "Minimum age for automatic title updates",
++    to: "/settings/general",
++    targetId: "automatic-thread-titles",
++    searchTerms: ["rename eligibility minutes old thread custom threshold"],
++    requiresAutomaticThreadTitles: true,
++  },
++  {
++    id: "automatic-thread-title-minimum-turns",
++    title: "Minimum completed turns for automatic title updates",
++    to: "/settings/general",
++    targetId: "automatic-thread-titles",
++    searchTerms: [
++      "rename eligibility agent response work cycle tool calls progress custom threshold",
++    ],
 +    requiresAutomaticThreadTitles: true,
 +  },
    {
      id: "auto-settle-inactive-threads",
      title: "Auto-settle inactive threads",
-@@ -597,7 +614,8 @@ export function filterAvailableSettingsSearchItems(
+@@ -597,7 +634,8 @@ export function filterAvailableSettingsSearchItems(
        (!item.providerSettingsOnly || availability.hasProviderSettingsEnvironment) &&
        (!item.localBackendManagementOnly || availability.canManageLocalBackend) &&
        (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
@@ -4333,10 +4802,10 @@ index a2f5ca627..4b94fd694 100644
      [
        canManageLocalBackend,
 diff --git a/docs/user/thread-sidebar.md b/docs/user/thread-sidebar.md
-index 360057dd5..ad734f4dc 100644
+index 360057dd5..177ba98f2 100644
 --- a/docs/user/thread-sidebar.md
 +++ b/docs/user/thread-sidebar.md
-@@ -70,6 +70,26 @@ If dragging is unavailable for one environment, update the T3 Code server runnin
+@@ -70,6 +70,37 @@ If dragging is unavailable for one environment, update the T3 Code server runnin
  environment. Pinned and active reordering require server support. Threads from older servers keep
  their default order until the server is updated.
  
@@ -4347,11 +4816,22 @@ index 360057dd5..ad734f4dc 100644
 +part of agent work; T3 Code does not generate them on a schedule. Snoozed, archived, and settled
 +threads are skipped.
 +
-+Choose **Rare** for at most one rename every 24 hours, **Balanced** (the default) for one every
-+12 hours, or **Often** for one every 6 hours. **Custom** lets you set a maximum count and a window
-+in hours. These are rolling limits for each thread, shared across devices and preserved across server restarts.
-+Reaching a limit pauses automatic renaming until an earlier rename leaves the window; it does
-+not queue a rename for later.
++Automatic updates wait until the thread meets both the age and completed-turn requirements:
++
++| Profile            | Minimum age  | Completed turns | Maximum renames               |
++| ------------------ | ------------ | --------------- | ----------------------------- |
++| Often              | 30 minutes   | 3               | 1 every 6 hours               |
++| Balanced (default) | 2 hours      | 5               | 1 every 12 hours              |
++| Rare               | 6 hours      | 10              | 1 every 24 hours              |
++| Custom             | Your minimum | Your minimum    | Your count and rolling window |
++
++A completed turn is a finished agent response or work cycle, not an individual tool call or progress
++update. The initial title is still generated normally by T3 Code. Eligibility only lets the agent
++consider an update; the objective must still meaningfully change.
++
++These limits are per thread, shared across devices, and preserved across server restarts. Reaching
++a rename limit pauses automatic renaming until an earlier rename leaves the rolling window; it
++does not queue a rename for later.
 +
 +Titles you renamed yourself stay protected. Choose **Regenerate title** from a thread's menu when
 +you want the agent to replace a protected title and keep it up to date afterward. Manual renames,
@@ -4364,7 +4844,7 @@ index 360057dd5..ad734f4dc 100644
  
  Choose **Settle thread** from its menu to move finished work out of the active list
 diff --git a/packages/client-runtime/src/state/sharedSettings.test.ts b/packages/client-runtime/src/state/sharedSettings.test.ts
-index fc5ffe62e..51cf6480a 100644
+index fc5ffe62e..21cc744b4 100644
 --- a/packages/client-runtime/src/state/sharedSettings.test.ts
 +++ b/packages/client-runtime/src/state/sharedSettings.test.ts
 @@ -17,7 +17,10 @@ import {
@@ -4379,7 +4859,7 @@ index fc5ffe62e..51cf6480a 100644
  
  describe("supportsSharedSettingsSync", () => {
    it("accepts only connected servers that advertise the shared-settings capability", () => {
-@@ -86,6 +89,10 @@ describe("splitSharedServerPatch", () => {
+@@ -86,6 +89,12 @@ describe("splitSharedServerPatch", () => {
  
    it("routes preference keys to the shared patch and machine keys to the local patch", () => {
      const { sharedPatch, localPatch } = splitSharedServerPatch({
@@ -4387,10 +4867,12 @@ index fc5ffe62e..51cf6480a 100644
 +      automaticThreadTitleRenamePolicy: "often",
 +      automaticThreadTitleRenameMaxCount: 5,
 +      automaticThreadTitleRenameWindowHours: 48,
++      automaticThreadTitleRenameMinAgeMinutes: 90,
++      automaticThreadTitleRenameMinCompletedTurns: 7,
        sidebarAutoSettleAfterDays: 7,
        sidebarAutoSettleOnMerge: false,
        continueThreadsAfterServerUpdate: true,
-@@ -94,6 +101,10 @@ describe("splitSharedServerPatch", () => {
+@@ -94,6 +103,12 @@ describe("splitSharedServerPatch", () => {
        newWorktreesStartFromOrigin: true,
      });
      expect(sharedPatch).toEqual({
@@ -4398,21 +4880,25 @@ index fc5ffe62e..51cf6480a 100644
 +      automaticThreadTitleRenamePolicy: "often",
 +      automaticThreadTitleRenameMaxCount: 5,
 +      automaticThreadTitleRenameWindowHours: 48,
++      automaticThreadTitleRenameMinAgeMinutes: 90,
++      automaticThreadTitleRenameMinCompletedTurns: 7,
        sidebarAutoSettleAfterDays: 7,
        sidebarAutoSettleOnMerge: false,
        continueThreadsAfterServerUpdate: true,
-@@ -111,6 +122,10 @@ describe("pickSharedServerSettings", () => {
+@@ -111,6 +126,12 @@ describe("pickSharedServerSettings", () => {
      expect(
        Object.keys(pickSharedServerSettings(DEFAULT_SERVER_SETTINGS, restartCapabilities)).sort(),
      ).toEqual([
 +      "automaticThreadTitleRenameMaxCount",
++      "automaticThreadTitleRenameMinAgeMinutes",
++      "automaticThreadTitleRenameMinCompletedTurns",
 +      "automaticThreadTitleRenamePolicy",
 +      "automaticThreadTitleRenameWindowHours",
 +      "automaticThreadTitles",
        "continueThreadsAfterServerUpdate",
        "newWorktreesStartFromOrigin",
        "sidebarAutoSettleAfterDays",
-@@ -122,6 +137,66 @@ describe("pickSharedServerSettings", () => {
+@@ -122,6 +143,70 @@ describe("pickSharedServerSettings", () => {
  });
  
  describe("filterSharedServerPatch", () => {
@@ -4424,6 +4910,8 @@ index fc5ffe62e..51cf6480a 100644
 +        automaticThreadTitleRenamePolicy: "custom" as const,
 +        automaticThreadTitleRenameMaxCount: 5,
 +        automaticThreadTitleRenameWindowHours: 48,
++        automaticThreadTitleRenameMinAgeMinutes: 90,
++        automaticThreadTitleRenameMinCompletedTurns: 7,
 +        sidebarAutoSettleOnMerge: false,
 +      };
 +
@@ -4450,6 +4938,8 @@ index fc5ffe62e..51cf6480a 100644
 +      automaticThreadTitleRenamePolicy: "custom" as const,
 +      automaticThreadTitleRenameMaxCount: 4,
 +      automaticThreadTitleRenameWindowHours: 36,
++      automaticThreadTitleRenameMinAgeMinutes: 90,
++      automaticThreadTitleRenameMinCompletedTurns: 7,
 +    };
 +    const olderServer = {
 +      environmentId: laptopId,
@@ -4480,10 +4970,10 @@ index fc5ffe62e..51cf6480a 100644
      "resets a disabled default provider only on the originating environment (%s)",
      (targetIsSource) => {
 diff --git a/packages/client-runtime/src/state/sharedSettings.ts b/packages/client-runtime/src/state/sharedSettings.ts
-index 9845764d5..80eb67b5d 100644
+index 9845764d5..997e65917 100644
 --- a/packages/client-runtime/src/state/sharedSettings.ts
 +++ b/packages/client-runtime/src/state/sharedSettings.ts
-@@ -22,6 +22,10 @@ import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
+@@ -22,6 +22,12 @@ import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
  
  /** Server keys that hold a user preference rather than machine config. */
  const SHARED_SERVER_SETTING_KEYS = [
@@ -4491,10 +4981,12 @@ index 9845764d5..80eb67b5d 100644
 +  "automaticThreadTitleRenamePolicy",
 +  "automaticThreadTitleRenameMaxCount",
 +  "automaticThreadTitleRenameWindowHours",
++  "automaticThreadTitleRenameMinAgeMinutes",
++  "automaticThreadTitleRenameMinCompletedTurns",
    "continueThreadsAfterServerUpdate",
    "sidebarAutoSettleAfterDays",
    "sidebarAutoSettleOnMerge",
-@@ -32,6 +36,11 @@ const SHARED_SERVER_SETTING_KEYS = [
+@@ -32,6 +38,11 @@ const SHARED_SERVER_SETTING_KEYS = [
  
  export type SharedServerSettingKey = (typeof SHARED_SERVER_SETTING_KEYS)[number];
  
@@ -4506,7 +4998,7 @@ index 9845764d5..80eb67b5d 100644
  const SHARED_KEY_SET = new Set<string>(SHARED_SERVER_SETTING_KEYS);
  
  /** Split a server patch into the keys every environment should receive and the primary-only rest. */
-@@ -57,7 +66,7 @@ export function splitSharedServerPatch(patch: ServerSettingsPatch): {
+@@ -57,7 +68,7 @@ export function splitSharedServerPatch(patch: ServerSettingsPatch): {
  /** Filter unsupported preferences; direct model writes retain the server's fallback behavior. */
  export function filterSharedServerPatch(
    patch: ServerSettingsPatch,
@@ -4515,7 +5007,7 @@ index 9845764d5..80eb67b5d 100644
    settings?: ServerSettings,
    sourceSettings = settings,
    targetIsSource = false,
-@@ -79,15 +88,24 @@ export function filterSharedServerPatch(
+@@ -79,15 +90,26 @@ export function filterSharedServerPatch(
    ) {
      patch = Struct.omit(patch, ["textGenerationModelSelection"]);
    }
@@ -4528,6 +5020,8 @@ index 9845764d5..80eb67b5d 100644
 +      "automaticThreadTitleRenamePolicy",
 +      "automaticThreadTitleRenameMaxCount",
 +      "automaticThreadTitleRenameWindowHours",
++      "automaticThreadTitleRenameMinAgeMinutes",
++      "automaticThreadTitleRenameMinCompletedTurns",
 +    ]);
 +  }
 +  if (capabilities?.threadRestartContinuation !== true) {
@@ -4544,7 +5038,7 @@ index 9845764d5..80eb67b5d 100644
  ): ServerSettingsPatch {
    return filterSharedServerPatch(
      Struct.pick(settings, SHARED_SERVER_SETTING_KEYS),
-@@ -119,9 +137,7 @@ export interface SharedSettingsEnvironment {
+@@ -119,9 +141,7 @@ export interface SharedSettingsEnvironment {
    readonly label: string;
    readonly syncEligible: boolean;
    readonly settings: ServerSettings | null;
@@ -4555,7 +5049,7 @@ index 9845764d5..80eb67b5d 100644
  }
  
  /**
-@@ -136,7 +152,7 @@ export function findSharedSettingsMismatches(input: {
+@@ -136,7 +156,7 @@ export function findSharedSettingsMismatches(input: {
    readonly primaryEnvironmentId: EnvironmentId | null;
    readonly primarySettings: ServerSettings | null;
    readonly primaryCapabilities?:
@@ -4704,26 +5198,36 @@ index 4d2f80a11..2c2344ac3 100644
        the existing event lets older clients safely ignore the new field. */
    regenerateTitle: Schema.optional(Schema.Literal(true)),
 diff --git a/packages/contracts/src/settings.test.ts b/packages/contracts/src/settings.test.ts
-index 7d3cd2cea..eeb9a31fe 100644
+index 7d3cd2cea..4788ded81 100644
 --- a/packages/contracts/src/settings.test.ts
 +++ b/packages/contracts/src/settings.test.ts
-@@ -455,6 +455,38 @@ describe("ServerSettings thread settlement", () => {
+@@ -455,6 +455,48 @@ describe("ServerSettings thread settlement", () => {
    });
  });
  
 +describe("ServerSettings automatic thread titles", () => {
 +  it("defaults frequency to balanced and preserves custom values in patches", () => {
 +    expect(decodeServerSettings({}).automaticThreadTitleRenamePolicy).toBe("balanced");
++    expect(decodeServerSettings({}).automaticThreadTitleRenameMinAgeMinutes).toBe(120);
++    expect(decodeServerSettings({}).automaticThreadTitleRenameMinCompletedTurns).toBe(5);
 +    const patch = {
 +      automaticThreadTitleRenamePolicy: "custom",
 +      automaticThreadTitleRenameMaxCount: 2,
 +      automaticThreadTitleRenameWindowHours: 48,
++      automaticThreadTitleRenameMinAgeMinutes: 90,
++      automaticThreadTitleRenameMinCompletedTurns: 4,
 +    };
 +    expect(decodeServerSettingsPatch(patch)).toEqual(patch);
 +  });
 +
 +  it.each([
 +    { automaticThreadTitleRenamePolicy: "unlimited" },
++    { automaticThreadTitleRenameMinAgeMinutes: 0 },
++    { automaticThreadTitleRenameMinAgeMinutes: 43201 },
++    { automaticThreadTitleRenameMinAgeMinutes: 1.5 },
++    { automaticThreadTitleRenameMinCompletedTurns: 0 },
++    { automaticThreadTitleRenameMinCompletedTurns: 101 },
++    { automaticThreadTitleRenameMinCompletedTurns: 1.5 },
 +    { automaticThreadTitleRenameMaxCount: 0 },
 +    { automaticThreadTitleRenameMaxCount: 101 },
 +    { automaticThreadTitleRenameMaxCount: 1.5 },
@@ -4747,10 +5251,10 @@ index 7d3cd2cea..eeb9a31fe 100644
    it("defaults to no project overrides and accepts supported methods", () => {
      expect(decodeClientSettings({}).pullRequestMergeMethodOverrides).toEqual({});
 diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
-index 3491103da..13a4cc7f7 100644
+index 3491103da..e89e8dd14 100644
 --- a/packages/contracts/src/settings.ts
 +++ b/packages/contracts/src/settings.ts
-@@ -922,6 +922,24 @@ export const BackgroundActivitySettings = Schema.Struct({
+@@ -922,6 +922,40 @@ export const BackgroundActivitySettings = Schema.Struct({
  }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
  export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
  
@@ -4759,6 +5263,22 @@ index 3491103da..13a4cc7f7 100644
 +export const MAX_AUTOMATIC_TITLE_RENAME_COUNT = 100;
 +export const MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS = 1;
 +export const MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS = 720;
++export const MIN_AUTOMATIC_TITLE_RENAME_AGE_MINUTES = 1;
++export const MAX_AUTOMATIC_TITLE_RENAME_AGE_MINUTES = 43200;
++export const MIN_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS = 1;
++export const MAX_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS = 100;
++const AutomaticThreadTitleRenameMinAgeMinutes = Schema.Int.check(
++  Schema.isBetween({
++    minimum: MIN_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++    maximum: MAX_AUTOMATIC_TITLE_RENAME_AGE_MINUTES,
++  }),
++);
++const AutomaticThreadTitleRenameMinCompletedTurns = Schema.Int.check(
++  Schema.isBetween({
++    minimum: MIN_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
++    maximum: MAX_AUTOMATIC_TITLE_RENAME_COMPLETED_TURNS,
++  }),
++);
 +const AutomaticThreadTitleRenameMaxCount = Schema.Int.check(
 +  Schema.isBetween({
 +    minimum: MIN_AUTOMATIC_TITLE_RENAME_COUNT,
@@ -4775,7 +5295,7 @@ index 3491103da..13a4cc7f7 100644
  export const ServerSettings = Schema.Struct({
    // Legacy token-by-token assistant output. Deliberately a fresh key (was
    // `enableAssistantStreaming`): decoding drops the old key, so everyone,
-@@ -934,6 +952,16 @@ export const ServerSettings = Schema.Struct({
+@@ -934,6 +968,22 @@ export const ServerSettings = Schema.Struct({
    continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
      Schema.withDecodingDefault(Effect.succeed(false)),
    ),
@@ -4789,10 +5309,16 @@ index 3491103da..13a4cc7f7 100644
 +  automaticThreadTitleRenameWindowHours: AutomaticThreadTitleRenameWindowHours.pipe(
 +    Schema.withDecodingDefault(Effect.succeed(12)),
 +  ),
++  automaticThreadTitleRenameMinAgeMinutes: AutomaticThreadTitleRenameMinAgeMinutes.pipe(
++    Schema.withDecodingDefault(Effect.succeed(120)),
++  ),
++  automaticThreadTitleRenameMinCompletedTurns: AutomaticThreadTitleRenameMinCompletedTurns.pipe(
++    Schema.withDecodingDefault(Effect.succeed(5)),
++  ),
    /**
     * Whether agents may drive the in-app preview browser. Turning this off
     * withholds the MCP credential, so the `t3-code` server (and with it every
-@@ -1221,6 +1249,10 @@ export const ServerSettingsPatch = Schema.Struct({
+@@ -1221,6 +1271,16 @@ export const ServerSettingsPatch = Schema.Struct({
    enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
    enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
    continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
@@ -4800,11 +5326,17 @@ index 3491103da..13a4cc7f7 100644
 +  automaticThreadTitleRenamePolicy: Schema.optionalKey(AutomaticThreadTitleRenamePolicy),
 +  automaticThreadTitleRenameMaxCount: Schema.optionalKey(AutomaticThreadTitleRenameMaxCount),
 +  automaticThreadTitleRenameWindowHours: Schema.optionalKey(AutomaticThreadTitleRenameWindowHours),
++  automaticThreadTitleRenameMinAgeMinutes: Schema.optionalKey(
++    AutomaticThreadTitleRenameMinAgeMinutes,
++  ),
++  automaticThreadTitleRenameMinCompletedTurns: Schema.optionalKey(
++    AutomaticThreadTitleRenameMinCompletedTurns,
++  ),
    enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
    projectAgentBrowserAccessOverrides: Schema.optionalKey(
      Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
 diff --git a/packages/shared/src/serverSettings.test.ts b/packages/shared/src/serverSettings.test.ts
-index a5e428fcd..162567044 100644
+index a5e428fcd..3224d0097 100644
 --- a/packages/shared/src/serverSettings.test.ts
 +++ b/packages/shared/src/serverSettings.test.ts
 @@ -13,6 +13,7 @@ import { createModelSelection } from "./model.ts";
@@ -4815,33 +5347,43 @@ index a5e428fcd..162567044 100644
    isModelSelectionProviderEnabled,
    parsePersistedServerObservabilitySettings,
    resolveSourceControlWriterModelSelection,
-@@ -718,3 +719,21 @@ describe("serverSettings helpers", () => {
+@@ -718,3 +719,31 @@ describe("serverSettings helpers", () => {
      expect(resolved.pauseWhenOnBattery).toBe(false);
    });
  });
 +
 +describe("automatic thread title rename limits", () => {
 +  it.each([
-+    ["rare", 1, 24],
-+    ["balanced", 1, 12],
-+    ["often", 1, 6],
-+    ["custom", 2, 48],
-+  ] as const)("resolves %s while retaining custom settings", (policy, maxCount, windowHours) => {
-+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
-+      automaticThreadTitleRenamePolicy: policy,
-+      automaticThreadTitleRenameMaxCount: 2,
-+      automaticThreadTitleRenameWindowHours: 48,
-+    });
-+    expect(resolveAutomaticThreadTitleRenameLimit(settings)).toEqual({ maxCount, windowHours });
-+    expect(settings.automaticThreadTitleRenameMaxCount).toBe(2);
-+    expect(settings.automaticThreadTitleRenameWindowHours).toBe(48);
-+  });
++    ["rare", 1, 24, 360, 10],
++    ["balanced", 1, 12, 120, 5],
++    ["often", 1, 6, 30, 3],
++    ["custom", 2, 48, 90, 4],
++  ] as const)(
++    "resolves %s while retaining custom settings",
++    (policy, maxCount, windowHours, minAgeMinutes, minCompletedTurns) => {
++      const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
++        automaticThreadTitleRenamePolicy: policy,
++        automaticThreadTitleRenameMaxCount: 2,
++        automaticThreadTitleRenameWindowHours: 48,
++        automaticThreadTitleRenameMinAgeMinutes: 90,
++        automaticThreadTitleRenameMinCompletedTurns: 4,
++      });
++      expect(resolveAutomaticThreadTitleRenameLimit(settings)).toEqual({
++        maxCount,
++        windowHours,
++        minAgeMinutes,
++        minCompletedTurns,
++      });
++      expect(settings.automaticThreadTitleRenameMaxCount).toBe(2);
++      expect(settings.automaticThreadTitleRenameWindowHours).toBe(48);
++    },
++  );
 +});
 diff --git a/packages/shared/src/serverSettings.ts b/packages/shared/src/serverSettings.ts
-index f969e4412..c2e2dc6dc 100644
+index f969e4412..3924358e2 100644
 --- a/packages/shared/src/serverSettings.ts
 +++ b/packages/shared/src/serverSettings.ts
-@@ -24,6 +24,29 @@ import {
+@@ -24,6 +24,33 @@ import {
  const ServerSettingsJson = fromLenientJson(ServerSettings);
  const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
  
@@ -4851,19 +5393,23 @@ index f969e4412..c2e2dc6dc 100644
 +    | "automaticThreadTitleRenamePolicy"
 +    | "automaticThreadTitleRenameMaxCount"
 +    | "automaticThreadTitleRenameWindowHours"
++    | "automaticThreadTitleRenameMinAgeMinutes"
++    | "automaticThreadTitleRenameMinCompletedTurns"
 +  >,
-+): { maxCount: number; windowHours: number } {
++): { maxCount: number; windowHours: number; minAgeMinutes: number; minCompletedTurns: number } {
 +  switch (settings.automaticThreadTitleRenamePolicy) {
 +    case "rare":
-+      return { maxCount: 1, windowHours: 24 };
++      return { maxCount: 1, windowHours: 24, minAgeMinutes: 360, minCompletedTurns: 10 };
 +    case "balanced":
-+      return { maxCount: 1, windowHours: 12 };
++      return { maxCount: 1, windowHours: 12, minAgeMinutes: 120, minCompletedTurns: 5 };
 +    case "often":
-+      return { maxCount: 1, windowHours: 6 };
++      return { maxCount: 1, windowHours: 6, minAgeMinutes: 30, minCompletedTurns: 3 };
 +    case "custom":
 +      return {
 +        maxCount: settings.automaticThreadTitleRenameMaxCount,
 +        windowHours: settings.automaticThreadTitleRenameWindowHours,
++        minAgeMinutes: settings.automaticThreadTitleRenameMinAgeMinutes,
++        minCompletedTurns: settings.automaticThreadTitleRenameMinCompletedTurns,
 +      };
 +  }
 +}

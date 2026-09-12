@@ -16,7 +16,7 @@
 
 let
   source = builtins.fromJSON (builtins.readFile ./source.json);
-  patchRevision = 6;
+  patchRevision = 7;
   forkPatches = [
     ./patches/automatic-thread-titles.patch
     # Temporary quota recovery, maintained independently of the title feature.
