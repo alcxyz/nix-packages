@@ -18,6 +18,8 @@ if [[ ! "$base_revision" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 paths=(
+  apps/mobile/src/features/settings/SettingsRouteScreen.logic.test.ts
+  apps/mobile/src/features/settings/SettingsRouteScreen.logic.ts
   apps/mobile/src/features/settings/SettingsRouteScreen.tsx
   apps/mobile/src/features/threads/threadPresentation.ts
   apps/mobile/src/lib/projectThreadStartTurn.ts
