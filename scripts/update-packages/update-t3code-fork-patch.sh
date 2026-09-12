@@ -54,6 +54,8 @@ paths=(
   apps/server/src/provider/CodexDeveloperInstructions.ts
   apps/server/src/provider/Layers/AntigravityAdapter.ts
   apps/server/src/provider/Layers/ClaudeAdapter.ts
+  apps/server/src/provider/Layers/ClaudeCapabilitiesProbe.test.ts
+  apps/server/src/provider/Layers/ClaudeProvider.ts
   apps/server/src/provider/Layers/CodexAdapter.ts
   apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
   apps/server/src/provider/Layers/CodexSessionRuntime.ts
@@ -62,6 +64,8 @@ paths=(
   apps/server/src/provider/Layers/OpenCodeAdapter.ts
   apps/server/src/provider/Layers/ProviderService.test.ts
   apps/server/src/provider/Layers/ProviderService.ts
+  apps/server/src/provider/Layers/claudeUsageLimits.test.ts
+  apps/server/src/provider/Layers/claudeUsageLimits.ts
   apps/server/src/provider/RuntimeInstructions.test.ts
   apps/server/src/provider/RuntimeInstructions.ts
   apps/server/src/provider/Services/ProviderAdapter.ts
