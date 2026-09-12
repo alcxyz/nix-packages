@@ -1,0 +1,167 @@
+diff --git a/apps/server/src/provider/Layers/ClaudeCapabilitiesProbe.test.ts b/apps/server/src/provider/Layers/ClaudeCapabilitiesProbe.test.ts
+index 232b8cc02..1369744ee 100644
+--- a/apps/server/src/provider/Layers/ClaudeCapabilitiesProbe.test.ts
++++ b/apps/server/src/provider/Layers/ClaudeCapabilitiesProbe.test.ts
+@@ -9,6 +9,7 @@ import * as NodeFSP from "node:fs/promises";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import { assert, it } from "@effect/vitest";
+ import * as Effect from "effect/Effect";
++import * as Logger from "effect/Logger";
+ import * as FileSystem from "effect/FileSystem";
+ import * as Path from "effect/Path";
+ import * as Schema from "effect/Schema";
+@@ -223,3 +224,31 @@ it.effect("preserves initialized capabilities when optional usage times out", ()
+     assert.equal(abortSignal?.aborted, true);
+   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+ );
++
++it.effect("records safe diagnostics for failed and empty quota responses", () =>
++  Effect.gen(function* () {
++    for (const reason of ["request_failed", "empty_response"] as const) {
++      const messages: unknown[] = [];
++      const logger = Logger.make<unknown, void>(({ message }) => {
++        messages.push(message);
++      });
++      const query = vi.spyOn(ClaudeSdk, "query").mockImplementation(
++        () =>
++          ({
++            initializationResult: async () => ({ account: {}, commands: [] }),
++            usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () =>
++              reason === "request_failed"
++                ? Promise.reject(new Error("private upstream response must not be logged"))
++                : Promise.resolve({ rate_limits_available: true, rate_limits: null }),
++          }) as unknown as ReturnType<typeof ClaudeSdk.query>,
++      );
++      yield* probeClaudeCapabilities(decodeClaudeSettings({ binaryPath: "claude" })).pipe(
++        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
++        Effect.ensuring(Effect.sync(() => query.mockRestore())),
++      );
++      const recorded = JSON.stringify(messages);
++      assert.ok(recorded.includes(reason));
++      assert.ok(!recorded.includes("private upstream response"));
++    }
++  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
++);
+diff --git a/apps/server/src/provider/Layers/ClaudeProvider.ts b/apps/server/src/provider/Layers/ClaudeProvider.ts
+index 62d7444c6..30a10768e 100644
+--- a/apps/server/src/provider/Layers/ClaudeProvider.ts
++++ b/apps/server/src/provider/Layers/ClaudeProvider.ts
+@@ -366,6 +366,18 @@ const probeClaudeCapabilities = (
+         const usageResult = yield* Effect.tryPromise(() =>
+           q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+         ).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result);
++        if (Result.isFailure(usageResult)) {
++          yield* Effect.logWarning("Claude usage quota probe failed.", {
++            reason: usageResult.failure._tag === "TimeoutError" ? "timeout" : "request_failed",
++          });
++        } else if (usageResult.success.rate_limits_available && !usageResult.success.rate_limits) {
++          yield* Effect.logWarning(
++            "Claude usage quota probe returned no limits for a supported account.",
++            {
++              reason: "empty_response",
++            },
++          );
++        }
+         const usage = Result.isSuccess(usageResult)
+           ? {
+               rate_limits_available: usageResult.success.rate_limits_available,
+diff --git a/apps/server/src/provider/Layers/claudeUsageLimits.test.ts b/apps/server/src/provider/Layers/claudeUsageLimits.test.ts
+index a3d326a7d..a59dc5adc 100644
+--- a/apps/server/src/provider/Layers/claudeUsageLimits.test.ts
++++ b/apps/server/src/provider/Layers/claudeUsageLimits.test.ts
+@@ -1,6 +1,14 @@
+ import { describe, expect, it } from "vite-plus/test";
++import { it as effectIt } from "@effect/vitest";
++import * as Effect from "effect/Effect";
++import * as Ref from "effect/Ref";
++import { resolveUsageLimitsAfterProbe } from "../providerUsageLimits.ts";
+ 
+-import { claudeRateLimitEventToUpdate, claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
++import {
++  claudeRateLimitEventToUpdate,
++  claudeUsageResponseToLimits,
++  recordClaudeUsageResponse,
++} from "./claudeUsageLimits.ts";
+ 
+ const checkedAt = "2026-07-18T10:00:00.000Z";
+ const noNames = { overageIncluded: undefined } as const;
+@@ -95,6 +103,23 @@ describe("claudeUsageResponseToLimits", () => {
+     ).toEqual({ checkedAt, windows: [], unavailable: { reason: "unsupported" } });
+   });
+ 
++  it("preserves the last quota when a supported account's fetch returns null", () => {
++    const published = claudeUsageResponseToLimits({
++      checkedAt,
++      response: {
++        rate_limits_available: true,
++        rate_limits: { five_hour: { utilization: 54, resets_at: null } },
++      },
++    }).limits;
++    const probed = claudeUsageResponseToLimits({
++      checkedAt: "2026-07-18T10:05:00.000Z",
++      response: { rate_limits_available: true, rate_limits: null },
++    }).limits;
++    expect(probed.unavailable?.reason).toBe("probeFailed");
++    expect(resolveUsageLimitsAfterProbe({ published, probed })).toBe(published);
++    expect(resolveUsageLimitsAfterProbe({ published: undefined, probed })).toBe(probed);
++  });
++
+   it("skips a window the endpoint reports without a utilization", () => {
+     expect(
+       claudeUsageResponseToLimits({
+@@ -178,3 +203,20 @@ describe("claudeRateLimitEventToUpdate", () => {
+     ).toBeUndefined();
+   });
+ });
++
++effectIt.effect("retains runtime bucket names through a failed quota fetch", () =>
++  Effect.gen(function* () {
++    const names = { overageIncluded: "Fable" };
++    const namesRef = yield* Ref.make<{ overageIncluded: string | undefined }>(names);
++    yield* recordClaudeUsageResponse(namesRef, {
++      checkedAt,
++      response: { rate_limits_available: true, rate_limits: null },
++    });
++    expect(yield* Ref.get(namesRef)).toEqual(names);
++    yield* recordClaudeUsageResponse(namesRef, {
++      checkedAt,
++      response: { rate_limits_available: false, rate_limits: null },
++    });
++    expect(yield* Ref.get(namesRef)).toEqual(noNames);
++  }),
++);
+diff --git a/apps/server/src/provider/Layers/claudeUsageLimits.ts b/apps/server/src/provider/Layers/claudeUsageLimits.ts
+index b67645102..9a2687ee8 100644
+--- a/apps/server/src/provider/Layers/claudeUsageLimits.ts
++++ b/apps/server/src/provider/Layers/claudeUsageLimits.ts
+@@ -159,12 +159,20 @@ export function claudeUsageResponseToLimits(input: {
+   readonly checkedAt: string;
+ }): { readonly limits: ServerProviderUsageLimits; readonly names: ClaudeScopedLimitNames } {
+   const { response, checkedAt } = input;
+-  if (!response.rate_limits_available || !response.rate_limits) {
++  if (!response.rate_limits_available) {
+     return {
+       limits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
+       names: { overageIncluded: undefined },
+     };
+   }
++  // The CLI also returns null after a failed fetch, including HTTP 429.
++  // Support and successful retrieval are separate signals.
++  if (!response.rate_limits) {
++    return {
++      limits: makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" }),
++      names: { overageIncluded: undefined },
++    };
++  }
+   const windows: ServerProviderUsageWindow[] = [];
+   for (const id of Object.keys(WINDOWS)) {
+     const window = response.rate_limits[id as "five_hour" | "seven_day"];
+@@ -195,5 +203,7 @@ export const recordClaudeUsageResponse = (
+   input: Parameters<typeof claudeUsageResponseToLimits>[0],
+ ): Effect.Effect<ServerProviderUsageLimits> => {
+   const { limits, names } = claudeUsageResponseToLimits(input);
+-  return Ref.set(namesRef, names).pipe(Effect.as(limits));
++  return limits.unavailable?.reason === "probeFailed"
++    ? Effect.succeed(limits)
++    : Ref.set(namesRef, names).pipe(Effect.as(limits));
+ };

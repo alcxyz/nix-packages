@@ -16,8 +16,17 @@
 
 let
   source = builtins.fromJSON (builtins.readFile ./source.json);
-  patchRevision = 5;
-  patchHash = builtins.hashFile "sha256" ./patches/automatic-thread-titles.patch;
+  patchRevision = 6;
+  forkPatches = [
+    ./patches/automatic-thread-titles.patch
+    # Temporary quota recovery, maintained independently of the title feature.
+    # Core fix: https://github.com/pingdotgg/t3code/pull/10597
+    # Local diagnostics and runtime bucket preservation accompany that fix.
+    ./patches/claude-quota-recovery.patch
+  ];
+  patchHash = builtins.hashString "sha256" (
+    lib.concatMapStrings (patch: builtins.hashFile "sha256" patch) forkPatches
+  );
   patchId = builtins.substring 0 10 patchHash;
   version =
     source.version + lib.optionalString withPatch "-fork.${toString patchRevision}+p${patchId}";
@@ -32,7 +41,7 @@ let
       applyPatches {
         name = "t3code-${version}-source";
         src = upstreamSrc;
-        patches = [ ./patches/automatic-thread-titles.patch ];
+        patches = forkPatches;
       }
     else
       upstreamSrc;
