@@ -19,6 +19,7 @@ fi
 
 paths=(
   apps/mobile/src/features/settings/SettingsRouteScreen.tsx
+  apps/mobile/src/features/threads/threadPresentation.ts
   apps/mobile/src/lib/projectThreadStartTurn.ts
   apps/server/src/environment/ServerEnvironment.test.ts
   apps/server/src/environment/ServerEnvironment.ts
@@ -29,6 +30,8 @@ paths=(
   apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
   apps/server/src/mcp/toolkits/threadTitle/handlers.ts
   apps/server/src/mcp/toolkits/threadTitle/tools.ts
+  apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts
+  apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts
   apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
   apps/server/src/orchestration/Layers/ProjectionPipeline.ts
   apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
@@ -37,13 +40,16 @@ paths=(
   apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
   apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
   apps/server/src/orchestration/Services/ProjectionSnapshotQuery.ts
+  apps/server/src/orchestration/ThreadTitlePolicy.ts
   apps/server/src/orchestration/decider.titleOwnership.test.ts
   apps/server/src/orchestration/decider.ts
   apps/server/src/orchestration/projector.ts
+  apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts
   apps/server/src/persistence/Layers/ProjectionThreads.ts
   apps/server/src/persistence/Migrations.ts
   apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
   apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
+  apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts
   apps/server/src/persistence/Services/ProjectionThreads.ts
   apps/server/src/provider/CodexDeveloperInstructions.ts
   apps/server/src/provider/Layers/AntigravityAdapter.ts
@@ -59,11 +65,14 @@ paths=(
   apps/server/src/provider/RuntimeInstructions.test.ts
   apps/server/src/provider/RuntimeInstructions.ts
   apps/server/src/provider/Services/ProviderAdapter.ts
+  apps/server/src/server.ts
   apps/server/src/serverRuntimeStartup.ts
   apps/server/src/serverSettings.test.ts
   apps/server/src/ws.ts
   apps/web/src/components/ChatView.tsx
   apps/web/src/components/LegacySidebar.tsx
+  apps/web/src/components/Sidebar.logic.test.ts
+  apps/web/src/components/Sidebar.logic.ts
   apps/web/src/components/Sidebar.tsx
   apps/web/src/components/chat/ChatHeader.tsx
   apps/web/src/components/settings/SettingsPanels.tsx
@@ -79,6 +88,8 @@ paths=(
   packages/contracts/src/orchestration.ts
   packages/contracts/src/settings.test.ts
   packages/contracts/src/settings.ts
+  packages/shared/src/serverSettings.test.ts
+  packages/shared/src/serverSettings.ts
 )
 
 if ! checkout_root=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null); then

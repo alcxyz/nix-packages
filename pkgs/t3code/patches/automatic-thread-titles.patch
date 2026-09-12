@@ -1,8 +1,24 @@
 diff --git a/apps/mobile/src/features/settings/SettingsRouteScreen.tsx b/apps/mobile/src/features/settings/SettingsRouteScreen.tsx
-index 77036c212..899117ee8 100644
+index 77036c212..34f8f0655 100644
 --- a/apps/mobile/src/features/settings/SettingsRouteScreen.tsx
 +++ b/apps/mobile/src/features/settings/SettingsRouteScreen.tsx
-@@ -579,7 +579,7 @@ function GeneralSettingsSection() {
+@@ -39,10 +39,15 @@ import { useAtomCommand } from "../../state/use-atom-command";
+ import { useEnvironments } from "../../state/environments";
+ import {
+   DEFAULT_SERVER_SETTINGS,
++  MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++  MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
+   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
++  MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++  MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
+   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
+   type ServerSettingsPatch,
+ } from "@t3tools/contracts";
++import { resolveAutomaticThreadTitleRenameLimit } from "@t3tools/shared/serverSettings";
+ import {
+   filterSharedServerPatch,
+   findSharedSettingsMismatches,
+@@ -579,21 +584,27 @@ function GeneralSettingsSection() {
    return (
      <SettingsSection title="General">
        <SettingsRow icon="folder" label="Project Grouping" target="SettingsProjectGrouping" />
@@ -11,8 +27,15 @@ index 77036c212..899117ee8 100644
        <SettingsRow icon="chart.bar.xaxis" label="Usage" target="SettingsUsage" />
      </SettingsSection>
    );
-@@ -588,12 +588,12 @@ function GeneralSettingsSection() {
+ }
+ 
  const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
++const AUTOMATIC_TITLE_POLICY_OPTIONS = [
++  { value: "rare", label: "Rare", detail: "Once / 24 hours" },
++  { value: "balanced", label: "Balanced", detail: "Once / 12 hours" },
++  { value: "often", label: "Often", detail: "Once / 6 hours" },
++  { value: "custom", label: "Custom", detail: "Set limit" },
++] as const;
  
  /**
 - * Auto-settlement is a user preference that every server has to hold. Mobile
@@ -29,7 +52,7 @@ index 77036c212..899117ee8 100644
    const { environments } = useEnvironments();
    const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
      label: "server settings update",
-@@ -603,6 +603,11 @@ function AutoSettleSettingsRows() {
+@@ -603,8 +614,15 @@ function AutoSettleSettingsRows() {
    const syncTargets = environments.filter(supportsSharedSettingsSync);
    const reference = syncTargets[0] ?? null;
    const referenceSettings = reference?.serverConfig?.settings ?? null;
@@ -40,30 +63,223 @@ index 77036c212..899117ee8 100644
 +  const titleReferenceSettings = titleTargets[0]?.serverConfig?.settings ?? null;
  
    const [daysDraft, setDaysDraft] = useState<string | null>(null);
++  const [titleCountDraft, setTitleCountDraft] = useState<string | null>(null);
++  const [titleWindowDraft, setTitleWindowDraft] = useState<string | null>(null);
  
-@@ -648,6 +653,22 @@ function AutoSettleSettingsRows() {
+   if (reference === null || referenceSettings === null) {
+     return null;
+@@ -616,6 +634,12 @@ function AutoSettleSettingsRows() {
+     }
+   };
+ 
++  const writeTitleSettingsToAll = (patch: ServerSettingsPatch) => {
++    for (const environment of titleTargets) {
++      void updateSettings({ environmentId: environment.environmentId, input: { patch } });
++    }
++  };
++
+   const mismatches = findSharedSettingsMismatches({
+     primaryEnvironmentId: reference.environmentId,
+     primarySettings: referenceSettings,
+@@ -630,6 +654,29 @@ function AutoSettleSettingsRows() {
+   });
+ 
+   const afterDays = referenceSettings.sidebarAutoSettleAfterDays;
++  const titleRenameLimit = titleReferenceSettings
++    ? resolveAutomaticThreadTitleRenameLimit(titleReferenceSettings)
++    : null;
++  const commitTitleLimit = (
++    draftValue: string | null,
++    currentValue: number,
++    minimum: number,
++    maximum: number,
++    patchKey: "automaticThreadTitleRenameMaxCount" | "automaticThreadTitleRenameWindowHours",
++    clearDraft: () => void,
++  ) => {
++    const draft = (draftValue ?? "").trim();
++    clearDraft();
++    const parsed = /^\d+$/.test(draft) ? Number(draft) : Number.NaN;
++    if (
++      Number.isInteger(parsed) &&
++      parsed >= minimum &&
++      parsed <= maximum &&
++      parsed !== currentValue
++    ) {
++      writeTitleSettingsToAll({ [patchKey]: parsed });
++    }
++  };
+   const commitDays = () => {
+     const draft = (daysDraft ?? "").trim();
+     setDaysDraft(null);
+@@ -648,6 +695,130 @@ function AutoSettleSettingsRows() {
  
    return (
      <>
 +      {titleReferenceSettings ? (
-+        <SettingsSwitchRow
-+          icon="textformat.size"
-+          label="Keep thread titles up to date"
-+          subtitle="Agents update titles only for meaningful objective changes, never on a schedule. Manually renamed titles stay unchanged."
-+          value={titleReferenceSettings.automaticThreadTitles}
-+          onValueChange={(value) => {
-+            for (const environment of titleTargets) {
-+              void updateSettings({
-+                environmentId: environment.environmentId,
-+                input: { patch: { automaticThreadTitles: value } },
-+              });
-+            }
-+          }}
-+        />
++        <>
++          <SettingsSwitchRow
++            icon="textformat.size"
++            label="Keep thread titles up to date"
++            subtitle="Agents update titles for meaningful objective changes. Snoozed, archived, and settled threads are skipped; manual titles stay protected."
++            value={titleReferenceSettings.automaticThreadTitles}
++            onValueChange={(value) => writeTitleSettingsToAll({ automaticThreadTitles: value })}
++          />
++          {titleReferenceSettings.automaticThreadTitles && titleRenameLimit ? (
++            <View className="gap-3 border-t border-border-subtle p-4">
++              <View className="gap-1">
++                <Text className="text-lg text-foreground">Automatic title update frequency</Text>
++                <Text className="text-sm leading-normal text-foreground-muted">
++                  At most{" "}
++                  {titleRenameLimit.maxCount === 1
++                    ? "one update"
++                    : `${titleRenameLimit.maxCount} updates`}{" "}
++                  in any rolling {titleRenameLimit.windowHours}-hour window. This is a maximum, not
++                  a schedule.
++                </Text>
++              </View>
++              <View className="flex-row flex-wrap gap-2">
++                {AUTOMATIC_TITLE_POLICY_OPTIONS.map((option) => {
++                  const selected =
++                    titleReferenceSettings.automaticThreadTitleRenamePolicy === option.value;
++                  return (
++                    <Pressable
++                      key={option.value}
++                      accessibilityRole="radio"
++                      accessibilityState={{ checked: selected }}
++                      onPress={() =>
++                        writeTitleSettingsToAll({
++                          automaticThreadTitleRenamePolicy: option.value,
++                        })
++                      }
++                      className={
++                        selected
++                          ? "min-w-[46%] flex-1 rounded-xl border-2 border-primary bg-subtle px-3 py-2"
++                          : "min-w-[46%] flex-1 rounded-xl border border-border bg-card px-3 py-2"
++                      }
++                    >
++                      <Text className="text-base text-foreground">{option.label}</Text>
++                      <Text className="text-sm text-foreground-muted">{option.detail}</Text>
++                    </Pressable>
++                  );
++                })}
++              </View>
++            </View>
++          ) : null}
++          {titleReferenceSettings.automaticThreadTitles &&
++          titleReferenceSettings.automaticThreadTitleRenamePolicy === "custom" ? (
++            <View className="gap-3 border-t border-border-subtle p-4">
++              <Text className="text-lg text-foreground">Custom title update limit</Text>
++              <View className="flex-row items-center gap-3">
++                <TextInput
++                  className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
++                  keyboardType="number-pad"
++                  returnKeyType="done"
++                  value={
++                    titleCountDraft ??
++                    String(titleReferenceSettings.automaticThreadTitleRenameMaxCount)
++                  }
++                  onChangeText={setTitleCountDraft}
++                  onBlur={() =>
++                    commitTitleLimit(
++                      titleCountDraft,
++                      titleReferenceSettings.automaticThreadTitleRenameMaxCount,
++                      MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++                      MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++                      "automaticThreadTitleRenameMaxCount",
++                      () => setTitleCountDraft(null),
++                    )
++                  }
++                  onSubmitEditing={() =>
++                    commitTitleLimit(
++                      titleCountDraft,
++                      titleReferenceSettings.automaticThreadTitleRenameMaxCount,
++                      MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++                      MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++                      "automaticThreadTitleRenameMaxCount",
++                      () => setTitleCountDraft(null),
++                    )
++                  }
++                  accessibilityLabel="Automatic title update count"
++                />
++                <Text className="text-base text-foreground-muted">updates per</Text>
++                <TextInput
++                  className="min-h-10 w-20 rounded-xl px-3 py-2 text-center text-base"
++                  keyboardType="number-pad"
++                  returnKeyType="done"
++                  value={
++                    titleWindowDraft ??
++                    String(titleReferenceSettings.automaticThreadTitleRenameWindowHours)
++                  }
++                  onChangeText={setTitleWindowDraft}
++                  onBlur={() =>
++                    commitTitleLimit(
++                      titleWindowDraft,
++                      titleReferenceSettings.automaticThreadTitleRenameWindowHours,
++                      MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                      MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                      "automaticThreadTitleRenameWindowHours",
++                      () => setTitleWindowDraft(null),
++                    )
++                  }
++                  onSubmitEditing={() =>
++                    commitTitleLimit(
++                      titleWindowDraft,
++                      titleReferenceSettings.automaticThreadTitleRenameWindowHours,
++                      MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                      MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++                      "automaticThreadTitleRenameWindowHours",
++                      () => setTitleWindowDraft(null),
++                    )
++                  }
++                  accessibilityLabel="Automatic title update window in hours"
++                />
++                <Text className="text-base text-foreground-muted">hours</Text>
++              </View>
++            </View>
++          ) : null}
++        </>
 +      ) : null}
        <SettingsSwitchRow
          icon="arrow.triangle.branch"
          label="Auto-settle merged threads"
+diff --git a/apps/mobile/src/features/threads/threadPresentation.ts b/apps/mobile/src/features/threads/threadPresentation.ts
+index dcff52134..b423680d5 100644
+--- a/apps/mobile/src/features/threads/threadPresentation.ts
++++ b/apps/mobile/src/features/threads/threadPresentation.ts
+@@ -8,7 +8,8 @@ export type ThreadStatusKind =
+   | "working"
+   | "connecting"
+   | "error"
+-  | "plan-ready";
++  | "plan-ready"
++  | "renamed";
+ 
+ export interface ThreadStatusPresentation extends StatusTone {
+   readonly kind: ThreadStatusKind;
+@@ -114,5 +115,23 @@ export function resolveThreadStatus(
+     };
+   }
+ 
++  const renamedAt = Date.parse(thread.titleAutoRenamedAt ?? "");
++  const latestUserMessageAt = Date.parse(thread.latestUserMessageAt ?? "");
++  if (
++    Number.isFinite(renamedAt) &&
++    (thread.latestUserMessageAt === null ||
++      (Number.isFinite(latestUserMessageAt) && renamedAt > latestUserMessageAt))
++  ) {
++    return {
++      kind: "renamed",
++      label: "Renamed",
++      pillClassName: "bg-warning",
++      textClassName: "text-warning-foreground",
++      iconColor: "#ff9f0a",
++      iconBackground: "rgba(255,159,10,0.22)",
++      pulse: false,
++    };
++  }
++
+   return null;
+ }
 diff --git a/apps/mobile/src/lib/projectThreadStartTurn.ts b/apps/mobile/src/lib/projectThreadStartTurn.ts
 index 37190780c..69471c08b 100644
 --- a/apps/mobile/src/lib/projectThreadStartTurn.ts
@@ -273,10 +489,10 @@ index f19a4f4e8..74d0c3fa4 100644
  
 diff --git a/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts b/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
 new file mode 100644
-index 000000000..0d620c6f0
+index 000000000..c0cba5b9b
 --- /dev/null
 +++ b/apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,249 @@
 +import { expect, it } from "@effect/vitest";
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import {
@@ -294,6 +510,7 @@ index 000000000..0d620c6f0
 +import { McpSchema, McpServer } from "effect/unstable/ai";
 +
 +import { OrchestrationCommandInvariantError } from "../../../orchestration/Errors.ts";
++import { AutomaticThreadTitleRateLimit } from "../../../orchestration/AutomaticThreadTitleRateLimit.ts";
 +import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 +import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 +import * as ServerSettings from "../../../serverSettings.ts";
@@ -330,6 +547,7 @@ index 000000000..0d620c6f0
 +    source?: "automatic" | "user" | "legacy";
 +    missing?: boolean;
 +    rejectDispatch?: boolean;
++    rateLimited?: boolean;
 +  } = {},
 +) {
 +  let thread = decodeThreadShell({
@@ -401,12 +619,20 @@ index 000000000..0d620c6f0
 +        return { sequence: commands.length };
 +      }),
 +  });
++  const rateLimit = AutomaticThreadTitleRateLimit.of({
++    isAvailable: () => Effect.succeed(options.rateLimited !== true),
++    withPermit: (_threadId, _limit, effect) =>
++      options.rateLimited === true
++        ? Effect.succeed(Option.none())
++        : Effect.map(effect, Option.some),
++  });
 +  const layer = ThreadTitleToolkitRegistrationLive.pipe(
 +    Layer.provideMerge(McpServer.McpServer.layer),
 +    Layer.provideMerge(
 +      ServerSettings.layerTest({ automaticThreadTitles: options.enabled ?? true }),
 +    ),
 +    Layer.provide(Layer.succeed(ProjectionSnapshotQuery, queries)),
++    Layer.provide(Layer.succeed(AutomaticThreadTitleRateLimit, rateLimit)),
 +    Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
 +    Layer.provide(NodeServices.layer),
 +  );
@@ -495,6 +721,16 @@ index 000000000..0d620c6f0
 +  }).pipe(Effect.provide(harness.layer));
 +});
 +
++it.effect("reports an exhausted quota without dispatching", () => {
++  const harness = makeHarness({ rateLimited: true });
++  return Effect.gen(function* () {
++    expect((yield* call({ title: "New title" })).structuredContent).toEqual({
++      status: "rate_limited",
++    });
++    expect(harness.commands).toHaveLength(0);
++  }).pipe(Effect.provide(harness.layer));
++});
++
 +it.effect.each(["", "  ", "first\nsecond", "x".repeat(121)])(
 +  "rejects invalid titles %#",
 +  (title) => {
@@ -508,17 +744,21 @@ index 000000000..0d620c6f0
 +);
 diff --git a/apps/server/src/mcp/toolkits/threadTitle/handlers.ts b/apps/server/src/mcp/toolkits/threadTitle/handlers.ts
 new file mode 100644
-index 000000000..622b7c637
+index 000000000..3dd083b95
 --- /dev/null
 +++ b/apps/server/src/mcp/toolkits/threadTitle/handlers.ts
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,85 @@
 +import { CommandId } from "@t3tools/contracts";
++import { resolveAutomaticThreadTitleRenameLimit } from "@t3tools/shared/serverSettings";
 +import * as Crypto from "effect/Crypto";
++import * as DateTime from "effect/DateTime";
 +import * as Effect from "effect/Effect";
 +import * as Option from "effect/Option";
 +
++import { AutomaticThreadTitleRateLimit } from "../../../orchestration/AutomaticThreadTitleRateLimit.ts";
 +import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 +import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
++import { allowsAutomaticThreadTitleUpdate } from "../../../orchestration/ThreadTitlePolicy.ts";
 +import { ServerSettingsService } from "../../../serverSettings.ts";
 +import { McpInvocationContext } from "../../McpInvocationContext.ts";
 +import {
@@ -535,6 +775,7 @@ index 000000000..622b7c637
 +  | McpInvocationContext
 +  | ServerSettingsService
 +  | ProjectionSnapshotQuery
++  | AutomaticThreadTitleRateLimit
 +  | OrchestrationEngineService
 +  | Crypto.Crypto
 +> {
@@ -551,7 +792,10 @@ index 000000000..622b7c637
 +  const result = yield* queries
 +    .getThreadShellById(scope.threadId)
 +    .pipe(Effect.mapError(() => "Could not read the current thread."));
-+  if (Option.isNone(result) || result.value.archivedAt !== null) {
++  if (
++    Option.isNone(result) ||
++    !allowsAutomaticThreadTitleUpdate(result.value, DateTime.formatIso(yield* DateTime.now))
++  ) {
 +    return { status: "unavailable" };
 +  }
 +  const thread = result.value;
@@ -560,24 +804,30 @@ index 000000000..622b7c637
 +
 +  const engine = yield* OrchestrationEngineService;
 +  const crypto = yield* Crypto.Crypto;
-+  const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-+  return yield* engine
-+    .dispatch({
-+      type: "thread.meta.update",
-+      commandId: CommandId.make(`agent-thread-title:${uuid}`),
-+      threadId: scope.threadId,
-+      title: input.title,
-+      titleSource: "automatic",
-+    })
-+    .pipe(
-+      Effect.as({ status: "updated", title: input.title } as const),
-+      // The decider checks ownership again inside the serialized command queue.
-+      // A user rename that overtakes our read must win.
-+      Effect.catchTag("OrchestrationCommandInvariantError", () =>
-+        Effect.succeed({ status: "unavailable" } as const),
-+      ),
-+      Effect.mapError(() => "Could not update the thread title."),
-+    );
++  const rateLimit = yield* AutomaticThreadTitleRateLimit;
++  const update = Effect.gen(function* () {
++    const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
++    return yield* engine
++      .dispatch({
++        type: "thread.meta.update",
++        commandId: CommandId.make(`agent-thread-title:${uuid}`),
++        threadId: scope.threadId,
++        title: input.title,
++        titleSource: "automatic",
++      })
++      .pipe(
++        Effect.as({ status: "updated", title: input.title } as const),
++        // The decider checks ownership again inside the serialized command queue.
++        // A user rename that overtakes our read must win.
++        Effect.catchTag("OrchestrationCommandInvariantError", () =>
++          Effect.succeed({ status: "unavailable" } as const),
++        ),
++      );
++  });
++  const outcome = yield* rateLimit
++    .withPermit(scope.threadId, resolveAutomaticThreadTitleRenameLimit(settings), update)
++    .pipe(Effect.mapError(() => "Could not update the thread title."));
++  return Option.getOrElse(outcome, () => ({ status: "rate_limited" as const }));
 +});
 +
 +export const ThreadTitleToolkitHandlersLive = ThreadTitleToolkit.toLayer({
@@ -585,10 +835,10 @@ index 000000000..622b7c637
 +});
 diff --git a/apps/server/src/mcp/toolkits/threadTitle/tools.ts b/apps/server/src/mcp/toolkits/threadTitle/tools.ts
 new file mode 100644
-index 000000000..ccd663cf8
+index 000000000..efeef2da1
 --- /dev/null
 +++ b/apps/server/src/mcp/toolkits/threadTitle/tools.ts
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,54 @@
 +import { TrimmedNonEmptyString } from "@t3tools/contracts";
 +import * as Schema from "effect/Schema";
 +import * as Crypto from "effect/Crypto";
@@ -596,6 +846,7 @@ index 000000000..ccd663cf8
 +
 +import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 +import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
++import { AutomaticThreadTitleRateLimit } from "../../../orchestration/AutomaticThreadTitleRateLimit.ts";
 +import { ServerSettingsService } from "../../../serverSettings.ts";
 +import { McpInvocationContext } from "../../McpInvocationContext.ts";
 +
@@ -609,14 +860,21 @@ index 000000000..ccd663cf8
 +});
 +
 +export const RenameCurrentThreadResult = Schema.Struct({
-+  status: Schema.Literals(["updated", "unchanged", "disabled", "protected", "unavailable"]),
++  status: Schema.Literals([
++    "updated",
++    "unchanged",
++    "disabled",
++    "protected",
++    "unavailable",
++    "rate_limited",
++  ]),
 +  title: Schema.optional(Schema.String),
 +});
 +
 +export const ThreadTitleToolkit = Toolkit.make(
 +  Tool.make("rename_current_thread", {
 +    description:
-+      "Rename only the current thread using the title you supply. Use only when T3's automatic-title instructions are enabled and the existing title no longer describes the main objective. Manually chosen titles are protected. If disabled, protected, or unavailable, do not retry during this turn.",
++      "Rename only the current thread using the title you supply. Use only when T3's automatic-title instructions are enabled and the existing title no longer describes the main objective. Manually chosen titles are protected. If disabled, protected, unavailable, or rate limited, do not retry during this turn.",
 +    parameters: RenameCurrentThreadInput,
 +    success: RenameCurrentThreadResult,
 +    failure: Schema.String,
@@ -624,6 +882,7 @@ index 000000000..ccd663cf8
 +      McpInvocationContext,
 +      ServerSettingsService,
 +      ProjectionSnapshotQuery,
++      AutomaticThreadTitleRateLimit,
 +      OrchestrationEngineService,
 +      Crypto.Crypto,
 +    ],
@@ -634,8 +893,359 @@ index 000000000..ccd663cf8
 +    .annotate(Tool.Idempotent, true)
 +    .annotate(Tool.OpenWorld, false),
 +);
+diff --git a/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts
+new file mode 100644
+index 000000000..0b6fdf7f3
+--- /dev/null
++++ b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts
+@@ -0,0 +1,249 @@
++import { expect, it } from "@effect/vitest";
++import { ThreadId } from "@t3tools/contracts";
++import * as DateTime from "effect/DateTime";
++import * as Deferred from "effect/Deferred";
++import * as Effect from "effect/Effect";
++import * as Fiber from "effect/Fiber";
++import * as Layer from "effect/Layer";
++import * as Option from "effect/Option";
++import * as Ref from "effect/Ref";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as TestClock from "effect/testing/TestClock";
++
++import { AutomaticThreadTitleRenameQueryLive } from "../persistence/Layers/AutomaticThreadTitleRenameQuery.ts";
++import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
++import { AutomaticThreadTitleRenameQuery } from "../persistence/Services/AutomaticThreadTitleRenameQuery.ts";
++import {
++  AutomaticThreadTitleRateLimit,
++  AutomaticThreadTitleRateLimitLive,
++} from "./AutomaticThreadTitleRateLimit.ts";
++
++const TestLayer = AutomaticThreadTitleRateLimitLive.pipe(
++  Layer.provideMerge(AutomaticThreadTitleRenameQueryLive),
++  Layer.provideMerge(SqlitePersistenceMemory),
++  Layer.provideMerge(TestClock.layer()),
++);
++
++const tests = it.layer(TestLayer);
++
++const insertEvent = Effect.fn("insertAutomaticTitleEvent")(function* (input: {
++  readonly eventId: string;
++  readonly threadId: ThreadId;
++  readonly occurredAt: string;
++  readonly commandId: string | null;
++  readonly payload: unknown;
++}) {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`
++    INSERT INTO orchestration_events (
++      event_id,
++      aggregate_kind,
++      stream_id,
++      stream_version,
++      event_type,
++      occurred_at,
++      command_id,
++      causation_event_id,
++      correlation_id,
++      actor_kind,
++      payload_json,
++      metadata_json
++    ) VALUES (
++      ${input.eventId},
++      'thread',
++      ${input.threadId},
++      COALESCE((
++        SELECT MAX(stream_version) + 1
++        FROM orchestration_events
++        WHERE aggregate_kind = 'thread' AND stream_id = ${input.threadId}
++      ), 0),
++      'thread.meta-updated',
++      ${input.occurredAt},
++      ${input.commandId},
++      NULL,
++      NULL,
++      'server',
++      ${JSON.stringify(input.payload)},
++      '{}'
++    )
++  `;
++});
++
++tests("AutomaticThreadTitleRateLimit", (it) => {
++  it.effect("counts only durable successful agent renames inside the rolling window", () =>
++    Effect.gen(function* () {
++      const now = "2026-09-12T12:00:00.000Z";
++      yield* TestClock.setTime(Date.parse(now));
++      const threadId = ThreadId.make("rate-count-thread");
++      const automaticPayload = {
++        threadId,
++        title: "Changed title",
++        titleSource: "automatic",
++        updatedAt: now,
++      };
++
++      yield* Effect.forEach(
++        [
++          {
++            eventId: "successful-agent-rename",
++            threadId,
++            occurredAt: "2026-09-12T11:00:00.000Z",
++            commandId: "agent-thread-title:successful",
++            payload: automaticPayload,
++          },
++          {
++            eventId: "unchanged-agent-request",
++            threadId,
++            occurredAt: "2026-09-12T11:10:00.000Z",
++            commandId: "agent-thread-title:unchanged",
++            payload: { threadId, updatedAt: now },
++          },
++          {
++            eventId: "manual-rename",
++            threadId,
++            occurredAt: "2026-09-12T11:20:00.000Z",
++            commandId: "client:manual",
++            payload: { ...automaticPayload, titleSource: "user" },
++          },
++          {
++            eventId: "initial-automatic-title",
++            threadId,
++            occurredAt: "2026-09-12T11:30:00.000Z",
++            commandId: "server:thread-title-rename:initial",
++            payload: automaticPayload,
++          },
++          {
++            eventId: "rename-at-window-boundary",
++            threadId,
++            occurredAt: "2026-09-12T00:00:00.000Z",
++            commandId: "agent-thread-title:expired",
++            payload: automaticPayload,
++          },
++          {
++            eventId: "other-thread-rename",
++            threadId: ThreadId.make("rate-count-other-thread"),
++            occurredAt: "2026-09-12T11:40:00.000Z",
++            commandId: "agent-thread-title:other",
++            payload: automaticPayload,
++          },
++        ],
++        insertEvent,
++        { discard: true },
++      );
++
++      const query = yield* AutomaticThreadTitleRenameQuery;
++      expect(yield* query.countSince({ threadId, since: "2026-09-12T00:00:00.000Z" })).toBe(1);
++
++      const rateLimit = yield* AutomaticThreadTitleRateLimit;
++      expect(yield* rateLimit.isAvailable(threadId, { maxCount: 1, windowHours: 12 })).toBe(false);
++      expect(yield* rateLimit.isAvailable(threadId, { maxCount: 2, windowHours: 12 })).toBe(true);
++
++      const availableAfterLimiterRestart = yield* Effect.gen(function* () {
++        return yield* (yield* AutomaticThreadTitleRateLimit).isAvailable(threadId, {
++          maxCount: 1,
++          windowHours: 12,
++        });
++      }).pipe(
++        Effect.provide(
++          AutomaticThreadTitleRateLimitLive.pipe(
++            Layer.provide(Layer.succeed(AutomaticThreadTitleRenameQuery, query)),
++          ),
++        ),
++      );
++      expect(availableAfterLimiterRestart).toBe(false);
++    }),
++  );
++
++  it.effect("serializes concurrent admissions through the persisted write", () =>
++    Effect.gen(function* () {
++      const now = "2026-09-12T12:00:00.000Z";
++      yield* TestClock.setTime(Date.parse(now));
++      const threadId = ThreadId.make("rate-concurrent-thread");
++      const nextId = yield* Ref.make(0);
++      const rateLimit = yield* AutomaticThreadTitleRateLimit;
++      const update = Effect.gen(function* () {
++        const id = yield* Ref.updateAndGet(nextId, (value) => value + 1);
++        yield* insertEvent({
++          eventId: `concurrent-agent-rename-${id}`,
++          threadId,
++          occurredAt: DateTime.formatIso(yield* DateTime.now),
++          commandId: `agent-thread-title:concurrent-${id}`,
++          payload: {
++            threadId,
++            title: `Changed title ${id}`,
++            titleSource: "automatic",
++            updatedAt: now,
++          },
++        });
++        return id;
++      });
++
++      const outcomes = yield* Effect.all(
++        [
++          rateLimit.withPermit(threadId, { maxCount: 1, windowHours: 12 }, update),
++          rateLimit.withPermit(threadId, { maxCount: 1, windowHours: 12 }, update),
++        ],
++        { concurrency: "unbounded" },
++      );
++
++      expect(outcomes.filter(Option.isSome)).toHaveLength(1);
++      expect(yield* Ref.get(nextId)).toBe(1);
++    }),
++  );
++
++  it.effect("keeps the quota lock until an admitted write persists after cancellation", () =>
++    Effect.gen(function* () {
++      const now = "2026-09-12T12:00:00.000Z";
++      yield* TestClock.setTime(Date.parse(now));
++      const threadId = ThreadId.make("rate-cancelled-thread");
++      const firstStarted = yield* Deferred.make<void>();
++      const releaseFirst = yield* Deferred.make<void>();
++      const secondEntered = yield* Deferred.make<void>();
++      const rateLimit = yield* AutomaticThreadTitleRateLimit;
++      const write = (id: string) =>
++        insertEvent({
++          eventId: `cancelled-agent-rename-${id}`,
++          threadId,
++          occurredAt: now,
++          commandId: `agent-thread-title:cancelled-${id}`,
++          payload: {
++            threadId,
++            title: `Changed title ${id}`,
++            titleSource: "automatic",
++            updatedAt: now,
++          },
++        });
++
++      const first = yield* Effect.forkChild(
++        rateLimit.withPermit(
++          threadId,
++          { maxCount: 1, windowHours: 12 },
++          Effect.gen(function* () {
++            yield* Deferred.succeed(firstStarted, undefined);
++            yield* Deferred.await(releaseFirst);
++            yield* write("first");
++          }),
++        ),
++      );
++      yield* Deferred.await(firstStarted);
++      const interruption = yield* Effect.forkChild(Fiber.interrupt(first));
++      const second = yield* Effect.forkChild(
++        rateLimit.withPermit(
++          threadId,
++          { maxCount: 1, windowHours: 12 },
++          Deferred.succeed(secondEntered, undefined).pipe(Effect.andThen(write("second"))),
++        ),
++      );
++      yield* Effect.yieldNow;
++      expect(Option.isNone(yield* Deferred.poll(secondEntered))).toBe(true);
++
++      yield* Deferred.succeed(releaseFirst, undefined);
++      yield* Fiber.await(interruption);
++      expect(Option.isNone(yield* Fiber.join(second))).toBe(true);
++      expect(Option.isNone(yield* Deferred.poll(secondEntered))).toBe(true);
++
++      const query = yield* AutomaticThreadTitleRenameQuery;
++      expect(yield* query.countSince({ threadId, since: "2026-09-12T00:00:00.000Z" })).toBe(1);
++    }),
++  );
++});
+diff --git a/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts
+new file mode 100644
+index 000000000..2f0b86507
+--- /dev/null
++++ b/apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts
+@@ -0,0 +1,90 @@
++import { type ServerSettings, type ThreadId } from "@t3tools/contracts";
++import { resolveAutomaticThreadTitleRenameLimit } from "@t3tools/shared/serverSettings";
++import * as Context from "effect/Context";
++import * as DateTime from "effect/DateTime";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as Option from "effect/Option";
++import * as Semaphore from "effect/Semaphore";
++
++import type { PersistenceSqlError } from "../persistence/Errors.ts";
++import { AutomaticThreadTitleRenameQuery } from "../persistence/Services/AutomaticThreadTitleRenameQuery.ts";
++
++export interface AutomaticThreadTitleRenameLimit {
++  readonly maxCount: number;
++  readonly windowHours: number;
++}
++
++export interface AutomaticThreadTitleRateLimitShape {
++  readonly isAvailable: (
++    threadId: ThreadId,
++    limit: AutomaticThreadTitleRenameLimit,
++  ) => Effect.Effect<boolean, PersistenceSqlError>;
++
++  /** Hold the quota lock through a successful, durably persisted title write. */
++  readonly withPermit: <A, E, R>(
++    threadId: ThreadId,
++    limit: AutomaticThreadTitleRenameLimit,
++    effect: Effect.Effect<A, E, R>,
++  ) => Effect.Effect<Option.Option<A>, E | PersistenceSqlError, R>;
++}
++
++export class AutomaticThreadTitleRateLimit extends Context.Service<
++  AutomaticThreadTitleRateLimit,
++  AutomaticThreadTitleRateLimitShape
++>()("t3/orchestration/AutomaticThreadTitleRateLimit") {}
++
++const makeAutomaticThreadTitleRateLimit = Effect.gen(function* () {
++  const query = yield* AutomaticThreadTitleRenameQuery;
++  const lock = yield* Semaphore.make(1);
++
++  const availableUnlocked = Effect.fn("AutomaticThreadTitleRateLimit.availableUnlocked")(function* (
++    threadId: ThreadId,
++    limit: AutomaticThreadTitleRenameLimit,
++  ) {
++    const now = yield* DateTime.now;
++    const since = DateTime.formatIso(DateTime.subtract(now, { hours: limit.windowHours }));
++    const count = yield* query.countSince({ threadId, since });
++    return count < limit.maxCount;
++  });
++
++  const isAvailable: AutomaticThreadTitleRateLimitShape["isAvailable"] = (threadId, limit) =>
++    lock.withPermits(1)(availableUnlocked(threadId, limit));
++
++  const withPermit: AutomaticThreadTitleRateLimitShape["withPermit"] = (threadId, limit, effect) =>
++    lock.withPermits(1)(
++      Effect.uninterruptible(
++        Effect.gen(function* () {
++          if (!(yield* availableUnlocked(threadId, limit))) return Option.none();
++          return Option.some(yield* effect);
++        }),
++      ),
++    );
++
++  return AutomaticThreadTitleRateLimit.of({ isAvailable, withPermit });
++});
++
++export const AutomaticThreadTitleRateLimitLive = Layer.effect(
++  AutomaticThreadTitleRateLimit,
++  makeAutomaticThreadTitleRateLimit,
++);
++
++/** Server-authoritative gate used before exposing automatic rename instructions. */
++export const hasAutomaticThreadTitleRenameQuota = Effect.fn("hasAutomaticThreadTitleRenameQuota")(
++  function* (
++    threadId: ThreadId,
++    settings: Pick<
++      ServerSettings,
++      | "automaticThreadTitles"
++      | "automaticThreadTitleRenamePolicy"
++      | "automaticThreadTitleRenameMaxCount"
++      | "automaticThreadTitleRenameWindowHours"
++    >,
++  ): Effect.fn.Return<boolean, PersistenceSqlError, AutomaticThreadTitleRateLimit> {
++    if (!settings.automaticThreadTitles) return false;
++    return yield* (yield* AutomaticThreadTitleRateLimit).isAvailable(
++      threadId,
++      resolveAutomaticThreadTitleRenameLimit(settings),
++    );
++  },
++);
 diff --git a/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts b/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
-index 29ecd5164..4d9010baa 100644
+index 29ecd5164..8a0cedb6d 100644
 --- a/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
 +++ b/apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
 @@ -339,6 +339,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
@@ -671,7 +1281,7 @@ index 29ecd5164..4d9010baa 100644
        }
  
        // Settled lifecycle through the DB pipeline: thread.settled writes the
-@@ -4017,6 +4028,56 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
+@@ -4017,6 +4028,78 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
      }),
    );
  
@@ -706,10 +1316,30 @@ index 29ecd5164..4d9010baa 100644
 +        createdAt,
 +      });
 +
++      yield* engine.dispatch({
++        type: "thread.meta.update",
++        commandId: CommandId.make("server:thread-title-rename:initial"),
++        threadId,
++        title: "Initial generated title",
++        titleSource: "automatic",
++      });
 +      const automaticShell = yield* snapshots.getThreadShellById(threadId);
 +      const automaticDetail = yield* snapshots.getThreadDetailById(threadId);
 +      assert.strictEqual(Option.getOrThrow(automaticShell).titleSource, "automatic");
 +      assert.strictEqual(Option.getOrThrow(automaticDetail).titleSource, "automatic");
++      assert.isNull(Option.getOrThrow(automaticShell).titleAutoRenamedAt);
++
++      yield* engine.dispatch({
++        type: "thread.meta.update",
++        commandId: CommandId.make("agent-thread-title:cue-test"),
++        threadId,
++        title: "A more specific objective",
++        titleSource: "automatic",
++      });
++      const renamedShell = Option.getOrThrow(yield* snapshots.getThreadShellById(threadId));
++      const renamedDetail = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
++      assert.isString(renamedShell.titleAutoRenamedAt);
++      assert.strictEqual(renamedDetail.titleAutoRenamedAt, renamedShell.titleAutoRenamedAt);
 +
 +      yield* engine.dispatch({
 +        type: "thread.meta.update",
@@ -722,6 +1352,8 @@ index 29ecd5164..4d9010baa 100644
 +      const userDetail = yield* snapshots.getThreadDetailById(threadId);
 +      assert.strictEqual(Option.getOrThrow(userShell).titleSource, "user");
 +      assert.strictEqual(Option.getOrThrow(userDetail).titleSource, "user");
++      assert.isNull(Option.getOrThrow(userShell).titleAutoRenamedAt);
++      assert.isNull(Option.getOrThrow(userDetail).titleAutoRenamedAt);
 +    }),
 +  );
 +
@@ -729,32 +1361,52 @@ index 29ecd5164..4d9010baa 100644
      Effect.gen(function* () {
        const engine = yield* OrchestrationEngineService;
 diff --git a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
-index e4638a329..f7f9250d8 100644
+index e4638a329..1a68f9202 100644
 --- a/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
 +++ b/apps/server/src/orchestration/Layers/ProjectionPipeline.ts
-@@ -603,6 +603,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+@@ -603,6 +603,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
              threadId: event.payload.threadId,
              projectId: event.payload.projectId,
              title: event.payload.title,
 +            titleSource: event.payload.titleSource ?? null,
++            titleAutoRenamedAt: null,
              modelSelection: event.payload.modelSelection,
              runtimeMode: event.payload.runtimeMode,
              interactionMode: event.payload.interactionMode,
-@@ -796,6 +797,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
+@@ -796,6 +798,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
            yield* projectionThreadRepository.upsert({
              ...existingRow.value,
              ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
 +            ...(event.payload.title !== undefined
-+              ? { titleSource: event.payload.titleSource ?? "user" }
++              ? {
++                  titleSource: event.payload.titleSource ?? "user",
++                  titleAutoRenamedAt: event.payload.titleAutoRenamedAt ?? null,
++                }
 +              : {}),
              ...(event.payload.activeOrderKey !== undefined
                ? { activeOrderKey: event.payload.activeOrderKey }
                : {}),
 diff --git a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
-index e262bce34..a8ec3ebb3 100644
+index e262bce34..cad4a3a40 100644
 --- a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
 +++ b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
-@@ -607,10 +607,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+@@ -323,6 +323,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+           id: ThreadId.make("thread-1"),
+           projectId: asProjectId("project-1"),
+           title: "Thread 1",
++          titleAutoRenamedAt: null,
+           modelSelection: {
+             instanceId: ProviderInstanceId.make("codex"),
+             model: "gpt-5-codex",
+@@ -453,6 +454,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+           id: ThreadId.make("thread-1"),
+           projectId: asProjectId("project-1"),
+           title: "Thread 1",
++          titleAutoRenamedAt: null,
+           modelSelection: {
+             instanceId: ProviderInstanceId.make("codex"),
+             model: "gpt-5-codex",
+@@ -607,10 +609,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
          assert.deepEqual(context.value, {
            id: ThreadId.make("thread-1"),
            title: "Thread 1",
@@ -769,7 +1421,7 @@ index e262bce34..a8ec3ebb3 100644
        yield* sql`
          UPDATE projection_thread_sessions
          SET status = 'starting', active_turn_id = NULL, provider_name = 'claudeAgent',
-@@ -622,6 +625,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+@@ -622,6 +627,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
        );
        assert.equal(changedContext._tag, "Some");
        if (changedContext._tag === "Some") {
@@ -778,7 +1430,7 @@ index e262bce34..a8ec3ebb3 100644
          assert.equal(changedContext.value.session?.activeTurnId, null);
          assert.equal(changedContext.value.session?.providerName, "claudeAgent");
 diff --git a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
-index 5f82a26e2..4caaaa3b2 100644
+index 5f82a26e2..c3bf6b81b 100644
 --- a/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
 +++ b/apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
 @@ -132,6 +132,7 @@ const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
@@ -789,39 +1441,43 @@ index 5f82a26e2..4caaaa3b2 100644
    session: Schema.NullOr(ProjectionThreadSessionDbRowSchema),
  });
  const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
-@@ -495,6 +496,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+@@ -495,6 +496,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
            thread_id AS "threadId",
            project_id AS "projectId",
            title,
 +          title_source AS "titleSource",
++          title_auto_renamed_at AS "titleAutoRenamedAt",
            model_selection_json AS "modelSelection",
            runtime_mode AS "runtimeMode",
            interaction_mode AS "interactionMode",
-@@ -535,6 +537,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+@@ -535,6 +538,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
            thread_id AS "threadId",
            project_id AS "projectId",
            title,
 +          title_source AS "titleSource",
++          title_auto_renamed_at AS "titleAutoRenamedAt",
            model_selection_json AS "modelSelection",
            runtime_mode AS "runtimeMode",
            interaction_mode AS "interactionMode",
-@@ -577,6 +580,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+@@ -577,6 +582,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
            thread_id AS "threadId",
            project_id AS "projectId",
            title,
 +          title_source AS "titleSource",
++          title_auto_renamed_at AS "titleAutoRenamedAt",
            model_selection_json AS "modelSelection",
            runtime_mode AS "runtimeMode",
            interaction_mode AS "interactionMode",
-@@ -1068,6 +1072,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+@@ -1068,6 +1075,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
            thread_id AS "threadId",
            project_id AS "projectId",
            title,
 +          title_source AS "titleSource",
++          title_auto_renamed_at AS "titleAutoRenamedAt",
            model_selection_json AS "modelSelection",
            runtime_mode AS "runtimeMode",
            interaction_mode AS "interactionMode",
-@@ -1110,6 +1115,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+@@ -1110,6 +1119,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
          SELECT
            threads.thread_id AS id,
            threads.title,
@@ -829,7 +1485,7 @@ index 5f82a26e2..4caaaa3b2 100644
            sessions.thread_id AS "threadId",
            sessions.status,
            sessions.provider_name AS "providerName",
-@@ -1130,6 +1136,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
+@@ -1130,6 +1140,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
            rows.map((row) => ({
              id: row.id,
              title: row.title,
@@ -837,57 +1493,62 @@ index 5f82a26e2..4caaaa3b2 100644
              session: row.threadId === null ? null : row,
            })),
          ),
-@@ -2066,6 +2073,9 @@ pending_approval_requests AS (
+@@ -2066,6 +2077,10 @@ pending_approval_requests AS (
                  id: row.threadId,
                  projectId: row.projectId,
                  title: row.title,
++                titleAutoRenamedAt: row.titleAutoRenamedAt ?? null,
 +                ...(row.titleSource === null || row.titleSource === undefined
 +                  ? {}
 +                  : { titleSource: row.titleSource }),
                  modelSelection: row.modelSelection,
                  runtimeMode: row.runtimeMode,
                  interactionMode: row.interactionMode,
-@@ -2281,6 +2291,9 @@ pending_approval_requests AS (
+@@ -2281,6 +2296,10 @@ pending_approval_requests AS (
                    id: row.threadId,
                    projectId: row.projectId,
                    title: row.title,
++                  titleAutoRenamedAt: row.titleAutoRenamedAt ?? null,
 +                  ...(row.titleSource === null || row.titleSource === undefined
 +                    ? {}
 +                    : { titleSource: row.titleSource }),
                    modelSelection: row.modelSelection,
                    runtimeMode: row.runtimeMode,
                    interactionMode: row.interactionMode,
-@@ -2423,6 +2436,9 @@ pending_approval_requests AS (
+@@ -2423,6 +2442,10 @@ pending_approval_requests AS (
                        id: row.threadId,
                        projectId: row.projectId,
                        title: row.title,
++                      titleAutoRenamedAt: row.titleAutoRenamedAt ?? null,
 +                      ...(row.titleSource === null || row.titleSource === undefined
 +                        ? {}
 +                        : { titleSource: row.titleSource }),
                        modelSelection: row.modelSelection,
                        runtimeMode: row.runtimeMode,
                        interactionMode: row.interactionMode,
-@@ -2573,6 +2589,9 @@ pending_approval_requests AS (
+@@ -2573,6 +2596,10 @@ pending_approval_requests AS (
                  id: row.threadId,
                  projectId: row.projectId,
                  title: row.title,
++                titleAutoRenamedAt: row.titleAutoRenamedAt ?? null,
 +                ...(row.titleSource === null || row.titleSource === undefined
 +                  ? {}
 +                  : { titleSource: row.titleSource }),
                  modelSelection: row.modelSelection,
                  runtimeMode: row.runtimeMode,
                  interactionMode: row.interactionMode,
-@@ -2896,6 +2915,9 @@ pending_approval_requests AS (
+@@ -2896,6 +2923,10 @@ pending_approval_requests AS (
          id: threadRow.value.threadId,
          projectId: threadRow.value.projectId,
          title: threadRow.value.title,
++        titleAutoRenamedAt: threadRow.value.titleAutoRenamedAt ?? null,
 +        ...(threadRow.value.titleSource === null || threadRow.value.titleSource === undefined
 +          ? {}
 +          : { titleSource: threadRow.value.titleSource }),
          modelSelection: threadRow.value.modelSelection,
          runtimeMode: threadRow.value.runtimeMode,
          interactionMode: threadRow.value.interactionMode,
-@@ -2943,6 +2965,7 @@ pending_approval_requests AS (
+@@ -2943,6 +2974,7 @@ pending_approval_requests AS (
        return Option.map(context, (row) => ({
          id: row.id,
          title: row.title,
@@ -895,10 +1556,11 @@ index 5f82a26e2..4caaaa3b2 100644
          session: row.session === null ? null : mapSessionRow(row.session),
        }));
      });
-@@ -3179,6 +3202,9 @@ pending_approval_requests AS (
+@@ -3179,6 +3211,10 @@ pending_approval_requests AS (
          id: threadRow.value.threadId,
          projectId: threadRow.value.projectId,
          title: threadRow.value.title,
++        titleAutoRenamedAt: threadRow.value.titleAutoRenamedAt ?? null,
 +        ...(threadRow.value.titleSource === null || threadRow.value.titleSource === undefined
 +          ? {}
 +          : { titleSource: threadRow.value.titleSource }),
@@ -1034,12 +1696,39 @@ index 35d5bacc2..2bb7c07e9 100644
      ProjectionRepositoryError
    >;
  
+diff --git a/apps/server/src/orchestration/ThreadTitlePolicy.ts b/apps/server/src/orchestration/ThreadTitlePolicy.ts
+new file mode 100644
+index 000000000..a26fbaaad
+--- /dev/null
++++ b/apps/server/src/orchestration/ThreadTitlePolicy.ts
+@@ -0,0 +1,21 @@
++import type { OrchestrationThread } from "@t3tools/contracts";
++import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
++
++type AutomaticTitleLifecycle = Pick<
++  OrchestrationThread,
++  "archivedAt" | "deletedAt" | "settledOverride" | "snoozedUntil"
++>;
++
++/** Whether the thread lifecycle permits an automatic title write at `now`. */
++export function allowsAutomaticThreadTitleUpdate(
++  thread: Omit<AutomaticTitleLifecycle, "deletedAt"> &
++    Partial<Pick<AutomaticTitleLifecycle, "deletedAt">>,
++  now: string,
++): boolean {
++  return (
++    thread.archivedAt === null &&
++    (thread.deletedAt === null || thread.deletedAt === undefined) &&
++    thread.settledOverride !== "settled" &&
++    (thread.snoozedUntil == null || compareDateTimeStrings(thread.snoozedUntil, now) <= 0)
++  );
++}
 diff --git a/apps/server/src/orchestration/decider.titleOwnership.test.ts b/apps/server/src/orchestration/decider.titleOwnership.test.ts
 new file mode 100644
-index 000000000..f282d0e6a
+index 000000000..004e79302
 --- /dev/null
 +++ b/apps/server/src/orchestration/decider.titleOwnership.test.ts
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,203 @@
 +import {
 +  CommandId,
 +  EventId,
@@ -1052,6 +1741,7 @@ index 000000000..f282d0e6a
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import { expect, it } from "@effect/vitest";
 +import * as Effect from "effect/Effect";
++import * as TestClock from "effect/testing/TestClock";
 +
 +import { decideOrchestrationCommand } from "./decider.ts";
 +import { projectEvent } from "./projector.ts";
@@ -1114,11 +1804,15 @@ index 000000000..f282d0e6a
 +    }),
 +  );
 +
-+  it.effect("rejects automatic writes after archival or deletion races", () =>
++  it.effect("rejects automatic writes after lifecycle exclusion races", () =>
 +    Effect.gen(function* () {
-+      for (const lifecycle of [{ archivedAt: NOW }, { deletedAt: NOW }] satisfies ReadonlyArray<
-+        Partial<OrchestrationThread>
-+      >) {
++      yield* TestClock.setTime(Date.parse(NOW));
++      for (const lifecycle of [
++        { archivedAt: NOW },
++        { deletedAt: NOW },
++        { settledOverride: "settled" },
++        { snoozedUntil: "2026-01-01T00:00:01.000Z" },
++      ] satisfies ReadonlyArray<Partial<OrchestrationThread>>) {
 +        const error = yield* decideOrchestrationCommand({
 +          command: {
 +            type: "thread.meta.update",
@@ -1131,6 +1825,30 @@ index 000000000..f282d0e6a
 +        }).pipe(Effect.flip);
 +        expect(error).toMatchObject({ _tag: "OrchestrationCommandInvariantError" });
 +      }
++    }),
++  );
++
++  it.effect("allows automatic writes after a snooze expires", () =>
++    Effect.gen(function* () {
++      yield* TestClock.setTime(Date.parse(NOW));
++      const decided = yield* decideOrchestrationCommand({
++        command: {
++          type: "thread.meta.update",
++          commandId: CommandId.make("agent-thread-title:expired-snooze"),
++          threadId: THREAD_ID,
++          title: "Automatic title",
++          titleSource: "automatic",
++        },
++        readModel: makeReadModel({
++          titleSource: "automatic",
++          snoozedUntil: "2025-12-31T23:59:59.000Z",
++        }),
++      });
++      const event = Array.isArray(decided) ? decided[0]! : decided;
++      expect(event).toMatchObject({
++        type: "thread.meta-updated",
++        payload: { title: "Automatic title", titleSource: "automatic" },
++      });
 +    }),
 +  );
 +
@@ -1181,12 +1899,16 @@ index 000000000..f282d0e6a
 +    }),
 +  );
 +
-+  it.effect("lets explicit regeneration return a title to automatic ownership", () =>
++  it.effect("lets explicit regeneration bypass the automatic-update lifecycle gate", () =>
 +    Effect.gen(function* () {
 +      const requestId = CommandId.make("regenerate-title");
 +      const readModel = makeReadModel({
 +        titleSource: "user",
 +        titleRegeneration: { requestId, startedAt: NOW },
++        archivedAt: NOW,
++        deletedAt: NOW,
++        settledOverride: "settled",
++        snoozedUntil: "2026-01-01T00:00:01.000Z",
 +      });
 +      const decided = yield* decideOrchestrationCommand({
 +        command: {
@@ -1211,10 +1933,18 @@ index 000000000..f282d0e6a
 +  );
 +});
 diff --git a/apps/server/src/orchestration/decider.ts b/apps/server/src/orchestration/decider.ts
-index 304defb80..b64b47a43 100644
+index 304defb80..e250a2d8f 100644
 --- a/apps/server/src/orchestration/decider.ts
 +++ b/apps/server/src/orchestration/decider.ts
-@@ -373,6 +373,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+@@ -38,6 +38,7 @@ import {
+ } from "./commandInvariants.ts";
+ import { projectEvent } from "./projector.ts";
+ import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
++import { allowsAutomaticThreadTitleUpdate } from "./ThreadTitlePolicy.ts";
+ 
+ const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
+ 
+@@ -373,6 +374,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
            threadId: command.threadId,
            projectId: command.projectId,
            title: command.title,
@@ -1222,15 +1952,16 @@ index 304defb80..b64b47a43 100644
            modelSelection: command.modelSelection,
            runtimeMode: command.runtimeMode,
            interactionMode: command.interactionMode,
-@@ -876,6 +877,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+@@ -876,13 +878,45 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
          command,
          threadId: command.threadId,
        });
 +      const titleSource = command.titleSource ?? "user";
++      const occurredAt = yield* nowIso;
 +      if (
 +        command.title !== undefined &&
 +        titleSource === "automatic" &&
-+        (thread.archivedAt !== null || thread.deletedAt !== null)
++        !allowsAutomaticThreadTitleUpdate(thread, occurredAt)
 +      ) {
 +        return yield* new OrchestrationCommandInvariantError({
 +          commandType: command.type,
@@ -1253,10 +1984,10 @@ index 304defb80..b64b47a43 100644
        const branch =
          command.branch !== undefined &&
          command.expectedBranch !== undefined &&
-@@ -883,6 +908,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+         thread.branch !== command.expectedBranch
            ? thread.branch
            : command.branch;
-       const occurredAt = yield* nowIso;
+-      const occurredAt = yield* nowIso;
 +      const titleOnlyNoop =
 +        command.title !== undefined &&
 +        !titleChanged &&
@@ -1268,18 +1999,25 @@ index 304defb80..b64b47a43 100644
        return {
          ...(yield* withEventBase({
            aggregateKind: "thread",
-@@ -893,7 +926,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+@@ -893,7 +927,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
          type: "thread.meta-updated",
          payload: {
            threadId: command.threadId,
 -          ...(command.title !== undefined ? { title: command.title } : {}),
 +          ...(command.title !== undefined && titleChanged
-+            ? { title: command.title, titleSource }
++            ? {
++                title: command.title,
++                titleSource,
++                titleAutoRenamedAt:
++                  titleSource === "automatic" && command.commandId.startsWith("agent-thread-title:")
++                    ? occurredAt
++                    : null,
++              }
 +            : {}),
            ...(command.regenerateTitle === true
              ? {
                  regenerateTitle: true as const,
-@@ -915,7 +950,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+@@ -915,7 +958,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
            ...(command.linkedPullRequest !== undefined
              ? { linkedPullRequest: command.linkedPullRequest }
              : {}),
@@ -1288,78 +2026,147 @@ index 304defb80..b64b47a43 100644
          },
        };
      }
-@@ -995,7 +1030,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
+@@ -995,7 +1038,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
          type: "thread.meta-updated",
          payload: {
            threadId: command.threadId,
 -          ...(requestIsCurrent && command.title !== undefined ? { title: command.title } : {}),
 +          ...(requestIsCurrent && command.title !== undefined
-+            ? { title: command.title, titleSource: "automatic" as const }
++            ? { title: command.title, titleSource: "automatic" as const, titleAutoRenamedAt: null }
 +            : {}),
            ...(requestIsCurrent ? { titleRegeneration: null } : {}),
            updatedAt: requestIsCurrent ? occurredAt : thread.updatedAt,
          },
 diff --git a/apps/server/src/orchestration/projector.ts b/apps/server/src/orchestration/projector.ts
-index c048247f4..c74f3c163 100644
+index c048247f4..10d12f57b 100644
 --- a/apps/server/src/orchestration/projector.ts
 +++ b/apps/server/src/orchestration/projector.ts
-@@ -331,6 +331,7 @@ export function projectEvent(
+@@ -331,6 +331,8 @@ export function projectEvent(
              id: payload.threadId,
              projectId: payload.projectId,
              title: payload.title,
 +            ...(payload.titleSource !== undefined ? { titleSource: payload.titleSource } : {}),
++            titleAutoRenamedAt: null,
              modelSelection: payload.modelSelection,
              runtimeMode: payload.runtimeMode,
              interactionMode: payload.interactionMode,
-@@ -502,6 +503,7 @@ export function projectEvent(
+@@ -502,6 +504,12 @@ export function projectEvent(
            ...nextBase,
            threads: updateThread(nextBase.threads, payload.threadId, {
              ...(payload.title !== undefined ? { title: payload.title } : {}),
-+            ...(payload.title !== undefined ? { titleSource: payload.titleSource ?? "user" } : {}),
++            ...(payload.title !== undefined
++              ? {
++                  titleSource: payload.titleSource ?? "user",
++                  titleAutoRenamedAt: payload.titleAutoRenamedAt ?? null,
++                }
++              : {}),
              ...(payload.activeOrderKey !== undefined
                ? { activeOrderKey: payload.activeOrderKey }
                : {}),
+diff --git a/apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts b/apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts
+new file mode 100644
+index 000000000..cf9d58937
+--- /dev/null
++++ b/apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts
+@@ -0,0 +1,52 @@
++import { IsoDateTime, NonNegativeInt, ThreadId } from "@t3tools/contracts";
++import * as Effect from "effect/Effect";
++import * as Layer from "effect/Layer";
++import * as Schema from "effect/Schema";
++import * as SqlClient from "effect/unstable/sql/SqlClient";
++import * as SqlSchema from "effect/unstable/sql/SqlSchema";
++
++import { toPersistenceSqlError } from "../Errors.ts";
++import {
++  AutomaticThreadTitleRenameQuery,
++  type AutomaticThreadTitleRenameQueryShape,
++} from "../Services/AutomaticThreadTitleRenameQuery.ts";
++
++const CountSinceInput = Schema.Struct({
++  threadId: ThreadId,
++  since: IsoDateTime,
++});
++
++const CountRow = Schema.Struct({ count: NonNegativeInt });
++
++const makeAutomaticThreadTitleRenameQuery = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++
++  const countSinceRow = SqlSchema.findOne({
++    Request: CountSinceInput,
++    Result: CountRow,
++    execute: (input) => sql`
++      SELECT COUNT(*) AS "count"
++      FROM orchestration_events
++      WHERE aggregate_kind = 'thread'
++        AND stream_id = ${input.threadId}
++        AND event_type = 'thread.meta-updated'
++        AND command_id LIKE 'agent-thread-title:%'
++        AND occurred_at > ${input.since}
++        AND json_type(payload_json, '$.title') = 'text'
++        AND json_extract(payload_json, '$.titleSource') = 'automatic'
++    `,
++  });
++
++  const countSince: AutomaticThreadTitleRenameQueryShape["countSince"] = (input) =>
++    countSinceRow(input).pipe(
++      Effect.map((row) => row.count),
++      Effect.mapError(toPersistenceSqlError("AutomaticThreadTitleRenameQuery.countSince")),
++    );
++
++  return AutomaticThreadTitleRenameQuery.of({ countSince });
++});
++
++export const AutomaticThreadTitleRenameQueryLive = Layer.effect(
++  AutomaticThreadTitleRenameQuery,
++  makeAutomaticThreadTitleRenameQuery,
++);
 diff --git a/apps/server/src/persistence/Layers/ProjectionThreads.ts b/apps/server/src/persistence/Layers/ProjectionThreads.ts
-index 6406e8237..0d4f758ed 100644
+index 6406e8237..a2140a866 100644
 --- a/apps/server/src/persistence/Layers/ProjectionThreads.ts
 +++ b/apps/server/src/persistence/Layers/ProjectionThreads.ts
-@@ -36,6 +36,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
+@@ -36,6 +36,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
            thread_id,
            project_id,
            title,
 +          title_source,
++          title_auto_renamed_at,
            model_selection_json,
            runtime_mode,
            interaction_mode,
-@@ -67,6 +68,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
+@@ -67,6 +69,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
            ${row.threadId},
            ${row.projectId},
            ${row.title},
 +          ${row.titleSource ?? null},
++          ${row.titleAutoRenamedAt ?? null},
            ${JSON.stringify(row.modelSelection)},
            ${row.runtimeMode},
            ${row.interactionMode},
-@@ -98,6 +100,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
+@@ -98,6 +102,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
          DO UPDATE SET
            project_id = excluded.project_id,
            title = excluded.title,
 +          title_source = excluded.title_source,
++          title_auto_renamed_at = excluded.title_auto_renamed_at,
            model_selection_json = excluded.model_selection_json,
            runtime_mode = excluded.runtime_mode,
            interaction_mode = excluded.interaction_mode,
-@@ -136,6 +139,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
+@@ -136,6 +142,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
            thread_id AS "threadId",
            project_id AS "projectId",
            title,
 +          title_source AS "titleSource",
++          title_auto_renamed_at AS "titleAutoRenamedAt",
            model_selection_json AS "modelSelection",
            runtime_mode AS "runtimeMode",
            interaction_mode AS "interactionMode",
-@@ -176,6 +180,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
+@@ -176,6 +184,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
            thread_id AS "threadId",
            project_id AS "projectId",
            title,
 +          title_source AS "titleSource",
++          title_auto_renamed_at AS "titleAutoRenamedAt",
            model_selection_json AS "modelSelection",
            runtime_mode AS "runtimeMode",
            interaction_mode AS "interactionMode",
@@ -1392,10 +2199,10 @@ index bc176f62c..dee1d8450 100644
      ? Effect.logDebug("Database schema is current")
 diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
 new file mode 100644
-index 000000000..3f96546f9
+index 000000000..6da44914c
 --- /dev/null
 +++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,232 @@
 +import { assert, it } from "@effect/vitest";
 +import * as Effect from "effect/Effect";
 +import * as Migrator from "effect/unstable/sql/Migrator";
@@ -1543,7 +2350,7 @@ index 000000000..3f96546f9
 +        ) VALUES (
 +          'fork-automatic-title', 'thread', 'thread-1', 2, 'thread.meta-updated',
 +          '2026-01-01T12:00:00.000Z', 'system',
-+          '{"threadId":"thread-1","title":"Fork automatic title","titleSource":"automatic"}', '{}'
++          '{"threadId":"thread-1","title":"Fork automatic title","titleSource":"automatic","titleAutoRenamedAt":"2026-01-01T12:00:00.000Z"}', '{}'
 +        )
 +      `;
 +      yield* sql`
@@ -1552,6 +2359,12 @@ index 000000000..3f96546f9
 +          updated_at = '2026-01-01T12:00:00.000Z'
 +        WHERE thread_id = 'thread-1'
 +      `;
++
++      yield* runMigrations();
++      const renameCue = yield* sql<{ readonly renamedAt: string | null }>`
++        SELECT title_auto_renamed_at AS "renamedAt" FROM projection_threads WHERE thread_id = 'thread-1'
++      `;
++      assert.deepEqual(renameCue, [{ renamedAt: "2026-01-01T12:00:00.000Z" }]);
 +
 +      // v0.0.38 ignores the extra projection column and emits no ownership
 +      // field when it projects a manual rename.
@@ -1576,6 +2389,11 @@ index 000000000..3f96546f9
 +        SELECT title_source AS "titleSource" FROM projection_threads WHERE thread_id = 'thread-1'
 +      `;
 +      assert.deepEqual(rows, [{ titleSource: "user" }]);
++
++      const clearedCue = yield* sql<{ readonly renamedAt: string | null }>`
++        SELECT title_auto_renamed_at AS "renamedAt" FROM projection_threads WHERE thread_id = 'thread-1'
++      `;
++      assert.deepEqual(clearedCue, [{ renamedAt: null }]);
 +
 +      const forkMigrationRows = yield* sql<{ readonly migrationId: number }>`
 +        SELECT migration_id AS "migrationId"
@@ -1619,10 +2437,10 @@ index 000000000..3f96546f9
 +});
 diff --git a/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
 new file mode 100644
-index 000000000..b52a35c3a
+index 000000000..d31c8bf4d
 --- /dev/null
 +++ b/apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,68 @@
 +import * as Effect from "effect/Effect";
 +import * as SqlClient from "effect/unstable/sql/SqlClient";
 +
@@ -1647,12 +2465,19 @@ index 000000000..b52a35c3a
 +      ADD COLUMN title_source TEXT
 +    `;
 +  }
++  if (!columns.some((column) => column.name === "title_auto_renamed_at")) {
++    yield* sql`
++      ALTER TABLE projection_threads
++      ADD COLUMN title_auto_renamed_at TEXT
++    `;
++  }
 +
 +  yield* sql`
 +    WITH latest_title_events AS (
 +      SELECT
 +        stream_id AS thread_id,
 +        json_extract(payload_json, '$.title') AS title,
++        json_extract(payload_json, '$.titleAutoRenamedAt') AS title_auto_renamed_at,
 +        CASE
 +          WHEN json_extract(payload_json, '$.titleSource') = 'automatic'
 +            THEN 'automatic'
@@ -1674,16 +2499,42 @@ index 000000000..b52a35c3a
 +        AND json_type(payload_json, '$.title') = 'text'
 +    )
 +    UPDATE projection_threads AS thread
-+    SET title_source = latest.title_source
++    SET title_source = latest.title_source,
++        title_auto_renamed_at = latest.title_auto_renamed_at
 +    FROM latest_title_events AS latest
 +    WHERE latest.recency = 1
 +      AND latest.thread_id = thread.thread_id
 +      AND latest.title = thread.title
-+      AND thread.title_source IS NOT latest.title_source
++      AND (thread.title_source IS NOT latest.title_source
++        OR thread.title_auto_renamed_at IS NOT latest.title_auto_renamed_at)
 +  `;
 +});
+diff --git a/apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts b/apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts
+new file mode 100644
+index 000000000..523878337
+--- /dev/null
++++ b/apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts
+@@ -0,0 +1,18 @@
++import { IsoDateTime, ThreadId } from "@t3tools/contracts";
++import * as Context from "effect/Context";
++import type * as Effect from "effect/Effect";
++
++import type { PersistenceSqlError } from "../Errors.ts";
++
++export interface AutomaticThreadTitleRenameQueryShape {
++  /** Count durable, successful agent title changes in the rolling window. */
++  readonly countSince: (input: {
++    readonly threadId: ThreadId;
++    readonly since: IsoDateTime;
++  }) => Effect.Effect<number, PersistenceSqlError>;
++}
++
++export class AutomaticThreadTitleRenameQuery extends Context.Service<
++  AutomaticThreadTitleRenameQuery,
++  AutomaticThreadTitleRenameQueryShape
++>()("t3/persistence/Services/AutomaticThreadTitleRenameQuery") {}
 diff --git a/apps/server/src/persistence/Services/ProjectionThreads.ts b/apps/server/src/persistence/Services/ProjectionThreads.ts
-index 0a8b2e31c..2767e8eaf 100644
+index 0a8b2e31c..09f0e074b 100644
 --- a/apps/server/src/persistence/Services/ProjectionThreads.ts
 +++ b/apps/server/src/persistence/Services/ProjectionThreads.ts
 @@ -15,6 +15,7 @@ import {
@@ -1694,11 +2545,12 @@ index 0a8b2e31c..2767e8eaf 100644
    ThreadId,
    TurnId,
  } from "@t3tools/contracts";
-@@ -29,6 +30,7 @@ export const ProjectionThread = Schema.Struct({
+@@ -29,6 +30,8 @@ export const ProjectionThread = Schema.Struct({
    threadId: ThreadId,
    projectId: ProjectId,
    title: Schema.String,
 +  titleSource: Schema.optional(Schema.NullOr(ThreadTitleSource)),
++  titleAutoRenamedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
    modelSelection: ModelSelection,
    runtimeMode: RuntimeMode,
    interactionMode: ProviderInteractionMode,
@@ -1979,7 +2831,7 @@ index 742ee9b86..eadfb4732 100644
                  parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
                },
 diff --git a/apps/server/src/provider/Layers/ProviderService.test.ts b/apps/server/src/provider/Layers/ProviderService.test.ts
-index e7647866d..057b73f21 100644
+index e7647866d..9dfe409dc 100644
 --- a/apps/server/src/provider/Layers/ProviderService.test.ts
 +++ b/apps/server/src/provider/Layers/ProviderService.test.ts
 @@ -60,7 +60,11 @@ import {
@@ -1995,16 +2847,25 @@ index e7647866d..057b73f21 100644
  import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
  import * as ProviderService from "../Services/ProviderService.ts";
  import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
-@@ -78,6 +82,8 @@ import * as ServerSettings from "../../serverSettings.ts";
+@@ -68,6 +72,7 @@ import { makeProviderServiceLive } from "./ProviderService.ts";
+ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
+ import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
++import { PersistenceSqlError } from "../../persistence/Errors.ts";
+ import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+ import {
+   makeSqlitePersistenceLive,
+@@ -78,6 +83,9 @@ import * as ServerSettings from "../../serverSettings.ts";
  import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
  import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
  import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
++import { AutomaticThreadTitleRateLimit } from "../../orchestration/AutomaticThreadTitleRateLimit.ts";
 +import type * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 +import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
  
  const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
  const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
-@@ -4796,7 +4802,7 @@ boundedListing.layer("ProviderServiceLive session listing", (it) => {
+@@ -4796,7 +4804,7 @@ boundedListing.layer("ProviderServiceLive session listing", (it) => {
  
  const decodeBrowserAccessThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
  
@@ -2013,13 +2874,18 @@ index e7647866d..057b73f21 100644
    const revokedThreads: Array<ThreadId> = [];
    const projectId = ProjectId.make("project-browser-access");
  
-@@ -4804,9 +4810,12 @@ describe("agent browser access", () => {
+@@ -4804,9 +4812,17 @@ describe("agent browser access", () => {
      enableAgentBrowserAccess: boolean,
      threadId: ThreadId,
      projectOverride?: boolean,
 +    automaticThreadTitles = false,
 +    titleSource: "automatic" | "user" | undefined = "automatic",
 +    sendTurn = false,
++    lifecycle: Partial<
++      Pick<typeof OrchestrationThreadShell.Type, "archivedAt" | "settledOverride" | "snoozedUntil">
++    > = {},
++    threadAvailable = true,
++    titleRenameQuotaAvailable: boolean | "error" = true,
    ) =>
      Effect.gen(function* () {
 -      const issued: Array<ThreadId> = [];
@@ -2027,7 +2893,25 @@ index e7647866d..057b73f21 100644
        const codex = makeFakeCodexAdapter();
        const providerAdapterLayer = Layer.succeed(
          ProviderAdapterRegistry.ProviderAdapterRegistry,
-@@ -4843,6 +4852,7 @@ describe("agent browser access", () => {
+@@ -4818,6 +4834,11 @@ describe("agent browser access", () => {
+       const directoryLayer = ProviderSessionDirectoryLive.pipe(
+         Layer.provide(runtimeRepositoryLayer),
+       );
++      const isTitleRenameAvailable = vi.fn(() =>
++        titleRenameQuotaAvailable === "error"
++          ? Effect.fail(new PersistenceSqlError({ operation: "test-title-quota" }))
++          : Effect.succeed(titleRenameQuotaAvailable),
++      );
+       const projectionLayer = Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+         getTurnStartMessage: () => Effect.die("unused"),
+         getImportedAgentSessionSources: () => Effect.die("unused"),
+@@ -4838,11 +4859,13 @@ describe("agent browser access", () => {
+         getThreadShellById: (requestedThreadId) =>
+           Effect.gen(function* () {
+             assert.equal(requestedThreadId, threadId);
++            if (!threadAvailable) return Option.none();
+             return Option.some(
+               yield* decodeBrowserAccessThreadShell({
                  id: threadId,
                  projectId,
                  title: "Browser access test",
@@ -2035,7 +2919,15 @@ index e7647866d..057b73f21 100644
                  modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
                  runtimeMode: "full-access",
                  branch: null,
-@@ -4865,8 +4875,19 @@ describe("agent browser access", () => {
+@@ -4850,6 +4873,7 @@ describe("agent browser access", () => {
+                 latestTurn: null,
+                 createdAt: "2026-01-01T00:00:00.000Z",
+                 updatedAt: "2026-01-01T00:00:00.000Z",
++                ...lifecycle,
+                 session: null,
+                 latestUserMessageAt: null,
+                 hasPendingApprovals: false,
+@@ -4865,17 +4889,38 @@ describe("agent browser access", () => {
        const providerLayer = makeProviderServiceLive({
          issueMcpCredential: (request) =>
            Effect.sync(() => {
@@ -2057,7 +2949,18 @@ index e7647866d..057b73f21 100644
            }),
          revokeMcpCredential: (revoked) => Effect.sync(() => void revokedThreads.push(revoked)),
        }).pipe(
-@@ -4876,6 +4897,7 @@ describe("agent browser access", () => {
+         Layer.provide(providerAdapterLayer),
+         Layer.provide(directoryLayer),
+         Layer.provide(projectionLayer),
++        Layer.provide(
++          Layer.succeed(
++            AutomaticThreadTitleRateLimit,
++            AutomaticThreadTitleRateLimit.of({
++              isAvailable: isTitleRenameAvailable,
++              withPermit: (_threadId, _limit, effect) => Effect.map(effect, Option.some),
++            }),
++          ),
++        ),
          Layer.provide(
            ServerSettings.ServerSettingsService.layerTest({
              enableAgentBrowserAccess,
@@ -2065,7 +2968,7 @@ index e7647866d..057b73f21 100644
              projectAgentBrowserAccessOverrides:
                projectOverride === undefined ? {} : { [projectId]: projectOverride },
            }),
-@@ -4892,39 +4914,41 @@ describe("agent browser access", () => {
+@@ -4892,39 +4937,41 @@ describe("agent browser access", () => {
  
        yield* Effect.gen(function* () {
          const provider = yield* ProviderService.ProviderService;
@@ -2084,7 +2987,7 @@ index e7647866d..057b73f21 100644
  
 -      return issued;
 +      McpProviderSession.clearMcpProviderSession(threadId);
-+      return { issued, codex };
++      return { issued, codex, isTitleRenameAvailable };
      });
  
 -  // Credential issuance is the observable that matters: it is the only place a
@@ -2120,7 +3023,7 @@ index e7647866d..057b73f21 100644
      }).pipe(Effect.provide(NodeServices.layer)),
    );
  
-@@ -4932,9 +4956,9 @@ describe("agent browser access", () => {
+@@ -4932,9 +4979,9 @@ describe("agent browser access", () => {
      Effect.gen(function* () {
        const threadId = asThreadId("thread-browser-on");
  
@@ -2132,7 +3035,7 @@ index e7647866d..057b73f21 100644
      }).pipe(Effect.provide(NodeServices.layer)),
    );
  
-@@ -4942,17 +4966,68 @@ describe("agent browser access", () => {
+@@ -4942,17 +4989,178 @@ describe("agent browser access", () => {
      Effect.gen(function* () {
        const threadId = asThreadId("thread-project-browser-off");
        revokedThreads.length = 0;
@@ -2158,9 +3061,17 @@ index e7647866d..057b73f21 100644
 +  it.effect("grants title updates without granting browser access", () =>
 +    Effect.gen(function* () {
 +      const threadId = asThreadId("thread-title-on");
-+      const { issued, codex } = yield* startSessionWith(false, threadId, undefined, true);
++      const { issued, codex, isTitleRenameAvailable } = yield* startSessionWith(
++        false,
++        threadId,
++        undefined,
++        true,
++      );
 +
 +      assert.deepEqual(issued[0]?.capabilities, ["thread-title"]);
++      assert.deepEqual(isTitleRenameAvailable.mock.calls, [
++        [threadId, { maxCount: 1, windowHours: 12 }],
++      ]);
 +      const startInput = codex.startSession.mock.calls[0]?.[0] as
 +        | ProviderAdapterSessionStartInput
 +        | undefined;
@@ -2171,12 +3082,113 @@ index e7647866d..057b73f21 100644
 +    }).pipe(Effect.provide(NodeServices.layer)),
 +  );
 +
++  it.effect("withholds exhausted title quota while preserving browser access", () =>
++    Effect.gen(function* () {
++      const threadId = asThreadId("thread-title-quota-exhausted");
++      const { issued, codex } = yield* startSessionWith(
++        true,
++        threadId,
++        undefined,
++        true,
++        "automatic",
++        false,
++        {},
++        true,
++        false,
++      );
++
++      assert.deepEqual(issued[0]?.capabilities, ["preview"]);
++      const startInput = codex.startSession.mock.calls[0]?.[0] as
++        | ProviderAdapterSessionStartInput
++        | undefined;
++      assert.deepEqual(startInput?.runtimeInstructions, { browserToolsAvailable: true });
++    }).pipe(Effect.provide(NodeServices.layer)),
++  );
++
++  it.effect("keeps browser access when the title quota cannot be read", () =>
++    Effect.gen(function* () {
++      const threadId = asThreadId("thread-title-quota-error");
++      const { issued, codex } = yield* startSessionWith(
++        true,
++        threadId,
++        undefined,
++        true,
++        "automatic",
++        false,
++        {},
++        true,
++        "error",
++      );
++
++      assert.deepEqual(issued[0]?.capabilities, ["preview"]);
++      const startInput = codex.startSession.mock.calls[0]?.[0] as
++        | ProviderAdapterSessionStartInput
++        | undefined;
++      assert.deepEqual(startInput?.runtimeInstructions, { browserToolsAvailable: true });
++    }).pipe(Effect.provide(NodeServices.layer)),
++  );
++
++  it.effect("withholds title updates for inactive lifecycles while preserving browser access", () =>
++    Effect.gen(function* () {
++      yield* TestClock.setTime(Date.parse("2026-01-01T00:00:00.000Z"));
++      for (const [name, lifecycle, threadAvailable] of [
++        ["archived", { archivedAt: "2025-12-31T23:00:00.000Z" }, true],
++        ["settled", { settledOverride: "settled" as const }, true],
++        ["snoozed", { snoozedUntil: "2026-01-01T00:00:01.000Z" }, true],
++        ["deleted", {}, false],
++      ] as const) {
++        const threadId = asThreadId(`thread-title-${name}`);
++        const { issued, codex } = yield* startSessionWith(
++          true,
++          threadId,
++          undefined,
++          true,
++          "automatic",
++          false,
++          lifecycle,
++          threadAvailable,
++        );
++
++        assert.deepEqual(issued[0]?.capabilities, ["preview"]);
++        const startInput = codex.startSession.mock.calls[0]?.[0] as
++          | ProviderAdapterSessionStartInput
++          | undefined;
++        assert.deepEqual(startInput?.runtimeInstructions, { browserToolsAvailable: true });
++      }
++    }).pipe(Effect.provide(NodeServices.layer)),
++  );
++
++  it.effect("restores title updates after a snooze expires", () =>
++    Effect.gen(function* () {
++      yield* TestClock.setTime(Date.parse("2026-01-01T00:00:00.000Z"));
++      const threadId = asThreadId("thread-title-snooze-expired");
++      const { issued } = yield* startSessionWith(
++        true,
++        threadId,
++        undefined,
++        true,
++        "automatic",
++        false,
++        { snoozedUntil: "2025-12-31T23:59:59.000Z" },
++      );
++
++      assert.deepEqual(issued[0]?.capabilities, ["thread-title", "preview"]);
++    }).pipe(Effect.provide(NodeServices.layer)),
++  );
++
 +  it.effect("withholds title guidance for a user-authored title", () =>
 +    Effect.gen(function* () {
 +      const threadId = asThreadId("thread-title-protected");
-+      const { issued, codex } = yield* startSessionWith(false, threadId, undefined, true, "user");
++      const { issued, codex, isTitleRenameAvailable } = yield* startSessionWith(
++        false,
++        threadId,
++        undefined,
++        true,
++        "user",
++      );
 +
-+      assert.deepEqual(issued[0]?.capabilities, ["thread-title"]);
++      assert.deepEqual(issued[0]?.capabilities, []);
++      assert.equal(isTitleRenameAvailable.mock.calls.length, 0);
 +      const startInput = codex.startSession.mock.calls[0]?.[0] as
 +        | ProviderAdapterSessionStartInput
 +        | undefined;
@@ -2187,7 +3199,7 @@ index e7647866d..057b73f21 100644
 +  it.effect("refreshes title guidance for each turn", () =>
 +    Effect.gen(function* () {
 +      const threadId = asThreadId("thread-title-turn");
-+      const { codex } = yield* startSessionWith(
++      const { codex, isTitleRenameAvailable } = yield* startSessionWith(
 +        false,
 +        threadId,
 +        undefined,
@@ -2203,14 +3215,35 @@ index e7647866d..057b73f21 100644
 +        browserToolsAvailable: false,
 +        currentThreadTitle: "Browser access test",
 +      });
++      assert.equal(isTitleRenameAvailable.mock.calls.length, 2);
      }).pipe(Effect.provide(NodeServices.layer)),
    );
  });
 diff --git a/apps/server/src/provider/Layers/ProviderService.ts b/apps/server/src/provider/Layers/ProviderService.ts
-index 016bcd5c4..d229f0c84 100644
+index 016bcd5c4..0925752c7 100644
 --- a/apps/server/src/provider/Layers/ProviderService.ts
 +++ b/apps/server/src/provider/Layers/ProviderService.ts
-@@ -852,64 +852,81 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -79,6 +79,11 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+ import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+ import * as ServerSettings from "../../serverSettings.ts";
+ import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
++import {
++  AutomaticThreadTitleRateLimit,
++  hasAutomaticThreadTitleRenameQuota,
++} from "../../orchestration/AutomaticThreadTitleRateLimit.ts";
++import { allowsAutomaticThreadTitleUpdate } from "../../orchestration/ThreadTitlePolicy.ts";
+ const isModelSelection = Schema.is(ModelSelection);
+ const encodePromptJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+ 
+@@ -477,6 +482,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+   const projectionQuery = yield* Effect.serviceOption(
+     ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+   );
++  const automaticThreadTitleRateLimit = yield* Effect.serviceOption(AutomaticThreadTitleRateLimit);
+   const issueMcpCredential =
+     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
+   const revokeMcpCredential =
+@@ -852,64 +858,102 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
      });
      yield* recordCompletedTurnProperties(properties);
    });
@@ -2237,7 +3270,6 @@ index 016bcd5c4..d229f0c84 100644
      function* (threadId: ThreadId) {
        const settings = yield* serverSettings.getSettings;
 +      const capabilities: Array<"preview" | "thread-title"> = [];
-+      if (settings.automaticThreadTitles) capabilities.push("thread-title");
 +
 +      const needsThread =
 +        settings.automaticThreadTitles ||
@@ -2246,6 +3278,28 @@ index 016bcd5c4..d229f0c84 100644
 +        needsThread && Option.isSome(projectionQuery)
 +          ? yield* projectionQuery.value.getThreadShellById(threadId)
 +          : Option.none();
++
++      const automaticTitleLifecycleAllowsUpdates =
++        settings.automaticThreadTitles &&
++        Option.isSome(thread) &&
++        thread.value.titleSource === "automatic" &&
++        allowsAutomaticThreadTitleUpdate(thread.value, yield* nowIso) &&
++        Option.isSome(automaticThreadTitleRateLimit);
++      const automaticTitleUpdatesAllowed = automaticTitleLifecycleAllowsUpdates
++        ? yield* hasAutomaticThreadTitleRenameQuota(threadId, settings).pipe(
++            Effect.provideService(
++              AutomaticThreadTitleRateLimit,
++              automaticThreadTitleRateLimit.value,
++            ),
++            Effect.catch((cause) =>
++              Effect.logWarning(
++                "Could not resolve automatic thread title quota; withholding title updates for this turn.",
++                { cause },
++              ).pipe(Effect.as(false)),
++            ),
++          )
++        : false;
++      if (automaticTitleUpdatesAllowed) capabilities.push("thread-title");
 +
        if (Object.keys(settings.projectAgentBrowserAccessOverrides).length === 0) {
 -        return settings.enableAgentBrowserAccess;
@@ -2264,10 +3318,10 @@ index 016bcd5c4..d229f0c84 100644
 -      return resolveProjectAgentBrowserAccess(settings, thread.value.projectId);
 +
 +      // A title-only credential does not grant preview access. Guidance is
-+      // also withheld for user-authored and legacy titles, which the rename
-+      // tool protects independently in case ownership changes during a turn.
++      // also withheld for user-authored titles, which the rename tool protects
++      // independently in case ownership changes during a turn.
 +      const currentThreadTitle =
-+        settings.automaticThreadTitles &&
++        automaticTitleUpdatesAllowed &&
 +        Option.isSome(thread) &&
 +        thread.value.titleSource === "automatic"
 +          ? thread.value.title
@@ -2328,7 +3382,7 @@ index 016bcd5c4..d229f0c84 100644
        Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
      );
  
-@@ -1191,7 +1208,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1191,7 +1235,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
        const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
        const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
  
@@ -2337,7 +3391,7 @@ index 016bcd5c4..d229f0c84 100644
        const resumed = yield* adapter
          .startSession({
            threadId: input.binding.threadId,
-@@ -1201,6 +1218,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1201,6 +1245,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
            ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
            ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
            runtimeMode: input.binding.runtimeMode ?? "full-access",
@@ -2347,7 +3401,7 @@ index 016bcd5c4..d229f0c84 100644
          })
          .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
        if (resumed.provider !== adapter.provider) {
-@@ -1422,13 +1442,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1422,13 +1469,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
          }
          const adapter = yield* registry.getByInstance(resolvedInstanceId);
          yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
@@ -2365,7 +3419,7 @@ index 016bcd5c4..d229f0c84 100644
            })
            .pipe(Effect.onError(() => clearMcpSession(threadId)));
  
-@@ -1625,6 +1648,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1625,6 +1675,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
        // an already-spawned agent process, so we keep the existing token valid
        // rather than issuing a new one: sessions that go a long time between
        // browser tool calls used to lose the toolkit outright.
@@ -2377,7 +3431,7 @@ index 016bcd5c4..d229f0c84 100644
        yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
        const analyticsModelSelection =
          input.modelSelection?.instanceId === routed.instanceId ? input.modelSelection : undefined;
-@@ -1639,7 +1667,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
+@@ -1639,7 +1694,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
          }),
          (turnMetadata) =>
            Effect.gen(function* () {
@@ -2393,10 +3447,10 @@ index 016bcd5c4..d229f0c84 100644
                providerInstanceId: routed.instanceId,
                threadId: input.threadId,
 diff --git a/apps/server/src/provider/RuntimeInstructions.test.ts b/apps/server/src/provider/RuntimeInstructions.test.ts
-index 320aa332c..38eb8e668 100644
+index 320aa332c..95ba2b543 100644
 --- a/apps/server/src/provider/RuntimeInstructions.test.ts
 +++ b/apps/server/src/provider/RuntimeInstructions.test.ts
-@@ -17,4 +17,32 @@ describe("buildRuntimeInstructions", () => {
+@@ -17,4 +17,33 @@ describe("buildRuntimeInstructions", () => {
      expect(instructions).toContain("through the Cursor harness.");
      expect(instructions).not.toContain("reasoning effort");
    });
@@ -2415,6 +3469,7 @@ index 320aa332c..38eb8e668 100644
 +    expect(enabled).toContain("natural stopping points");
 +    expect(enabled).toContain("main objective has materially changed");
 +    expect(enabled).toContain("do not make a separate generation call");
++    expect(enabled).toContain("rate limited");
 +    expect(disabled).not.toContain("thread_title_updates");
 +    expect(disabled).not.toContain("rename_current_thread");
 +  });
@@ -2430,7 +3485,7 @@ index 320aa332c..38eb8e668 100644
 +  });
  });
 diff --git a/apps/server/src/provider/RuntimeInstructions.ts b/apps/server/src/provider/RuntimeInstructions.ts
-index 102c49c78..390b50366 100644
+index 102c49c78..d49190ec5 100644
 --- a/apps/server/src/provider/RuntimeInstructions.ts
 +++ b/apps/server/src/provider/RuntimeInstructions.ts
 @@ -3,13 +3,29 @@ export function buildRuntimeInstructions(runtime: {
@@ -2452,7 +3507,7 @@ index 102c49c78..390b50366 100644
 +
 +export function buildThreadTitleInstructions(currentThreadTitle?: string): string {
 +  return currentThreadTitle
-+    ? `<thread_title_updates>Automatic thread-title updates are enabled. The current title is ${toSafeJsonStringLiteral(currentThreadTitle)}. At natural stopping points, consider whether it still describes the main objective. Call the t3-code \`rename_current_thread\` tool only when the main objective has materially changed or a vague task has become concrete and this title is misleading. Choose a concise, stable title for the main objective. Do not rename for routine progress, debugging, or minor subtopics. Decide from the conversation itself; do not make a separate generation call. If the tool reports disabled, protected, or unavailable, do not retry during this turn.</thread_title_updates>`
++    ? `<thread_title_updates>Automatic thread-title updates are enabled. The current title is ${toSafeJsonStringLiteral(currentThreadTitle)}. At natural stopping points, consider whether it still describes the main objective. Call the t3-code \`rename_current_thread\` tool only when the main objective has materially changed or a vague task has become concrete and this title is misleading. Choose a concise, stable title for the main objective. Do not rename for routine progress, debugging, or minor subtopics. Decide from the conversation itself; do not make a separate generation call. If the tool reports disabled, protected, unavailable, or rate limited, do not retry during this turn.</thread_title_updates>`
 +    : "";
 +}
 +
@@ -2505,6 +3560,38 @@ index c9b62fd79..0b66ee18a 100644
    ) => Effect.Effect<ProviderTurnStartResult, TError>;
  
    /** Omitted when this adapter does not support manual context compaction. */
+diff --git a/apps/server/src/server.ts b/apps/server/src/server.ts
+index fd8ee4a4f..312e7ed54 100644
+--- a/apps/server/src/server.ts
++++ b/apps/server/src/server.ts
+@@ -28,6 +28,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
+ import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
+ import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
+ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
++import { AutomaticThreadTitleRenameQueryLive } from "./persistence/Layers/AutomaticThreadTitleRenameQuery.ts";
+ import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
+ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
+@@ -70,6 +71,7 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
+ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
+ import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
+ import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
++import { AutomaticThreadTitleRateLimitLive } from "./orchestration/AutomaticThreadTitleRateLimit.ts";
+ import * as ThreadSettlementReactor from "./orchestration/ThreadSettlementReactor.ts";
+ import * as ThreadPullRequestReactor from "./orchestration/ThreadPullRequestReactor.ts";
+ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
+@@ -300,7 +302,10 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
+   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
+ );
+ 
+-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
++const PersistenceLayerLive = AutomaticThreadTitleRateLimitLive.pipe(
++  Layer.provide(AutomaticThreadTitleRenameQueryLive),
++  Layer.provideMerge(SqlitePersistenceLayerLive),
++);
+ 
+ const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
+   Layer.provide(VcsProjectConfig.layer),
 diff --git a/apps/server/src/serverRuntimeStartup.ts b/apps/server/src/serverRuntimeStartup.ts
 index 3d04abaa1..6c91b0a5a 100644
 --- a/apps/server/src/serverRuntimeStartup.ts
@@ -2622,11 +3709,225 @@ index c0e16c7cc..2157edce4 100644
          },
        });
        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+diff --git a/apps/web/src/components/Sidebar.logic.test.ts b/apps/web/src/components/Sidebar.logic.test.ts
+index 4a0584821..00f758c13 100644
+--- a/apps/web/src/components/Sidebar.logic.test.ts
++++ b/apps/web/src/components/Sidebar.logic.test.ts
+@@ -29,6 +29,7 @@ import {
+   resolveWorkingStartedAt,
+   searchSidebarThreadsByTitle,
+   formatWorkingDurationLabel,
++  hasActiveAutomaticRename,
+   shouldClearThreadSelectionOnMouseDown,
+   shouldRecedeSidebarThread,
+   sortLogicalProjectsForSidebar,
+@@ -1919,6 +1920,7 @@ describe("resolveThreadStatusPill", () => {
+     hasPendingUserInput: false,
+     interactionMode: "plan" as const,
+     latestTurn: null,
++    latestUserMessageAt: "2026-03-09T09:00:00.000Z",
+     lastVisitedAt: undefined,
+     session: {
+       threadId: ThreadId.make("thread-1"),
+@@ -1996,6 +1998,29 @@ describe("resolveThreadStatusPill", () => {
+     ).toBeNull();
+   });
+ 
++  it("shows an automatic rename until a newer user message starts", () => {
++    expect(
++      resolveThreadStatusPill({
++        thread: {
++          ...baseThread,
++          titleAutoRenamedAt: "2026-03-09T09:01:00.000Z",
++          session: null,
++        },
++      }),
++    ).toMatchObject({ label: "Renamed", pulse: false });
++
++    expect(
++      resolveThreadStatusPill({
++        thread: {
++          ...baseThread,
++          latestUserMessageAt: "2026-03-09T09:02:00.000Z",
++          titleAutoRenamedAt: "2026-03-09T09:01:00.000Z",
++          session: null,
++        },
++      }),
++    ).toBeNull();
++  });
++
+   it("shows completed when there is an unseen completion and no active blocker", () => {
+     expect(
+       resolveThreadStatusPill({
+@@ -2015,6 +2040,29 @@ describe("resolveThreadStatusPill", () => {
+   });
+ });
+ 
++describe("hasActiveAutomaticRename", () => {
++  it("requires a valid rename timestamp newer than the latest user message", () => {
++    expect(
++      hasActiveAutomaticRename({
++        titleAutoRenamedAt: "2026-03-09T09:01:00.000Z",
++        latestUserMessageAt: "2026-03-09T09:00:00.000Z",
++      }),
++    ).toBe(true);
++    expect(
++      hasActiveAutomaticRename({
++        titleAutoRenamedAt: "2026-03-09T09:01:00.000Z",
++        latestUserMessageAt: "2026-03-09T09:01:00.000Z",
++      }),
++    ).toBe(false);
++    expect(
++      hasActiveAutomaticRename({
++        titleAutoRenamedAt: null,
++        latestUserMessageAt: "2026-03-09T09:00:00.000Z",
++      }),
++    ).toBe(false);
++  });
++});
++
+ describe("resolveThreadRowClassName", () => {
+   it("uses the active sidebar surface when a thread is both selected and active", () => {
+     const className = resolveThreadRowClassName({ isActive: true, isSelected: true });
+diff --git a/apps/web/src/components/Sidebar.logic.ts b/apps/web/src/components/Sidebar.logic.ts
+index 9b59675e2..5097e2018 100644
+--- a/apps/web/src/components/Sidebar.logic.ts
++++ b/apps/web/src/components/Sidebar.logic.ts
+@@ -493,7 +493,8 @@ export interface ThreadStatusPill {
+     | "Completed"
+     | "Pending Approval"
+     | "Awaiting Input"
+-    | "Plan Ready";
++    | "Plan Ready"
++    | "Renamed";
+   colorClass: string;
+   dotClass: string;
+   pulse: boolean;
+@@ -509,6 +510,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
+   Connecting: 4,
+   "Plan Ready": 3,
+   Monitoring: 2,
++  Renamed: 1,
+   Completed: 1,
+ };
+ 
+@@ -522,6 +524,8 @@ type ThreadStatusInput = Pick<
+   | "session"
+   | "backgroundLiveness"
+ > & {
++  latestUserMessageAt?: string | null | undefined;
++  titleAutoRenamedAt?: string | null | undefined;
+   lastVisitedAt?: string | undefined;
+ };
+ 
+@@ -962,6 +966,19 @@ export function formatWorkingDurationLabel(elapsedMs: number): string {
+   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+ }
+ 
++/** An automatic rename stays visible until the next user message begins. */
++export function hasActiveAutomaticRename(input: {
++  readonly titleAutoRenamedAt?: string | null | undefined;
++  readonly latestUserMessageAt?: string | null | undefined;
++}): boolean {
++  if (input.titleAutoRenamedAt == null) return false;
++  const renamedAt = Date.parse(input.titleAutoRenamedAt);
++  if (!Number.isFinite(renamedAt)) return false;
++  if (input.latestUserMessageAt == null) return true;
++  const latestUserMessageAt = Date.parse(input.latestUserMessageAt);
++  return Number.isFinite(latestUserMessageAt) && renamedAt > latestUserMessageAt;
++}
++
+ export function resolveThreadStatusPill(input: {
+   thread: ThreadStatusInput;
+ }): ThreadStatusPill | null {
+@@ -1041,6 +1058,15 @@ export function resolveThreadStatusPill(input: {
+     };
+   }
+ 
++  if (hasActiveAutomaticRename(thread)) {
++    return {
++      label: "Renamed",
++      colorClass: "text-amber-600 dark:text-amber-300/90",
++      dotClass: "bg-amber-500 dark:bg-amber-300/90",
++      pulse: false,
++    };
++  }
++
+   if (hasUnseenCompletion(thread)) {
+     return {
+       label: "Completed",
 diff --git a/apps/web/src/components/Sidebar.tsx b/apps/web/src/components/Sidebar.tsx
-index ebc1078e6..82d1ef832 100644
+index ebc1078e6..fb82dde10 100644
 --- a/apps/web/src/components/Sidebar.tsx
 +++ b/apps/web/src/components/Sidebar.tsx
-@@ -2903,7 +2903,7 @@ export default function Sidebar() {
+@@ -148,6 +148,7 @@ import {
+   filterSidebarProjectScopeItems,
+   formatWorkingDurationLabel,
+   firstValidTimestampMs,
++  hasActiveAutomaticRename,
+   hasUnseenCompletion,
+   isSidebarNestedLinkClick,
+   isTrailingDoubleClick,
+@@ -1083,13 +1084,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
+     wokeAtDate !== null &&
+     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
+     thread.settledOverride !== "settled";
++  const isAutoRenamed = hasActiveAutomaticRename(thread);
+   // Background work always recedes when it is not selected: an unread parent
+   // completion must not pull a still-working thread back into the foreground.
+   // Ready and action-required rows keep their unread and wake prominence.
+   const shouldRecede = shouldRecedeSidebarThread({
+     status,
+     isUnread,
+-    isWoke,
++    isWoke: isWoke || isAutoRenamed,
+     isActive: props.isActive,
+     isSelected,
+   });
+@@ -1140,13 +1142,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
+                     icon: "woke" as const,
+                     className: "text-amber-700 dark:text-amber-300",
+                   }
+-                : isUnread
++                : isAutoRenamed
+                   ? {
+-                      label: "Done",
+-                      icon: "done" as const,
+-                      className: "text-emerald-700 dark:text-emerald-300",
++                      label: "Renamed",
++                      icon: null,
++                      className: "text-amber-700 dark:text-amber-300",
+                     }
+-                  : null;
++                  : isUnread
++                    ? {
++                        label: "Done",
++                        icon: "done" as const,
++                        className: "text-emerald-700 dark:text-emerald-300",
++                      }
++                    : null;
+   const isWokeStatus = topStatus?.icon === "woke";
+ 
+   const branchMismatch = resolveLocalCheckoutBranchMismatch({
+@@ -1433,7 +1441,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
+               "truncate",
+               shouldRecede
+                 ? "text-secondary-label"
+-                : isUnread || isWoke
++                : isUnread || isWoke || isAutoRenamed
+                   ? "text-foreground"
+                   : status === "failed"
+                     ? "text-foreground/95"
+@@ -1443,7 +1451,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
+               "truncate group-hover/sidebar-row:text-foreground",
+               shouldRecede
+                 ? "text-secondary-label/70"
+-                : props.isActive || isWoke
++                : props.isActive || isWoke || isAutoRenamed
+                   ? "text-foreground"
+                   : isUnread
+                     ? "text-muted-foreground"
+@@ -2903,7 +2911,7 @@ export default function Sidebar() {
          if (trimmed === originalTitle) return;
          const result = await updateThreadMetadata({
            environmentId: threadRef.environmentId,
@@ -2649,36 +3950,102 @@ index fbebc323a..77a0d289f 100644
          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
            const error = squashAtomCommandFailure(result);
 diff --git a/apps/web/src/components/settings/SettingsPanels.tsx b/apps/web/src/components/settings/SettingsPanels.tsx
-index 4c108b01d..483ab1efa 100644
+index 4c108b01d..120c701ff 100644
 --- a/apps/web/src/components/settings/SettingsPanels.tsx
 +++ b/apps/web/src/components/settings/SettingsPanels.tsx
-@@ -523,6 +523,9 @@ export function useSettingsRestore(onRestored?: () => void) {
+@@ -9,6 +9,7 @@ import {
+   type DesktopUpdateChannel,
+   ProviderDriverKind,
+   type ProviderInstanceId,
++  type ServerSettings,
+   type ScopedThreadRef,
+   type SidebarProjectGroupingMode,
+ } from "@t3tools/contracts";
+@@ -24,6 +25,8 @@ import {
+   type DiffLayout,
+   type EnvironmentIdentificationMode,
+   MAX_APPEARANCE_CONTRAST,
++  MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++  MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
+   MAX_CODE_FONT_SIZE,
+   MAX_GLASS_OPACITY,
+   MAX_INTERFACE_FONT_SIZE,
+@@ -33,6 +36,8 @@ import {
+   MAX_TERMINAL_FONT_SIZE,
+   MIN_CODE_FONT_SIZE,
+   MIN_APPEARANCE_CONTRAST,
++  MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++  MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
+   MIN_GLASS_OPACITY,
+   MIN_INTERFACE_FONT_SIZE,
+   MIN_PANEL_ANIMATION_DURATION_MS,
+@@ -42,6 +47,7 @@ import {
+   type QuitConfirmationMode,
+ } from "@t3tools/contracts/settings";
+ import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
++import { resolveAutomaticThreadTitleRenameLimit } from "@t3tools/shared/serverSettings";
+ import { createModelSelection } from "@t3tools/shared/model";
+ import * as Duration from "effect/Duration";
+ import * as Equal from "effect/Equal";
+@@ -179,6 +185,15 @@ const DIFF_LAYOUT_LABELS: Record<DiffLayout, string> = {
+   split: "Split",
+ };
+ 
++type AutomaticThreadTitleRenamePolicy = ServerSettings["automaticThreadTitleRenamePolicy"];
++
++const AUTOMATIC_TITLE_POLICY_LABELS: Record<AutomaticThreadTitleRenamePolicy, string> = {
++  rare: "Rare · once / 24 hours",
++  balanced: "Balanced · once / 12 hours",
++  often: "Often · once / 6 hours",
++  custom: "Custom",
++};
++
+ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
+   direct: "Direct",
+   hold: "Hold",
+@@ -523,6 +538,17 @@ export function useSettingsRestore(onRestored?: () => void) {
        DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
          ? ["Project Grouping"]
          : []),
 +      ...(settings.automaticThreadTitles !== DEFAULT_UNIFIED_SETTINGS.automaticThreadTitles
 +        ? ["Keep thread titles up to date"]
 +        : []),
++      ...(settings.automaticThreadTitleRenamePolicy !==
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenamePolicy ||
++      settings.automaticThreadTitleRenameMaxCount !==
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount ||
++      settings.automaticThreadTitleRenameWindowHours !==
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours
++        ? ["Automatic title update frequency"]
++        : []),
        ...(settings.sidebarAutoSettleAfterDays !==
        DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
          ? ["Auto-settle inactive threads"]
-@@ -626,6 +629,7 @@ export function useSettingsRestore(onRestored?: () => void) {
+@@ -626,6 +652,10 @@ export function useSettingsRestore(onRestored?: () => void) {
        settings.continueThreadsAfterServerUpdate,
        settings.sidebarAutoSettleAfterDays,
        settings.sidebarAutoSettleOnMerge,
 +      settings.automaticThreadTitles,
++      settings.automaticThreadTitleRenamePolicy,
++      settings.automaticThreadTitleRenameMaxCount,
++      settings.automaticThreadTitleRenameWindowHours,
        settings.sidebarProjectGroupingMode,
        settings.sidebarThreadPreviewCount,
        settings.showSkillsInSlashMenu,
-@@ -714,6 +718,7 @@ export function useSettingsRestore(onRestored?: () => void) {
+@@ -714,6 +744,12 @@ export function useSettingsRestore(onRestored?: () => void) {
        panelAnimationDurationMs: DEFAULT_UNIFIED_SETTINGS.panelAnimationDurationMs,
        sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
        sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
 +      automaticThreadTitles: DEFAULT_UNIFIED_SETTINGS.automaticThreadTitles,
++      automaticThreadTitleRenamePolicy: DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenamePolicy,
++      automaticThreadTitleRenameMaxCount:
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount,
++      automaticThreadTitleRenameWindowHours:
++        DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours,
        sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
        sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
        enableLegacyTokenStreaming: DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming,
-@@ -2017,8 +2022,9 @@ export function GeneralSettingsPanel() {
+@@ -2017,8 +2053,10 @@ export function GeneralSettingsPanel() {
    );
    const observability = useAtomValue(primaryServerObservabilityAtom);
    const serverProviders = useAtomValue(primaryServerProvidersAtom);
@@ -2687,47 +4054,170 @@ index 4c108b01d..483ab1efa 100644
 +  const primaryCapabilities = useAtomValue(primaryServerConfigAtom)?.environment.capabilities;
 +  const supportsAutoSettlement = primaryCapabilities?.threadAutoSettlement === true;
 +  const supportsAutomaticThreadTitles = primaryCapabilities?.automaticThreadTitles === true;
++  const automaticTitleRenameLimit = resolveAutomaticThreadTitleRenameLimit(settings);
    const diagnosticsDescription = formatDiagnosticsDescription({
      localTracingEnabled: observability?.localTracingEnabled ?? false,
      otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
-@@ -2533,6 +2539,35 @@ export function GeneralSettingsPanel() {
+@@ -2533,6 +2571,157 @@ export function GeneralSettingsPanel() {
            }
          />
  
 +        {supportsAutomaticThreadTitles ? (
-+          <SettingsRow
-+            serverScoped
-+            {...searchableSetting("automatic-thread-titles")}
-+            description="Agents update titles only when the objective meaningfully changes. This does not run on a schedule, and manually renamed titles stay unchanged."
-+            resetAction={
-+              settings.automaticThreadTitles !== DEFAULT_UNIFIED_SETTINGS.automaticThreadTitles ? (
-+                <SettingResetButton
-+                  label="automatic thread titles"
-+                  onClick={() =>
-+                    updateSettings({
-+                      automaticThreadTitles: DEFAULT_UNIFIED_SETTINGS.automaticThreadTitles,
-+                    })
++          <>
++            <SettingsRow
++              serverScoped
++              {...searchableSetting("automatic-thread-titles")}
++              description="Agents update titles when the objective meaningfully changes. Snoozed, archived, and settled threads are skipped, and manually chosen titles stay protected."
++              resetAction={
++                settings.automaticThreadTitles !==
++                DEFAULT_UNIFIED_SETTINGS.automaticThreadTitles ? (
++                  <SettingResetButton
++                    label="automatic thread titles"
++                    onClick={() =>
++                      updateSettings({
++                        automaticThreadTitles: DEFAULT_UNIFIED_SETTINGS.automaticThreadTitles,
++                      })
++                    }
++                  />
++                ) : null
++              }
++              control={
++                <Switch
++                  checked={settings.automaticThreadTitles}
++                  onCheckedChange={(checked) =>
++                    updateSettings({ automaticThreadTitles: Boolean(checked) })
 +                  }
++                  aria-label="Keep thread titles up to date"
 +                />
-+              ) : null
-+            }
-+            control={
-+              <Switch
-+                checked={settings.automaticThreadTitles}
-+                onCheckedChange={(checked) =>
-+                  updateSettings({ automaticThreadTitles: Boolean(checked) })
++              }
++            />
++
++            {settings.automaticThreadTitles ? (
++              <SettingsRow
++                serverScoped
++                {...searchableSetting("automatic-thread-title-frequency")}
++                description={`Allows at most ${automaticTitleRenameLimit.maxCount === 1 ? "one update" : `${automaticTitleRenameLimit.maxCount} updates`} in any rolling ${automaticTitleRenameLimit.windowHours}-hour window. This is a maximum, not a schedule.`}
++                resetAction={
++                  settings.automaticThreadTitleRenamePolicy !==
++                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenamePolicy ||
++                  settings.automaticThreadTitleRenameMaxCount !==
++                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount ||
++                  settings.automaticThreadTitleRenameWindowHours !==
++                    DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours ? (
++                    <SettingResetButton
++                      label="automatic title update frequency"
++                      onClick={() =>
++                        updateSettings({
++                          automaticThreadTitleRenamePolicy:
++                            DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenamePolicy,
++                          automaticThreadTitleRenameMaxCount:
++                            DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameMaxCount,
++                          automaticThreadTitleRenameWindowHours:
++                            DEFAULT_UNIFIED_SETTINGS.automaticThreadTitleRenameWindowHours,
++                        })
++                      }
++                    />
++                  ) : null
 +                }
-+                aria-label="Keep thread titles up to date"
++                control={
++                  <Select
++                    value={settings.automaticThreadTitleRenamePolicy}
++                    onValueChange={(value) => {
++                      if (
++                        value === "rare" ||
++                        value === "balanced" ||
++                        value === "often" ||
++                        value === "custom"
++                      ) {
++                        updateSettings({ automaticThreadTitleRenamePolicy: value });
++                      }
++                    }}
++                  >
++                    <SelectTrigger
++                      size="sm"
++                      className="w-full sm:w-48"
++                      aria-label="Automatic title update frequency"
++                    >
++                      <SelectValue>
++                        {AUTOMATIC_TITLE_POLICY_LABELS[settings.automaticThreadTitleRenamePolicy]}
++                      </SelectValue>
++                    </SelectTrigger>
++                    <SelectPopup align="end" alignItemWithTrigger={false}>
++                      {(
++                        Object.entries(AUTOMATIC_TITLE_POLICY_LABELS) as Array<
++                          [AutomaticThreadTitleRenamePolicy, string]
++                        >
++                      ).map(([value, label]) => (
++                        <SelectItem key={value} hideIndicator value={value}>
++                          {label}
++                        </SelectItem>
++                      ))}
++                    </SelectPopup>
++                  </Select>
++                }
 +              />
-+            }
-+          />
++            ) : null}
++
++            {settings.automaticThreadTitles &&
++            settings.automaticThreadTitleRenamePolicy === "custom" ? (
++              <SettingsRow
++                serverScoped
++                title="Custom title update limit"
++                description="Choose the number of updates allowed during the rolling window."
++                control={
++                  <div className="flex flex-wrap items-center justify-end gap-2">
++                    <NumberField
++                      value={settings.automaticThreadTitleRenameMaxCount}
++                      min={MIN_AUTOMATIC_TITLE_RENAME_COUNT}
++                      max={MAX_AUTOMATIC_TITLE_RENAME_COUNT}
++                      step={1}
++                      size="sm"
++                      className="w-24"
++                      onValueChange={(value) => {
++                        if (typeof value === "number" && Number.isInteger(value)) {
++                          updateSettings({ automaticThreadTitleRenameMaxCount: value });
++                        }
++                      }}
++                    >
++                      <NumberFieldGroup>
++                        <NumberFieldDecrement aria-label="Decrease automatic title update count" />
++                        <NumberFieldInput aria-label="Automatic title update count" />
++                        <NumberFieldIncrement aria-label="Increase automatic title update count" />
++                      </NumberFieldGroup>
++                    </NumberField>
++                    <span className="text-xs text-muted-foreground">updates per</span>
++                    <NumberField
++                      value={settings.automaticThreadTitleRenameWindowHours}
++                      min={MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS}
++                      max={MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS}
++                      step={1}
++                      size="sm"
++                      className="w-24"
++                      onValueChange={(value) => {
++                        if (typeof value === "number" && Number.isInteger(value)) {
++                          updateSettings({ automaticThreadTitleRenameWindowHours: value });
++                        }
++                      }}
++                    >
++                      <NumberFieldGroup>
++                        <NumberFieldDecrement aria-label="Decrease automatic title window" />
++                        <NumberFieldInput aria-label="Automatic title window in hours" />
++                        <NumberFieldIncrement aria-label="Increase automatic title window" />
++                      </NumberFieldGroup>
++                    </NumberField>
++                    <span className="text-xs text-muted-foreground">hours</span>
++                  </div>
++                }
++              />
++            ) : null}
++          </>
 +        ) : null}
 +
          <SettingsRow
            serverScoped
            {...searchableSetting("start-from-origin")}
 diff --git a/apps/web/src/components/settings/settingsSearch.test.ts b/apps/web/src/components/settings/settingsSearch.test.ts
-index e03d624fd..dd872fe4e 100644
+index e03d624fd..a6d46fd8d 100644
 --- a/apps/web/src/components/settings/settingsSearch.test.ts
 +++ b/apps/web/src/components/settings/settingsSearch.test.ts
 @@ -148,6 +148,7 @@ describe("searchSettings", () => {
@@ -2738,15 +4228,16 @@ index e03d624fd..dd872fe4e 100644
      });
  
      const gatedIds = new Set<string>([
-@@ -164,6 +165,7 @@ describe("searchSettings", () => {
+@@ -164,6 +165,8 @@ describe("searchSettings", () => {
        "auto-settle-inactive-threads",
        "auto-settle-merged-threads",
        "days-before-auto-settle",
 +      "automatic-thread-titles",
++      "automatic-thread-title-frequency",
      ]);
      expect(available.map((item) => item.id).filter((id) => gatedIds.has(id))).toEqual([]);
    });
-@@ -176,6 +178,7 @@ describe("searchSettings", () => {
+@@ -176,6 +179,7 @@ describe("searchSettings", () => {
        canManageLocalBackend: false,
        isWslSettingsRowVisible: false,
        hasThreadAutoSettlement: true,
@@ -2754,7 +4245,7 @@ index e03d624fd..dd872fe4e 100644
      });
  
      expect(searchSettings("auto-settle", available).map((item) => item.id)).toEqual([
-@@ -185,6 +188,20 @@ describe("searchSettings", () => {
+@@ -185,6 +189,21 @@ describe("searchSettings", () => {
      ]);
    });
  
@@ -2770,13 +4261,14 @@ index e03d624fd..dd872fe4e 100644
 +    });
 +
 +    expect(available.map((item) => item.id)).toContain("automatic-thread-titles");
++    expect(available.map((item) => item.id)).toContain("automatic-thread-title-frequency");
 +  });
 +
    it("keeps catalog result ids unique", () => {
      const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
      expect(new Set(ids).size).toBe(ids.length);
 diff --git a/apps/web/src/components/settings/settingsSearch.ts b/apps/web/src/components/settings/settingsSearch.ts
-index e32baf6f3..bcacd109a 100644
+index e32baf6f3..3e48a2cca 100644
 --- a/apps/web/src/components/settings/settingsSearch.ts
 +++ b/apps/web/src/components/settings/settingsSearch.ts
 @@ -33,6 +33,7 @@ export interface SettingsSearchItem {
@@ -2795,7 +4287,7 @@ index e32baf6f3..bcacd109a 100644
  }
  
  /**
-@@ -162,6 +164,13 @@ export const SETTINGS_SEARCH_ITEMS = [
+@@ -162,6 +164,21 @@ export const SETTINGS_SEARCH_ITEMS = [
      to: "/settings/general",
      searchTerms: ["combine matching repositories environments sidebar"],
    },
@@ -2806,10 +4298,18 @@ index e32baf6f3..bcacd109a 100644
 +    searchTerms: ["agent automatic regenerate rename objective projects threads"],
 +    requiresAutomaticThreadTitles: true,
 +  },
++  {
++    id: "automatic-thread-title-frequency",
++    title: "Automatic title update frequency",
++    to: "/settings/general",
++    targetId: "automatic-thread-titles",
++    searchTerms: ["rename rate limit rare balanced often custom rolling window projects threads"],
++    requiresAutomaticThreadTitles: true,
++  },
    {
      id: "auto-settle-inactive-threads",
      title: "Auto-settle inactive threads",
-@@ -597,7 +606,8 @@ export function filterAvailableSettingsSearchItems(
+@@ -597,7 +614,8 @@ export function filterAvailableSettingsSearchItems(
        (!item.providerSettingsOnly || availability.hasProviderSettingsEnvironment) &&
        (!item.localBackendManagementOnly || availability.canManageLocalBackend) &&
        (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
@@ -2833,22 +4333,29 @@ index a2f5ca627..4b94fd694 100644
      [
        canManageLocalBackend,
 diff --git a/docs/user/thread-sidebar.md b/docs/user/thread-sidebar.md
-index 360057dd5..b8e666ddb 100644
+index 360057dd5..ad734f4dc 100644
 --- a/docs/user/thread-sidebar.md
 +++ b/docs/user/thread-sidebar.md
-@@ -70,6 +70,19 @@ If dragging is unavailable for one environment, update the T3 Code server runnin
+@@ -70,6 +70,26 @@ If dragging is unavailable for one environment, update the T3 Code server runnin
  environment. Pinned and active reordering require server support. Threads from older servers keep
  their default order until the server is updated.
  
 +## Keep thread titles up to date
 +
-+Turn on **Keep thread titles up to date** in **Settings → General** to let agents update a thread's
-+title when its objective meaningfully changes. Title updates happen as part of agent work; T3 Code
-+does not generate them on a schedule.
++Turn on **Keep thread titles up to date** in **Settings → General → Projects & threads** to let
++agents update a thread's title when its objective meaningfully changes. Title updates happen as
++part of agent work; T3 Code does not generate them on a schedule. Snoozed, archived, and settled
++threads are skipped.
 +
-+The setting preserves titles you renamed yourself. It also treats titles created before this
-+setting was available as protected. Choose **Regenerate title** from a thread's menu when you want
-+the agent to replace a protected title and keep that title up to date afterward.
++Choose **Rare** for at most one rename every 24 hours, **Balanced** (the default) for one every
++12 hours, or **Often** for one every 6 hours. **Custom** lets you set a maximum count and a window
++in hours. These are rolling limits for each thread, shared across devices and preserved across server restarts.
++Reaching a limit pauses automatic renaming until an earlier rename leaves the window; it does
++not queue a rename for later.
++
++Titles you renamed yourself stay protected. Choose **Regenerate title** from a thread's menu when
++you want the agent to replace a protected title and keep it up to date afterward. Manual renames,
++explicit regeneration, and the initial title do not count toward the automatic rename limit.
 +
 +If an older server writes the environment's settings, turn this option on again after returning to
 +a server version that supports it. Older servers discard settings they do not recognize.
@@ -2857,7 +4364,7 @@ index 360057dd5..b8e666ddb 100644
  
  Choose **Settle thread** from its menu to move finished work out of the active list
 diff --git a/packages/client-runtime/src/state/sharedSettings.test.ts b/packages/client-runtime/src/state/sharedSettings.test.ts
-index fc5ffe62e..0c3aa451a 100644
+index fc5ffe62e..51cf6480a 100644
 --- a/packages/client-runtime/src/state/sharedSettings.test.ts
 +++ b/packages/client-runtime/src/state/sharedSettings.test.ts
 @@ -17,7 +17,10 @@ import {
@@ -2872,38 +4379,53 @@ index fc5ffe62e..0c3aa451a 100644
  
  describe("supportsSharedSettingsSync", () => {
    it("accepts only connected servers that advertise the shared-settings capability", () => {
-@@ -86,6 +89,7 @@ describe("splitSharedServerPatch", () => {
+@@ -86,6 +89,10 @@ describe("splitSharedServerPatch", () => {
  
    it("routes preference keys to the shared patch and machine keys to the local patch", () => {
      const { sharedPatch, localPatch } = splitSharedServerPatch({
 +      automaticThreadTitles: true,
++      automaticThreadTitleRenamePolicy: "often",
++      automaticThreadTitleRenameMaxCount: 5,
++      automaticThreadTitleRenameWindowHours: 48,
        sidebarAutoSettleAfterDays: 7,
        sidebarAutoSettleOnMerge: false,
        continueThreadsAfterServerUpdate: true,
-@@ -94,6 +98,7 @@ describe("splitSharedServerPatch", () => {
+@@ -94,6 +101,10 @@ describe("splitSharedServerPatch", () => {
        newWorktreesStartFromOrigin: true,
      });
      expect(sharedPatch).toEqual({
 +      automaticThreadTitles: true,
++      automaticThreadTitleRenamePolicy: "often",
++      automaticThreadTitleRenameMaxCount: 5,
++      automaticThreadTitleRenameWindowHours: 48,
        sidebarAutoSettleAfterDays: 7,
        sidebarAutoSettleOnMerge: false,
        continueThreadsAfterServerUpdate: true,
-@@ -111,6 +116,7 @@ describe("pickSharedServerSettings", () => {
+@@ -111,6 +122,10 @@ describe("pickSharedServerSettings", () => {
      expect(
        Object.keys(pickSharedServerSettings(DEFAULT_SERVER_SETTINGS, restartCapabilities)).sort(),
      ).toEqual([
++      "automaticThreadTitleRenameMaxCount",
++      "automaticThreadTitleRenamePolicy",
++      "automaticThreadTitleRenameWindowHours",
 +      "automaticThreadTitles",
        "continueThreadsAfterServerUpdate",
        "newWorktreesStartFromOrigin",
        "sidebarAutoSettleAfterDays",
-@@ -122,6 +128,50 @@ describe("pickSharedServerSettings", () => {
+@@ -122,6 +137,66 @@ describe("pickSharedServerSettings", () => {
  });
  
  describe("filterSharedServerPatch", () => {
 +  it.each([true, false])(
 +    "syncs automatic title preference %s only to servers with support",
 +    (automaticThreadTitles) => {
-+      const patch = { automaticThreadTitles, sidebarAutoSettleOnMerge: false };
++      const patch = {
++        automaticThreadTitles,
++        automaticThreadTitleRenamePolicy: "custom" as const,
++        automaticThreadTitleRenameMaxCount: 5,
++        automaticThreadTitleRenameWindowHours: 48,
++        sidebarAutoSettleOnMerge: false,
++      };
 +
 +      expect(filterSharedServerPatch(patch, { threadRestartContinuation: true })).toEqual({
 +        sidebarAutoSettleOnMerge: false,
@@ -2914,11 +4436,21 @@ index fc5ffe62e..0c3aa451a 100644
 +          threadRestartContinuation: true,
 +        }),
 +      ).not.toHaveProperty("automaticThreadTitles");
++      expect(
++        pickSharedServerSettings(DEFAULT_SERVER_SETTINGS, {
++          threadRestartContinuation: true,
++        }),
++      ).not.toHaveProperty("automaticThreadTitleRenamePolicy");
 +    },
 +  );
 +
 +  it("ignores automatic title drift on older servers", () => {
-+    const primarySettings = { ...DEFAULT_SERVER_SETTINGS, automaticThreadTitles: true };
++    const primarySettings = {
++      ...DEFAULT_SERVER_SETTINGS,
++      automaticThreadTitleRenamePolicy: "custom" as const,
++      automaticThreadTitleRenameMaxCount: 4,
++      automaticThreadTitleRenameWindowHours: 36,
++    };
 +    const olderServer = {
 +      environmentId: laptopId,
 +      label: "Older laptop",
@@ -2948,18 +4480,21 @@ index fc5ffe62e..0c3aa451a 100644
      "resets a disabled default provider only on the originating environment (%s)",
      (targetIsSource) => {
 diff --git a/packages/client-runtime/src/state/sharedSettings.ts b/packages/client-runtime/src/state/sharedSettings.ts
-index 9845764d5..d476a18ce 100644
+index 9845764d5..80eb67b5d 100644
 --- a/packages/client-runtime/src/state/sharedSettings.ts
 +++ b/packages/client-runtime/src/state/sharedSettings.ts
-@@ -22,6 +22,7 @@ import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
+@@ -22,6 +22,10 @@ import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
  
  /** Server keys that hold a user preference rather than machine config. */
  const SHARED_SERVER_SETTING_KEYS = [
 +  "automaticThreadTitles",
++  "automaticThreadTitleRenamePolicy",
++  "automaticThreadTitleRenameMaxCount",
++  "automaticThreadTitleRenameWindowHours",
    "continueThreadsAfterServerUpdate",
    "sidebarAutoSettleAfterDays",
    "sidebarAutoSettleOnMerge",
-@@ -32,6 +33,11 @@ const SHARED_SERVER_SETTING_KEYS = [
+@@ -32,6 +36,11 @@ const SHARED_SERVER_SETTING_KEYS = [
  
  export type SharedServerSettingKey = (typeof SHARED_SERVER_SETTING_KEYS)[number];
  
@@ -2971,7 +4506,7 @@ index 9845764d5..d476a18ce 100644
  const SHARED_KEY_SET = new Set<string>(SHARED_SERVER_SETTING_KEYS);
  
  /** Split a server patch into the keys every environment should receive and the primary-only rest. */
-@@ -57,7 +63,7 @@ export function splitSharedServerPatch(patch: ServerSettingsPatch): {
+@@ -57,7 +66,7 @@ export function splitSharedServerPatch(patch: ServerSettingsPatch): {
  /** Filter unsupported preferences; direct model writes retain the server's fallback behavior. */
  export function filterSharedServerPatch(
    patch: ServerSettingsPatch,
@@ -2980,7 +4515,7 @@ index 9845764d5..d476a18ce 100644
    settings?: ServerSettings,
    sourceSettings = settings,
    targetIsSource = false,
-@@ -79,15 +85,19 @@ export function filterSharedServerPatch(
+@@ -79,15 +88,24 @@ export function filterSharedServerPatch(
    ) {
      patch = Struct.omit(patch, ["textGenerationModelSelection"]);
    }
@@ -2988,7 +4523,12 @@ index 9845764d5..d476a18ce 100644
 -    ? patch
 -    : Struct.omit(patch, ["continueThreadsAfterServerUpdate"]);
 +  if (capabilities?.automaticThreadTitles !== true) {
-+    patch = Struct.omit(patch, ["automaticThreadTitles"]);
++    patch = Struct.omit(patch, [
++      "automaticThreadTitles",
++      "automaticThreadTitleRenamePolicy",
++      "automaticThreadTitleRenameMaxCount",
++      "automaticThreadTitleRenameWindowHours",
++    ]);
 +  }
 +  if (capabilities?.threadRestartContinuation !== true) {
 +    patch = Struct.omit(patch, ["continueThreadsAfterServerUpdate"]);
@@ -3004,7 +4544,7 @@ index 9845764d5..d476a18ce 100644
  ): ServerSettingsPatch {
    return filterSharedServerPatch(
      Struct.pick(settings, SHARED_SERVER_SETTING_KEYS),
-@@ -119,9 +129,7 @@ export interface SharedSettingsEnvironment {
+@@ -119,9 +137,7 @@ export interface SharedSettingsEnvironment {
    readonly label: string;
    readonly syncEligible: boolean;
    readonly settings: ServerSettings | null;
@@ -3015,38 +4555,52 @@ index 9845764d5..d476a18ce 100644
  }
  
  /**
+@@ -136,7 +152,7 @@ export function findSharedSettingsMismatches(input: {
+   readonly primaryEnvironmentId: EnvironmentId | null;
+   readonly primarySettings: ServerSettings | null;
+   readonly primaryCapabilities?:
+-    | Pick<ExecutionEnvironmentCapabilities, "threadRestartContinuation">
++    | Pick<ExecutionEnvironmentCapabilities, "automaticThreadTitles" | "threadRestartContinuation">
+     | undefined;
+   readonly environments: ReadonlyArray<SharedSettingsEnvironment>;
+ }): ReadonlyArray<{ readonly environmentId: EnvironmentId; readonly label: string }> {
 diff --git a/packages/client-runtime/src/state/threadDetail.ts b/packages/client-runtime/src/state/threadDetail.ts
-index 379985b71..fbc821b21 100644
+index 379985b71..9af0e8d87 100644
 --- a/packages/client-runtime/src/state/threadDetail.ts
 +++ b/packages/client-runtime/src/state/threadDetail.ts
-@@ -47,6 +47,7 @@ export function mergeEnvironmentThread(
+@@ -47,6 +47,8 @@ export function mergeEnvironmentThread(
      id: shell.id,
      projectId: shell.projectId,
      title: shell.title,
 +    titleSource: shell.titleSource,
++    titleAutoRenamedAt: shell.titleAutoRenamedAt,
      modelSelection: shell.modelSelection,
      runtimeMode: shell.runtimeMode,
      interactionMode: shell.interactionMode,
 diff --git a/packages/client-runtime/src/state/threadReducer.ts b/packages/client-runtime/src/state/threadReducer.ts
-index a3481fdc7..4fefed4d5 100644
+index a3481fdc7..c456727ba 100644
 --- a/packages/client-runtime/src/state/threadReducer.ts
 +++ b/packages/client-runtime/src/state/threadReducer.ts
-@@ -92,6 +92,9 @@ export function applyThreadDetailEvent(
+@@ -92,6 +92,10 @@ export function applyThreadDetailEvent(
            id: event.payload.threadId,
            projectId: event.payload.projectId,
            title: event.payload.title,
 +          ...(event.payload.titleSource !== undefined
 +            ? { titleSource: event.payload.titleSource }
 +            : {}),
++          titleAutoRenamedAt: null,
            modelSelection: event.payload.modelSelection,
            runtimeMode: event.payload.runtimeMode,
            interactionMode: event.payload.interactionMode,
-@@ -230,6 +233,9 @@ export function applyThreadDetailEvent(
+@@ -230,6 +234,12 @@ export function applyThreadDetailEvent(
          thread: {
            ...thread,
            ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
 +          ...(event.payload.title !== undefined
-+            ? { titleSource: event.payload.titleSource ?? "user" }
++            ? {
++                titleSource: event.payload.titleSource ?? "user",
++                titleAutoRenamedAt: event.payload.titleAutoRenamedAt ?? null,
++              }
 +            : {}),
            ...(event.payload.titleRegeneration !== undefined
              ? { titleRegeneration: event.payload.titleRegeneration }
@@ -3065,7 +4619,7 @@ index 140623540..6d93ce5d7 100644
    threadPullRequestLinking: Schema.optionalKey(Schema.Boolean),
    /** The update path clients should offer for this server. Absent on
 diff --git a/packages/contracts/src/orchestration.ts b/packages/contracts/src/orchestration.ts
-index 4d2f80a11..097c1d5d3 100644
+index 4d2f80a11..2c2344ac3 100644
 --- a/packages/contracts/src/orchestration.ts
 +++ b/packages/contracts/src/orchestration.ts
 @@ -599,6 +599,9 @@ export const ThreadTitleRegeneration = Schema.Struct({
@@ -3078,24 +4632,26 @@ index 4d2f80a11..097c1d5d3 100644
  export const ThreadLinkedPullRequest = Schema.Struct({
    projectId: ProjectId,
    repository: TrimmedNonEmptyString,
-@@ -611,6 +614,8 @@ export const OrchestrationThread = Schema.Struct({
+@@ -611,6 +614,9 @@ export const OrchestrationThread = Schema.Struct({
    id: ThreadId,
    projectId: ProjectId,
    title: TrimmedNonEmptyString,
 +  // Missing means a legacy, conservatively user-owned title.
 +  titleSource: Schema.optional(ThreadTitleSource),
++  titleAutoRenamedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
    modelSelection: ModelSelection,
    runtimeMode: RuntimeMode,
    interactionMode: ProviderInteractionMode.pipe(
-@@ -693,6 +698,7 @@ export const OrchestrationThreadShell = Schema.Struct({
+@@ -693,6 +699,8 @@ export const OrchestrationThreadShell = Schema.Struct({
    id: ThreadId,
    projectId: ProjectId,
    title: TrimmedNonEmptyString,
 +  titleSource: Schema.optional(ThreadTitleSource),
++  titleAutoRenamedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
    modelSelection: ModelSelection,
    runtimeMode: RuntimeMode,
    interactionMode: ProviderInteractionMode.pipe(
-@@ -923,6 +929,7 @@ const ThreadCreateCommand = Schema.Struct({
+@@ -923,6 +931,7 @@ const ThreadCreateCommand = Schema.Struct({
    threadId: ThreadId,
    projectId: ProjectId,
    title: TrimmedNonEmptyString,
@@ -3103,7 +4659,7 @@ index 4d2f80a11..097c1d5d3 100644
    modelSelection: ModelSelection,
    runtimeMode: RuntimeMode,
    interactionMode: ProviderInteractionMode.pipe(
-@@ -1036,6 +1043,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
+@@ -1036,6 +1045,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
    commandId: CommandId,
    threadId: ThreadId,
    title: Schema.optional(TrimmedNonEmptyString),
@@ -3111,7 +4667,7 @@ index 4d2f80a11..097c1d5d3 100644
    regenerateTitle: Schema.optional(Schema.Literal(true)),
    modelSelection: Schema.optional(ModelSelection),
    branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-@@ -1048,6 +1056,10 @@ const ThreadMetaUpdateCommand = Schema.Struct({
+@@ -1048,6 +1058,10 @@ const ThreadMetaUpdateCommand = Schema.Struct({
        !(input.title !== undefined && input.regenerateTitle === true) ||
        "title and regenerateTitle cannot be specified together",
    ),
@@ -3122,7 +4678,7 @@ index 4d2f80a11..097c1d5d3 100644
  );
  
  const ThreadRuntimeModeSetCommand = Schema.Struct({
-@@ -1069,6 +1081,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
+@@ -1069,6 +1083,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
  const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
    projectId: ProjectId,
    title: TrimmedNonEmptyString,
@@ -3130,7 +4686,7 @@ index 4d2f80a11..097c1d5d3 100644
    modelSelection: ModelSelection,
    runtimeMode: RuntimeMode,
    interactionMode: ProviderInteractionMode,
-@@ -1449,6 +1462,7 @@ export const ThreadCreatedPayload = Schema.Struct({
+@@ -1449,6 +1464,7 @@ export const ThreadCreatedPayload = Schema.Struct({
    threadId: ThreadId,
    projectId: ProjectId,
    title: TrimmedNonEmptyString,
@@ -3138,23 +4694,47 @@ index 4d2f80a11..097c1d5d3 100644
    modelSelection: ModelSelection,
    runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
    interactionMode: ProviderInteractionMode.pipe(
-@@ -1531,6 +1545,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
+@@ -1531,6 +1547,8 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
    // new field while continuing to decode the event stream.
    activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
    title: Schema.optional(TrimmedNonEmptyString),
 +  titleSource: Schema.optional(ThreadTitleSource),
++  titleAutoRenamedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
    /** Intent marker consumed by the title-generation reactor. Keeping this on
        the existing event lets older clients safely ignore the new field. */
    regenerateTitle: Schema.optional(Schema.Literal(true)),
 diff --git a/packages/contracts/src/settings.test.ts b/packages/contracts/src/settings.test.ts
-index 7d3cd2cea..4fe1eb990 100644
+index 7d3cd2cea..eeb9a31fe 100644
 --- a/packages/contracts/src/settings.test.ts
 +++ b/packages/contracts/src/settings.test.ts
-@@ -455,6 +455,15 @@ describe("ServerSettings thread settlement", () => {
+@@ -455,6 +455,38 @@ describe("ServerSettings thread settlement", () => {
    });
  });
  
 +describe("ServerSettings automatic thread titles", () => {
++  it("defaults frequency to balanced and preserves custom values in patches", () => {
++    expect(decodeServerSettings({}).automaticThreadTitleRenamePolicy).toBe("balanced");
++    const patch = {
++      automaticThreadTitleRenamePolicy: "custom",
++      automaticThreadTitleRenameMaxCount: 2,
++      automaticThreadTitleRenameWindowHours: 48,
++    };
++    expect(decodeServerSettingsPatch(patch)).toEqual(patch);
++  });
++
++  it.each([
++    { automaticThreadTitleRenamePolicy: "unlimited" },
++    { automaticThreadTitleRenameMaxCount: 0 },
++    { automaticThreadTitleRenameMaxCount: 101 },
++    { automaticThreadTitleRenameMaxCount: 1.5 },
++    { automaticThreadTitleRenameWindowHours: 0 },
++    { automaticThreadTitleRenameWindowHours: 721 },
++    { automaticThreadTitleRenameWindowHours: 1.5 },
++  ])("rejects invalid automatic title limits: %j", (patch) => {
++    expect(() => decodeServerSettings(patch)).toThrow();
++    expect(() => decodeServerSettingsPatch(patch)).toThrow();
++  });
++
 +  it("is opt-in and accepts server-authoritative updates", () => {
 +    expect(decodeServerSettings({}).automaticThreadTitles).toBe(false);
 +    expect(decodeServerSettingsPatch({ automaticThreadTitles: true }).automaticThreadTitles).toBe(
@@ -3167,22 +4747,127 @@ index 7d3cd2cea..4fe1eb990 100644
    it("defaults to no project overrides and accepts supported methods", () => {
      expect(decodeClientSettings({}).pullRequestMergeMethodOverrides).toEqual({});
 diff --git a/packages/contracts/src/settings.ts b/packages/contracts/src/settings.ts
-index 3491103da..217c89fb5 100644
+index 3491103da..13a4cc7f7 100644
 --- a/packages/contracts/src/settings.ts
 +++ b/packages/contracts/src/settings.ts
-@@ -934,6 +934,7 @@ export const ServerSettings = Schema.Struct({
+@@ -922,6 +922,24 @@ export const BackgroundActivitySettings = Schema.Struct({
+ }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+ export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
+ 
++const AutomaticThreadTitleRenamePolicy = Schema.Literals(["rare", "balanced", "often", "custom"]);
++export const MIN_AUTOMATIC_TITLE_RENAME_COUNT = 1;
++export const MAX_AUTOMATIC_TITLE_RENAME_COUNT = 100;
++export const MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS = 1;
++export const MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS = 720;
++const AutomaticThreadTitleRenameMaxCount = Schema.Int.check(
++  Schema.isBetween({
++    minimum: MIN_AUTOMATIC_TITLE_RENAME_COUNT,
++    maximum: MAX_AUTOMATIC_TITLE_RENAME_COUNT,
++  }),
++);
++const AutomaticThreadTitleRenameWindowHours = Schema.Int.check(
++  Schema.isBetween({
++    minimum: MIN_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++    maximum: MAX_AUTOMATIC_TITLE_RENAME_WINDOW_HOURS,
++  }),
++);
++
+ export const ServerSettings = Schema.Struct({
+   // Legacy token-by-token assistant output. Deliberately a fresh key (was
+   // `enableAssistantStreaming`): decoding drops the old key, so everyone,
+@@ -934,6 +952,16 @@ export const ServerSettings = Schema.Struct({
    continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
      Schema.withDecodingDefault(Effect.succeed(false)),
    ),
 +  automaticThreadTitles: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
++  automaticThreadTitleRenamePolicy: AutomaticThreadTitleRenamePolicy.pipe(
++    Schema.withDecodingDefault(Effect.succeed("balanced" as const)),
++  ),
++  automaticThreadTitleRenameMaxCount: AutomaticThreadTitleRenameMaxCount.pipe(
++    Schema.withDecodingDefault(Effect.succeed(1)),
++  ),
++  automaticThreadTitleRenameWindowHours: AutomaticThreadTitleRenameWindowHours.pipe(
++    Schema.withDecodingDefault(Effect.succeed(12)),
++  ),
    /**
     * Whether agents may drive the in-app preview browser. Turning this off
     * withholds the MCP credential, so the `t3-code` server (and with it every
-@@ -1221,6 +1222,7 @@ export const ServerSettingsPatch = Schema.Struct({
+@@ -1221,6 +1249,10 @@ export const ServerSettingsPatch = Schema.Struct({
    enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
    enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
    continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
 +  automaticThreadTitles: Schema.optionalKey(Schema.Boolean),
++  automaticThreadTitleRenamePolicy: Schema.optionalKey(AutomaticThreadTitleRenamePolicy),
++  automaticThreadTitleRenameMaxCount: Schema.optionalKey(AutomaticThreadTitleRenameMaxCount),
++  automaticThreadTitleRenameWindowHours: Schema.optionalKey(AutomaticThreadTitleRenameWindowHours),
    enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
    projectAgentBrowserAccessOverrides: Schema.optionalKey(
      Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
+diff --git a/packages/shared/src/serverSettings.test.ts b/packages/shared/src/serverSettings.test.ts
+index a5e428fcd..162567044 100644
+--- a/packages/shared/src/serverSettings.test.ts
++++ b/packages/shared/src/serverSettings.test.ts
+@@ -13,6 +13,7 @@ import { createModelSelection } from "./model.ts";
+ import { resolveProjectScripts, projectScriptsInheritDefaults } from "./projectScripts.ts";
+ import {
+   applyServerSettingsPatch,
++  resolveAutomaticThreadTitleRenameLimit,
+   isModelSelectionProviderEnabled,
+   parsePersistedServerObservabilitySettings,
+   resolveSourceControlWriterModelSelection,
+@@ -718,3 +719,21 @@ describe("serverSettings helpers", () => {
+     expect(resolved.pauseWhenOnBattery).toBe(false);
+   });
+ });
++
++describe("automatic thread title rename limits", () => {
++  it.each([
++    ["rare", 1, 24],
++    ["balanced", 1, 12],
++    ["often", 1, 6],
++    ["custom", 2, 48],
++  ] as const)("resolves %s while retaining custom settings", (policy, maxCount, windowHours) => {
++    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
++      automaticThreadTitleRenamePolicy: policy,
++      automaticThreadTitleRenameMaxCount: 2,
++      automaticThreadTitleRenameWindowHours: 48,
++    });
++    expect(resolveAutomaticThreadTitleRenameLimit(settings)).toEqual({ maxCount, windowHours });
++    expect(settings.automaticThreadTitleRenameMaxCount).toBe(2);
++    expect(settings.automaticThreadTitleRenameWindowHours).toBe(48);
++  });
++});
+diff --git a/packages/shared/src/serverSettings.ts b/packages/shared/src/serverSettings.ts
+index f969e4412..c2e2dc6dc 100644
+--- a/packages/shared/src/serverSettings.ts
++++ b/packages/shared/src/serverSettings.ts
+@@ -24,6 +24,29 @@ import {
+ const ServerSettingsJson = fromLenientJson(ServerSettings);
+ const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
+ 
++export function resolveAutomaticThreadTitleRenameLimit(
++  settings: Pick<
++    ServerSettings,
++    | "automaticThreadTitleRenamePolicy"
++    | "automaticThreadTitleRenameMaxCount"
++    | "automaticThreadTitleRenameWindowHours"
++  >,
++): { maxCount: number; windowHours: number } {
++  switch (settings.automaticThreadTitleRenamePolicy) {
++    case "rare":
++      return { maxCount: 1, windowHours: 24 };
++    case "balanced":
++      return { maxCount: 1, windowHours: 12 };
++    case "often":
++      return { maxCount: 1, windowHours: 6 };
++    case "custom":
++      return {
++        maxCount: settings.automaticThreadTitleRenameMaxCount,
++        windowHours: settings.automaticThreadTitleRenameWindowHours,
++      };
++  }
++}
++
+ export function resolveProjectAgentBrowserAccess(
+   settings: Pick<ServerSettings, "enableAgentBrowserAccess" | "projectAgentBrowserAccessOverrides">,
+   projectId: ProjectId,
