@@ -13,46 +13,101 @@ set -euo pipefail
 if [[ "$*" == "path-info --all" ]]; then
   printf '%s\n' /nix/store/existing
 elif [[ "$*" == "path-info --json --all" ]]; then
+  if [[ ${CACHE_BUDGET_FIXTURE:-false} == true ]]; then
+    cat <<'JSON'
+{
+  "/nix/store/existing": {
+    "ultimate": true,
+    "ca": "fixed:r:sha256:existing",
+    "deriver": "/nix/store/existing.drv",
+    "references": [],
+    "narSize": 1
+  },
+  "/nix/store/oversized": {
+    "ultimate": true,
+    "ca": "fixed:r:sha256:oversized",
+    "deriver": "/nix/store/oversized.drv",
+    "references": [],
+    "narSize": 2000000
+  },
+  "/nix/store/large": {
+    "ultimate": true,
+    "ca": "fixed:r:sha256:large",
+    "deriver": "/nix/store/large.drv",
+    "references": [],
+    "narSize": 700000
+  },
+  "/nix/store/medium": {
+    "ultimate": true,
+    "ca": "fixed:r:sha256:medium",
+    "deriver": "/nix/store/medium.drv",
+    "references": [],
+    "narSize": 400000
+  },
+  "/nix/store/small": {
+    "ultimate": true,
+    "ca": "fixed:r:sha256:small",
+    "deriver": "/nix/store/small.drv",
+    "references": [],
+    "narSize": 300000
+  },
+  "/nix/store/referenced-small": {
+    "ultimate": true,
+    "ca": "fixed:r:sha256:referenced-small",
+    "deriver": "/nix/store/referenced-small.drv",
+    "references": ["/nix/store/runtime-dependency"],
+    "narSize": 1
+  }
+}
+JSON
+  else
   cat <<'JSON'
 {
   "/nix/store/existing": {
     "ultimate": true,
     "ca": "fixed:r:sha256:existing",
     "deriver": "/nix/store/existing.drv",
-    "references": []
+    "references": [],
+    "narSize": 1
   },
   "/nix/store/fetched-fixed-output": {
     "ultimate": false,
     "ca": "fixed:r:sha256:fetched",
     "deriver": "/nix/store/fetched.drv",
-    "references": []
+    "references": [],
+    "narSize": 1
   },
   "/nix/store/normal-built-output": {
     "ultimate": true,
     "ca": null,
     "deriver": "/nix/store/normal.drv",
-    "references": []
+    "references": [],
+    "narSize": 1
   },
   "/nix/store/fixed-output-dependency": {
     "ultimate": true,
     "ca": "fixed:r:sha256:dependency",
     "deriver": "/nix/store/dependency.drv",
-    "references": []
+    "references": [],
+    "narSize": 1
   },
   "/nix/store/direct-source": {
     "ultimate": true,
     "ca": "fixed:r:sha256:source",
     "deriver": null,
-    "references": []
+    "references": [],
+    "narSize": 1
   },
   "/nix/store/referenced-content-addressed-output": {
     "ultimate": true,
     "ca": "fixed:r:sha256:referenced",
     "deriver": "/nix/store/referenced.drv",
-    "references": ["/nix/store/runtime-dependency"]
+    "references": ["/nix/store/runtime-dependency"],
+    "narSize": 1
   }
 }
 JSON
+  fi
 elif [[ " $* " == *" copy "* ]]; then
   printf '%s\n' "$*" >>"$CACHE_TEST_ROOT/copy-calls"
   cache_uri=
@@ -130,6 +185,20 @@ if compgen -G "$test_root/cache.new.*" >/dev/null ||
 fi
 
 : >"$test_root/github-output"
+rm -f "$test_root/copy-calls"
+env "${common_env[@]}" CACHE_BUDGET_FIXTURE=true NIX_CI_CACHE_MAX_BYTES=1048576 \
+  "$repo_root/scripts/ci/nix-build-cache.sh" save
+grep -Fq '/nix/store/large /nix/store/small' "$test_root/copy-calls"
+for excluded in oversized medium referenced-small; do
+  if grep -Fq "/nix/store/$excluded" "$test_root/copy-calls"; then
+    echo "The budgeted cache export included excluded path: $excluded" >&2
+    exit 1
+  fi
+done
+grep -Fqx 'save=true' "$test_root/github-output"
+grep -Fqx 'path-count=2' "$test_root/github-output"
+
+: >"$test_root/github-output"
 printf 'restored' >"$test_root/cache/restored-cache-sentinel"
 if env "${common_env[@]}" FAIL_CACHE_COPY=true NIX_CI_CACHE_MAX_BYTES=1048576 \
   "$repo_root/scripts/ci/nix-build-cache.sh" save; then
@@ -144,6 +213,6 @@ if compgen -G "$test_root/cache.new.*" >/dev/null ||
 fi
 
 : >"$test_root/github-output"
-env "${common_env[@]}" NIX_CI_CACHE_MAX_BYTES=1 \
+env "${common_env[@]}" NIX_CI_CACHE_MAX_BYTES=2 \
   "$repo_root/scripts/ci/nix-build-cache.sh" save
 grep -Fqx 'save=false' "$test_root/github-output"

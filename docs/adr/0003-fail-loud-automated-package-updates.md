@@ -56,7 +56,9 @@ CI must:
   the existing runner Actions cache; do not archive a live Nix store/database
 - cache only newly built, derivation-backed content-addressed outputs without
   references, with fast zstd compression and a 2 GiB archive-directory limit;
-  skip cache uploads above that limit
+  select outputs before export using 99% of that bound as a raw NAR budget,
+  largest first with smaller outputs filling the remaining space; retain the
+  actual archive-size check before upload
 - restore dependencies only when T3 or the full package matrix is selected;
   the existing T3 updater also exports its validated dependencies before
   publishing an update PR, without adding another build
@@ -174,8 +176,12 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
   and repeated runs of unchanged inputs. The existing runner cache retention
   still governs total disk use; the upload limit bounds each snapshot, not the
   entire cache. Fresh exports replace the restored snapshot rather than
-  accumulating obsolete dependency versions. Oversized snapshots are skipped
-  and builds remain correct.
+  accumulating obsolete dependency versions. A complete T3/provider dependency
+  set measured 3.13 GB, so output selection now happens before export: it
+  prioritizes large eligible dependencies such as pnpm and skips candidates
+  that do not fit. Raw NAR sizes are conservative and can exclude highly
+  compressible outputs. Oversized actual snapshots are still skipped and
+  builds remain correct.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.

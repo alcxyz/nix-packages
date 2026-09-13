@@ -133,8 +133,8 @@ emit_save_outputs() {
 }
 
 save() {
-  local metadata_file current_paths added_paths eligible_paths export_paths
-  local cache_uri cache_bytes path_count should_save new_cache_dir
+  local metadata_file current_paths added_paths eligible_paths candidate_paths export_paths
+  local cache_uri cache_bytes path_count should_save new_cache_dir raw_nar_budget
 
   [[ "$max_cache_bytes" =~ ^[1-9][0-9]*$ ]] ||
     fail "NIX_CI_CACHE_MAX_BYTES must be a positive integer"
@@ -145,8 +145,9 @@ save() {
   current_paths=$(mktemp "${snapshot_file}.current.XXXXXX")
   added_paths=$(mktemp "${snapshot_file}.added.XXXXXX")
   eligible_paths=$(mktemp "${snapshot_file}.eligible.XXXXXX")
+  candidate_paths=$(mktemp "${snapshot_file}.candidates.XXXXXX")
   export_paths=$(mktemp "${snapshot_file}.export.XXXXXX")
-  temporary_files=("$metadata_file" "$current_paths" "$added_paths" "$eligible_paths" "$export_paths")
+  temporary_files=("$metadata_file" "$current_paths" "$added_paths" "$eligible_paths" "$candidate_paths" "$export_paths")
 
   nix path-info --json --all >"$metadata_file"
   jq -e '
@@ -155,7 +156,8 @@ save() {
       has("ultimate") and
       has("ca") and
       has("deriver") and
-      has("references")
+      has("references") and
+      (.narSize | type == "number" and . >= 0)
     )
   ' "$metadata_file" >/dev/null ||
     fail "nix path-info JSON does not contain the required build metadata"
@@ -172,7 +174,27 @@ save() {
     ) |
     .key
   ' "$metadata_file" | LC_ALL=C sort -u >"$eligible_paths"
-  LC_ALL=C comm -12 "$added_paths" "$eligible_paths" >"$export_paths"
+  LC_ALL=C comm -12 "$added_paths" "$eligible_paths" >"$candidate_paths"
+
+  # Reserve one percent for cache metadata. Prioritize large dependency outputs
+  # such as pnpm stores, then fill gaps with smaller outputs when a larger
+  # candidate does not fit.
+  raw_nar_budget=$((max_cache_bytes - max_cache_bytes / 100))
+  ((max_cache_bytes % 100 == 0)) || ((raw_nar_budget--))
+  jq -r --rawfile candidates "$candidate_paths" '
+    ($candidates | split("\n") | map(select(length > 0)) | INDEX(.)) as $candidates |
+    to_entries[] |
+    select($candidates[.key]) |
+    [.value.narSize, .key] |
+    @tsv
+  ' "$metadata_file" |
+    LC_ALL=C sort -t $'\t' -k1,1nr -k2,2 |
+    awk -F '\t' -v budget="$raw_nar_budget" '
+      $1 <= budget - used {
+        print $2
+        used += $1
+      }
+    ' >"$export_paths"
 
   path_count=$(wc -l <"$export_paths")
   path_count=${path_count//[[:space:]]/}
