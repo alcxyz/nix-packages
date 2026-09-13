@@ -117,27 +117,45 @@ jobs:
           if UPDATE_BRANCH="$UPDATE_BRANCH" python3 -c 'import json, os, sys; target = os.environ["UPDATE_BRANCH"]; prs = json.load(open(sys.argv[1])); raise SystemExit(0 if any((pr.get("head") or {}).get("ref") == target for pr in prs) else 1)' "$response"
           then
             echo "Existing update PR found for ${UPDATE_BRANCH}; refreshing that branch and PR if a newer upstream version exists."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "mode=refresh_existing_pr" >> "$GITHUB_OUTPUT"
-            echo "existing_update_pr=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "should_run=true"
+              echo "mode=refresh_existing_pr"
+              echo "existing_update_pr=true"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "No existing update PR for ${UPDATE_BRANCH}; checking upstream from ${BASE_BRANCH}."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "mode=discover_update" >> "$GITHUB_OUTPUT"
-            echo "existing_update_pr=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "should_run=true"
+              echo "mode=discover_update"
+              echo "existing_update_pr=false"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install runner prerequisites
         if: steps.update_gate.outputs.should_run == 'true'
         run: |
           apt-get update
-          apt-get install -y sudo xxd
+          apt-get install -y sudo xxd jq zstd
 
       - uses: https://github.com/cachix/install-nix-action@v30
         if: steps.update_gate.outputs.should_run == 'true'
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+
+      - name: Restore T3 dependency cache
+        if: steps.update_gate.outputs.should_run == 'true' && matrix.package == 't3code'
+        continue-on-error: true
+        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
+          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+
+      - name: Enable T3 dependency cache
+        if: steps.update_gate.outputs.should_run == 'true' && matrix.package == 't3code'
+        continue-on-error: true
+        run: scripts/ci/nix-build-cache.sh prepare
 
       - name: Check and update ${{ matrix.package }}
         if: steps.update_gate.outputs.should_run == 'true'
@@ -150,6 +168,21 @@ jobs:
           source scripts/ci/ephemeral-nix-home.sh
           clean_ephemeral_nix_home
           bash scripts/update-packages/update-${{ matrix.package }}.sh
+
+      - name: Export validated T3 dependencies
+        if: steps.update.outputs.updated == 'true' && matrix.package == 't3code'
+        continue-on-error: true
+        id: export-cache
+        run: scripts/ci/nix-build-cache.sh save
+
+      - name: Save updated T3 dependency cache
+        if: steps.export-cache.outputs.save == 'true'
+        continue-on-error: true
+        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          # Recompute after the updater changes package inputs.
+          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
 
       - name: Open or refresh Forgejo PR
         if: steps.update.outputs.updated == 'true'

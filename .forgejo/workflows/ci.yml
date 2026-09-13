@@ -14,9 +14,6 @@ jobs:
   go-test:
     name: Go tool tests
     runs-on: ubuntu-latest
-    concurrency:
-      group: ci-go-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
@@ -39,9 +36,6 @@ jobs:
   nix-validation:
     name: Package validation prerequisites
     runs-on: ubuntu-latest
-    concurrency:
-      group: ci-prerequisites-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
@@ -61,6 +55,7 @@ jobs:
           scripts/ci/test-t3code-nix-home.sh
           scripts/ci/test-verify-t3code-providers.sh
           scripts/ci/test-nix-build-cache.sh
+          scripts/ci/test-run-current-pr.sh
           scripts/ci/test-require-package-validation.sh
           scripts/ci/test-helium-updater.sh
           python3 scripts/ci/test-t3code-updater.py
@@ -88,9 +83,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
-    concurrency:
-      group: ci-packages-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
-      cancel-in-progress: true
+      CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
+      CI_PULL_REQUEST_HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
@@ -109,6 +103,11 @@ jobs:
             echo 'build=false' >> "$GITHUB_OUTPUT"
             echo 'No package builds needed; validation prerequisites still run.'
           fi
+          cache=false
+          while IFS= read -r attr; do
+            case "$attr" in '*'|t3code|t3code-fork) cache=true ;; esac
+          done < /tmp/package-plan
+          echo "cache=$cache" >> "$GITHUB_OUTPUT"
 
       - name: Install runner prerequisites
         if: steps.plan.outputs.build == 'true'
@@ -122,41 +121,41 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Restore package build cache
+      - name: Restore package dependency cache
         continue-on-error: true
-        if: steps.plan.outputs.build == 'true'
+        if: steps.plan.outputs.cache == 'true'
         id: cache
         uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/nix-packages-cache
-          key: nix-packages-bin-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
-          restore-keys: nix-packages-bin-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
+          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
 
       - name: Enable local build cache
         continue-on-error: true
-        if: steps.plan.outputs.build == 'true'
+        if: steps.plan.outputs.cache == 'true'
         run: scripts/ci/nix-build-cache.sh prepare
 
       - name: Build affected packages
         if: steps.plan.outputs.build == 'true'
         env:
           NIX_CI_EPHEMERAL_CONTAINER: "1"
-        run: scripts/ci/build-changed-packages.sh
+        run: scripts/ci/run-current-pr.sh scripts/ci/build-changed-packages.sh
 
       - name: Verify T3 Code provider wiring
         if: steps.plan.outputs.build == 'true'
         env:
           NIX_CI_EPHEMERAL_CONTAINER: "1"
           T3CODE_CI_CLEAN_HOME: "true"
-        run: scripts/ci/verify-t3code-providers.sh
+        run: scripts/ci/run-current-pr.sh scripts/ci/verify-t3code-providers.sh
 
       - name: Prepare bounded build cache
         continue-on-error: true
-        if: steps.plan.outputs.build == 'true' && steps.cache.outputs.cache-hit != 'true'
+        if: steps.plan.outputs.cache == 'true' && steps.cache.outputs.cache-hit != 'true'
         id: export-cache
         run: scripts/ci/nix-build-cache.sh save
 
-      - name: Save package build cache
+      - name: Save package dependency cache
         continue-on-error: true
         if: steps.export-cache.outputs.save == 'true'
         uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -172,9 +171,6 @@ jobs:
       - nix-validation
       - package-builds
     runs-on: ubuntu-latest
-    concurrency:
-      group: ci-aggregate-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:

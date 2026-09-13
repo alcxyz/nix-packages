@@ -52,10 +52,14 @@ CI must:
 - expose a pre-Nix selection plan so workflow setup and cache work can be
   skipped when a change has no package validation candidates; normal validation
   must recompute and verify the selection rather than trusting the plan
-- reuse build outputs through a directory-format Nix binary cache carried by
+- reuse standalone fixed-output dependencies through a directory-format Nix binary cache carried by
   the existing runner Actions cache; do not archive a live Nix store/database
-- cache closures rooted at newly built local outputs, with fast zstd compression
-  and a 2 GiB archive-directory limit; skip cache uploads above that limit
+- cache only newly built, derivation-backed content-addressed outputs without
+  references, with fast zstd compression and a 2 GiB archive-directory limit;
+  skip cache uploads above that limit
+- restore dependencies only when T3 or the full package matrix is selected;
+  the existing T3 updater also exports its validated dependencies before
+  publishing an update PR, without adding another build
 - key cache snapshots by platform, flake lock, and package source inputs, with
   same-lock fallback; cache misses and cache-service failures must not bypass
   builds or fail an otherwise successful validation
@@ -75,8 +79,9 @@ Runner usage must:
 - leave repository-level default branch deletion disabled so manual promotions do not delete `dev`
 - cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once
 - avoid queueing stale auto-merge runs; a newer auto-merge event should replace an older waiting run
-- cancel superseded pull request validation jobs without sharing cancellation
-  groups across job types or with `main` push validation
+- stop expensive package/provider commands when their pull-request head is
+  superseded, using a bounded Git-ref watcher; do not depend solely on server
+  concurrency support, and do not apply PR cancellation to `main` pushes
 - trigger auto-merge from update pull request changes, with the scheduled auto-merge trigger kept as a nightly fallback
 - rely on pull request validation for automated update merges instead of running duplicate validation on every resulting `dev` push
 
@@ -135,6 +140,9 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
 - **Restore a raw Nix store/database archive** — Rejected for this workflow.
   Directory-format binary caches use Nix's normal substitution and reference
   validation while keeping each job's installed store and database independent.
+- **Archive complete application closures** — Rejected after a T3 pair produced
+  a 5.1 GB cache and spent 3m20s exporting it before hitting the size bound.
+  Standalone fixed-output dependencies avoid archiving application runtimes.
 - **Add a separate binary-cache service immediately** — Deferred. Existing
   runner-local Actions caches provide reuse without another service to operate.
   Their host locality and transfer cost must be measured before expanding this.
@@ -158,14 +166,16 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
   limit, so explicit baseline and manual sharding support remain available.
 - Each runner warms independently. Pull-request cache writes remain isolated
   to that PR; later revisions may reuse them, while other PRs may only reuse
-  snapshots written by trusted branch-push validation. Restored archives supply only requested
-  store paths through a local substituter; normal upstream substitution remains
-  enabled. Only this ephemeral, repository-scoped cache is trusted without
-  signatures. A cache hit never replaces package or provider validation.
+  snapshots written by trusted update jobs or branch-push validation. Restored
+  archives supply only requested store paths through a local substituter;
+  normal upstream substitution and content verification remain enabled. A
+  cache hit never replaces package or provider validation.
 - Source-keyed snapshots avoid new copies for documentation/workflow changes
   and repeated runs of unchanged inputs. The existing runner cache retention
   still governs total disk use; the upload limit bounds each snapshot, not the
-  entire cache. Oversized snapshots are skipped and builds remain correct.
+  entire cache. Fresh exports replace the restored snapshot rather than
+  accumulating obsolete dependency versions. Oversized snapshots are skipped
+  and builds remain correct.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
@@ -186,3 +196,24 @@ The proposed
 records the additional producer/consumer contract. Existing fail-loud policy
 remains accepted; the listed implementation gaps remain open until their
 Forgejo issues are completed.
+
+### Superseded build supervision
+
+The package and provider commands run under a small supervisor on PR events.
+It compares the checked-out event head to the current PR head ref every 30
+seconds and terminates only its command process group when a newer head exists.
+A stale command returns a nonzero status so it cannot publish a cache or make
+the old validation aggregate green. The latest commit has its own checks.
+
+Git lookup failures leave the build running, and ordinary command failures
+retain their original status. Non-PR invocations execute directly. This keeps
+the behavior independent of differences in server-side cancellation support
+and needs no additional credential or API permission.
+
+### Dependency-cache qualification
+
+The live dependency-only probe restored T3's pnpm output with local builds
+disabled and normal content verification enabled. Cold realization took 1m48s;
+cache restore plus Nix realization took 19s. Export and upload cost 47s on the
+first write. These are measurements from one runner, not a guaranteed build
+latency; application compilation and runner contention remain separate costs.

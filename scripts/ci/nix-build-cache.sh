@@ -5,9 +5,15 @@ cache_dir=${NIX_CI_CACHE_DIR:-/tmp/nix-packages-cache}
 max_cache_bytes=${NIX_CI_CACHE_MAX_BYTES:-2147483648}
 snapshot_file=${NIX_CI_CACHE_SNAPSHOT:-${RUNNER_TEMP:-/tmp}/nix-build-cache-before.txt}
 temporary_files=()
+temporary_dirs=()
 
 cleanup() {
+  local temporary_dir
+
   ((${#temporary_files[@]} == 0)) || rm -f -- "${temporary_files[@]}"
+  for temporary_dir in "${temporary_dirs[@]}"; do
+    remove_temporary_cache_dir "$temporary_dir"
+  done
 }
 trap cleanup EXIT
 
@@ -38,6 +44,47 @@ normalize_cache_dir() {
   mkdir -p "$cache_dir"
 }
 
+remove_temporary_cache_dir() {
+  local temporary_dir=$1
+  local cache_parent cache_name
+
+  cache_parent=$(dirname -- "$cache_dir")
+  cache_name=$(basename -- "$cache_dir")
+  case "$temporary_dir" in
+    "$cache_parent/$cache_name.new."*|"$cache_parent/$cache_name.old."*)
+      rm -rf -- "$temporary_dir"
+      ;;
+    *)
+      fail "refusing to remove unexpected temporary cache directory: $temporary_dir"
+      ;;
+  esac
+}
+
+replace_cache_dir() {
+  local new_cache_dir=$1
+  local old_cache_dir
+
+  case "$new_cache_dir" in
+    "${cache_dir}.new."*) ;;
+    *) fail "refusing to install unexpected temporary cache directory: $new_cache_dir" ;;
+  esac
+  [[ -d "$new_cache_dir" && ! -L "$new_cache_dir" ]] ||
+    fail "temporary cache directory is not an owned directory: $new_cache_dir"
+
+  old_cache_dir=$(mktemp -d -- "${cache_dir}.old.XXXXXX")
+  temporary_dirs+=("$old_cache_dir")
+  rmdir -- "$old_cache_dir"
+
+  mv -- "$cache_dir" "$old_cache_dir"
+  if ! mv -- "$new_cache_dir" "$cache_dir"; then
+    mv -- "$old_cache_dir" "$cache_dir" ||
+      fail "cache replacement failed and the previous cache could not be restored"
+    fail "cache replacement failed; restored the previous cache"
+  fi
+  remove_temporary_cache_dir "$old_cache_dir"
+  temporary_dirs=()
+}
+
 snapshot_store() {
   local snapshot_tmp
 
@@ -59,7 +106,7 @@ prepare() {
     return 0
   fi
 
-  cache_uri="file://${cache_dir}?trusted=true"
+  cache_uri="file://${cache_dir}"
   delimiter="NIX_CI_CACHE_CONFIG_${$}"
   {
     printf 'NIX_CONFIG<<%s\n' "$delimiter"
@@ -86,8 +133,8 @@ emit_save_outputs() {
 }
 
 save() {
-  local metadata_file current_paths added_paths ultimate_paths export_paths
-  local cache_uri cache_bytes path_count should_save
+  local metadata_file current_paths added_paths eligible_paths export_paths
+  local cache_uri cache_bytes path_count should_save new_cache_dir
 
   [[ "$max_cache_bytes" =~ ^[1-9][0-9]*$ ]] ||
     fail "NIX_CI_CACHE_MAX_BYTES must be a positive integer"
@@ -97,31 +144,51 @@ save() {
   metadata_file=$(mktemp "${snapshot_file}.metadata.XXXXXX")
   current_paths=$(mktemp "${snapshot_file}.current.XXXXXX")
   added_paths=$(mktemp "${snapshot_file}.added.XXXXXX")
-  ultimate_paths=$(mktemp "${snapshot_file}.ultimate.XXXXXX")
+  eligible_paths=$(mktemp "${snapshot_file}.eligible.XXXXXX")
   export_paths=$(mktemp "${snapshot_file}.export.XXXXXX")
-  temporary_files=("$metadata_file" "$current_paths" "$added_paths" "$ultimate_paths" "$export_paths")
+  temporary_files=("$metadata_file" "$current_paths" "$added_paths" "$eligible_paths" "$export_paths")
 
   nix path-info --json --all >"$metadata_file"
-  jq -e 'type == "object" and all(.[]; has("ultimate"))' "$metadata_file" >/dev/null ||
-    fail "nix path-info JSON does not contain the ultimate field"
+  jq -e '
+    type == "object" and
+    all(.[];
+      has("ultimate") and
+      has("ca") and
+      has("deriver") and
+      has("references")
+    )
+  ' "$metadata_file" >/dev/null ||
+    fail "nix path-info JSON does not contain the required build metadata"
 
   jq -r 'keys[]' "$metadata_file" | LC_ALL=C sort -u >"$current_paths"
   LC_ALL=C comm -13 "$snapshot_file" "$current_paths" >"$added_paths"
-  jq -r 'to_entries[] | select(.value.ultimate == true) | .key' "$metadata_file" |
-    LC_ALL=C sort -u >"$ultimate_paths"
-  LC_ALL=C comm -12 "$added_paths" "$ultimate_paths" >"$export_paths"
+  jq -r '
+    to_entries[] |
+    select(
+      .value.ultimate == true and
+      .value.ca != null and
+      .value.deriver != null and
+      (.value.references | length) == 0
+    ) |
+    .key
+  ' "$metadata_file" | LC_ALL=C sort -u >"$eligible_paths"
+  LC_ALL=C comm -12 "$added_paths" "$eligible_paths" >"$export_paths"
 
   path_count=$(wc -l <"$export_paths")
   path_count=${path_count//[[:space:]]/}
   if ((path_count > 0)); then
-    cache_uri="file://${cache_dir}?compression=zstd&compression-level=1"
-    # A binary cache must contain a root's references before it can accept the
-    # root. Pass only new local build outputs here; nix copy supplies the
-    # closure needed to make those roots valid in the cache.
-    xargs -r -n 128 nix copy --to "$cache_uri" <"$export_paths"
+    new_cache_dir=$(mktemp -d -- "${cache_dir}.new.XXXXXX")
+    temporary_dirs+=("$new_cache_dir")
+    cache_uri="file://${new_cache_dir}?compression=zstd&compression-level=1"
+    # Reference-free, derivation-backed content-addressed outputs are useful
+    # dependency caches and can be exported without pulling in their closures.
+    xargs -r -n 128 nix copy --no-recursive --to "$cache_uri" <"$export_paths"
+    cache_bytes=$(du -sb -- "$new_cache_dir" | awk '{print $1}')
+    replace_cache_dir "$new_cache_dir"
+  else
+    cache_bytes=$(du -sb -- "$cache_dir" | awk '{print $1}')
   fi
 
-  cache_bytes=$(du -sb -- "$cache_dir" | awk '{print $1}')
   should_save=false
   if ((path_count > 0 && cache_bytes <= max_cache_bytes)); then
     should_save=true
