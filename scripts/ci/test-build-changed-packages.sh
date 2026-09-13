@@ -80,7 +80,8 @@ new_case() {
   unset NIX_CI_EPHEMERAL_CONTAINER
   unset MOCK_FAIL_EVAL MOCK_FAIL_BUILD MOCK_RECREATE_HOME_ONCE \
     MOCK_RECREATE_HOME_AFTER_BUILD PACKAGE_BUILD_MODE \
-    PACKAGE_BUILD_SHARD_COUNT PACKAGE_BUILD_SHARD_INDEX
+    PACKAGE_BUILD_SHARD_COUNT PACKAGE_BUILD_SHARD_INDEX \
+    PACKAGE_BUILD_PLAN_ONLY PACKAGE_BUILD_PLAN_FILE
   cat >exports <<'JSON'
 {"x86_64-linux":["widget"],"aarch64-linux":["widget"],"aarch64-darwin":["widget","mac-only"],"x86_64-darwin":["mac-only"]}
 JSON
@@ -141,6 +142,7 @@ assert_called() {
 
 new_case cleanup-neither-signal
 prepare_cleanup_fixture
+export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
 assert_called 'build .#agent-sync-check -L'
@@ -148,6 +150,7 @@ assert_called 'build .#agent-sync-check -L'
 new_case cleanup-opt-in-only
 prepare_cleanup_fixture
 export NIX_CI_EPHEMERAL_CONTAINER=1
+export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
 assert_called 'build .#agent-sync-check -L'
@@ -155,6 +158,7 @@ assert_called 'build .#agent-sync-check -L'
 new_case cleanup-identity-only
 prepare_cleanup_fixture
 touch "$test_root/.dockerenv"
+export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
 assert_called 'build .#agent-sync-check -L'
@@ -162,6 +166,7 @@ assert_called 'build .#agent-sync-check -L'
 new_case cleanup-local-failure
 prepare_cleanup_fixture
 export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
+export PACKAGE_BUILD_MODE=baseline
 run_case 44
 assert_cleanup_preserved
 [[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 1 ]]
@@ -171,6 +176,7 @@ prepare_cleanup_fixture
 touch "$test_root/.dockerenv"
 export NIX_CI_EPHEMERAL_CONTAINER=1
 export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
+export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_called
 [[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 2 ]]
@@ -178,7 +184,7 @@ assert_cleanup_called
 [[ -f "$test_root/outside/sentinel" ]]
 
 assert_not_called() {
-  if grep -Fq -- "$1" calls; then
+  if [[ -f calls ]] && grep -Fq -- "$1" calls; then
     echo "Unexpected invocation containing: $1" >&2
     exit 1
   fi
@@ -216,7 +222,7 @@ new_case targeted-change
 change_file pkgs/widget/default.nix
 run_case 0
 for baseline in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
-  assert_called "build .#${baseline} -L"
+  assert_not_called "build .#${baseline} -L"
 done
 assert_called 'build .#packages.x86_64-linux.widget -L'
 assert_called 'eval .#packages.aarch64-linux.widget.drvPath'
@@ -233,7 +239,7 @@ assert_called 'eval .#packages.aarch64-darwin.nix-deploy.drvPath'
 assert_not_called '.#packages.x86_64-linux.widget'
 assert_not_called '.#packages.x86_64-darwin.mac-only'
 
-for shared in flake.nix flake.lock pkgs/shared.nix lib/packages.nix scripts/ci/check.sh pkgs/claude-code/default.nix; do
+for shared in flake.nix flake.lock pkgs/shared.nix lib/packages.nix; do
   new_case "shared-${shared//\//-}"
   change_file "$shared"
   run_case 0
@@ -244,7 +250,62 @@ done
 new_case docs-only
 change_file docs/guide.md
 run_case 0
-assert_not_called 'eval .#packages.'
+assert_not_called 'eval .#packages'
+assert_not_called 'build '
+grep -q 'No package-affecting changes detected' output
+
+for automation in .forgejo/workflows/ci.yml scripts/ci/check.sh scripts/forgejo/check.sh scripts/update-packages/widget.sh; do
+  new_case "automation-${automation//\//-}"
+  change_file "$automation"
+  run_case 0
+  assert_not_called 'eval .#packages'
+  assert_not_called 'build '
+done
+
+new_case automation-and-package
+change_file .forgejo/workflows/ci.yml
+change_file pkgs/widget/default.nix
+run_case 0
+assert_called 'build .#packages.x86_64-linux.widget -L'
+assert_not_called 'mac-only'
+
+for provider_input in verify-t3code-providers t3code-nix-home ephemeral-nix-home; do
+  new_case "provider-input-${provider_input}"
+  change_file "scripts/ci/${provider_input}.sh"
+  printf '{"x86_64-linux":["t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+  run_case 0
+  assert_called 'build .#packages.x86_64-linux.t3code -L'
+  assert_called 'build .#packages.x86_64-linux.t3code-fork -L'
+done
+
+for input in claude-code codex-cli; do
+  new_case "reverse-dependency-${input}"
+  change_file "pkgs/${input}/default.nix"
+  printf '{"x86_64-linux":["%s","t3code","t3code-fork"],"aarch64-darwin":["%s","t3code","t3code-fork"]}\n' "$input" "$input" >exports
+  run_case 0
+  assert_called "build .#packages.x86_64-linux.${input} -L"
+  assert_called 'build .#packages.x86_64-linux.t3code -L'
+  assert_called 'build .#packages.x86_64-linux.t3code-fork -L'
+  assert_called "eval .#packages.aarch64-darwin.${input}.drvPath"
+  assert_not_called 'widget'
+done
+
+new_case reverse-dependency-xonsh
+change_file pkgs/xonsh-direnv/default.nix
+printf '{"x86_64-linux":["xonsh-direnv","xonsh-with-direnv"],"aarch64-darwin":["xonsh-direnv","xonsh-with-direnv"]}\n' >exports
+run_case 0
+assert_called 'build .#packages.x86_64-linux.xonsh-direnv -L'
+assert_called 'build .#packages.x86_64-linux.xonsh-with-direnv -L'
+assert_called 'eval .#packages.aarch64-darwin.xonsh-with-direnv.drvPath'
+assert_not_called 'widget'
+
+new_case default-alias
+change_file pkgs/helium/default.nix
+printf '{"x86_64-linux":["default","helium"],"aarch64-darwin":["default","helium"]}\n' >exports
+run_case 0
+assert_called 'build .#packages.x86_64-linux.default -L'
+assert_called 'build .#packages.x86_64-linux.helium -L'
+assert_called 'eval .#packages.aarch64-darwin.default.drvPath'
 
 new_case removed-package
 git rm -q pkgs/removed/default.nix
@@ -266,6 +327,49 @@ if [[ "$(grep -c '^build \.#' calls)" != 6 ]]; then
   cat calls >&2
   exit 1
 fi
+
+new_case all-mode
+change_file pkgs/widget/default.nix
+export PACKAGE_BUILD_MODE=all
+run_case 0
+for baseline in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
+  assert_called "build .#${baseline} -L"
+done
+assert_called 'build .#packages.x86_64-linux.widget -L'
+
+new_case plan-none
+change_file docs/guide.md
+export PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
+run_case 0
+[[ ! -s plan ]]
+assert_not_called 'eval .#packages'
+assert_not_called 'build '
+
+new_case plan-reverse-dependencies
+change_file pkgs/claude-code/default.nix
+export PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
+run_case 0
+printf '%s\n' claude-code t3code t3code-fork >expected-plan
+diff -u expected-plan plan
+assert_not_called 'eval .#packages'
+assert_not_called 'build '
+
+new_case plan-full-matrix
+change_file flake.lock
+export PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
+run_case 0
+printf '*\n' >expected-plan
+diff -u expected-plan plan
+assert_not_called 'eval .#packages'
+assert_not_called 'build '
+
+new_case plan-baseline
+export PACKAGE_BUILD_MODE=baseline PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
+run_case 0
+printf '%s\n' agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap >expected-plan
+diff -u expected-plan plan
+assert_not_called 'eval .#packages'
+assert_not_called 'build '
 
 partition_root="$test_root/partition"
 mkdir -p "$partition_root"
@@ -327,6 +431,14 @@ for invalid in \
   run_case 2
 done
 
+new_case invalid-plan-flag
+export PACKAGE_BUILD_PLAN_ONLY=yes PACKAGE_BUILD_PLAN_FILE=plan
+run_case 2
+
+new_case missing-plan-file
+export PACKAGE_BUILD_PLAN_ONLY=1
+run_case 2
+
 new_case sharded-platform-failure
 printf '%s\n' "$partition_exports" >exports
 change_file flake.nix
@@ -361,6 +473,16 @@ change_file pkgs/openzfs-7_1/default.nix
 printf '{"x86_64-linux":["openzfs_7_1"]}\n' >exports
 run_case 0
 assert_called 'build .#packages.x86_64-linux.openzfs_7_1 -L'
+
+new_case t3-fork-only
+change_file pkgs/t3code/patches/fork-only.patch
+printf '{"x86_64-linux":["t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+run_case 0
+assert_called 'build .#packages.x86_64-linux.t3code-fork -L'
+assert_called 'eval .#packages.aarch64-darwin.t3code-fork.drvPath'
+assert_not_called '.#packages.x86_64-linux.t3code.pnpmDeps'
+assert_not_called '.#packages.x86_64-linux.t3code.resourceMonitor'
+assert_not_called '.#packages.x86_64-linux.t3code -L'
 
 new_case t3-shared-source
 prepare_cleanup_fixture

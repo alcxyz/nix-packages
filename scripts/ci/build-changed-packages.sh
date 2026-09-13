@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mode="${PACKAGE_BUILD_MODE:-all}"
+mode="${PACKAGE_BUILD_MODE:-selected}"
 shard_count="${PACKAGE_BUILD_SHARD_COUNT:-1}"
 shard_index="${PACKAGE_BUILD_SHARD_INDEX:-0}"
+plan_only="${PACKAGE_BUILD_PLAN_ONLY:-0}"
+plan_file="${PACKAGE_BUILD_PLAN_FILE:-}"
+baseline_attrs=(agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap)
 
 case "$mode" in
   all|baseline|selected) ;;
@@ -24,6 +27,19 @@ fi
 if [[ "$mode" != selected && ("$shard_count" != 1 || "$shard_index" != 0) ]]; then
   echo "Package shards are only valid in selected mode." >&2
   exit 2
+fi
+if [[ "$plan_only" != 0 && "$plan_only" != 1 ]]; then
+  echo "PACKAGE_BUILD_PLAN_ONLY must be 0 or 1 (got: ${plan_only})." >&2
+  exit 2
+fi
+if [[ "$plan_only" == 1 && -z "$plan_file" ]]; then
+  echo "PACKAGE_BUILD_PLAN_FILE is required in plan-only mode." >&2
+  exit 2
+fi
+
+if [[ "$plan_only" == 1 && "$mode" == baseline ]]; then
+  printf '%s\n' "${baseline_attrs[@]}" >"$plan_file"
+  exit 0
 fi
 
 homeless_shelter=/homeless-shelter
@@ -73,8 +89,8 @@ nix_build() {
   done
 }
 
-if [[ "$mode" != selected ]]; then
-  for attr in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
+if [[ "$mode" != selected && "$plan_only" != 1 ]]; then
+  for attr in "${baseline_attrs[@]}"; do
     echo "::group::nix build ${attr}"
     nix_build ".#${attr}"
     echo "::endgroup::"
@@ -99,18 +115,32 @@ fi
 
 echo "Detecting changed packages against ${base}"
 
-# Attribute names do not force derivations. Decide platform membership before
-# evaluating drvPath so a broken Linux export cannot look like a Darwin-only one.
-exports=$(nix eval .#packages --json --apply 'builtins.mapAttrs (_: builtins.attrNames)')
 changed_files=$(git diff --name-only "${base}"...HEAD)
 changed_attrs=()
 full_matrix=false
 while IFS= read -r path; do
   case "$path" in
-    ""|docs/*|README.md|AGENTS.md|LICENSE*) ;;
-    # These packages are also inputs to other packages in flake.nix.
-    pkgs/claude-code/*|pkgs/codex-cli/*|pkgs/xonsh-direnv/*)
-      full_matrix=true
+    scripts/ci/verify-t3code-providers.sh|scripts/ci/t3code-nix-home.sh|scripts/ci/ephemeral-nix-home.sh)
+      changed_attrs+=(t3code t3code-fork)
+      ;;
+    ""|docs/*|README.md|AGENTS.md|LICENSE*|.forgejo/*|scripts/ci/*|scripts/forgejo/*|scripts/update-packages/*) ;;
+    # Keep these reverse dependencies aligned with the explicit package inputs
+    # in flake.nix. A wrapper must be validated when its packaged input changes.
+    pkgs/claude-code/*)
+      changed_attrs+=(claude-code t3code t3code-fork)
+      ;;
+    pkgs/codex-cli/*)
+      changed_attrs+=(codex-cli t3code t3code-fork)
+      ;;
+    pkgs/xonsh-direnv/*)
+      changed_attrs+=(xonsh-direnv xonsh-with-direnv)
+      ;;
+    pkgs/helium/*)
+      # The default export aliases Helium on supported systems.
+      changed_attrs+=(default helium)
+      ;;
+    pkgs/t3code/fork.nix|pkgs/t3code/patches/*)
+      changed_attrs+=(t3code-fork)
       ;;
     pkgs/t3code/*)
       # Both exports share this source pin and recipe; the fork adds a patch.
@@ -129,6 +159,31 @@ while IFS= read -r path; do
       ;;
   esac
 done <<<"$changed_files"
+
+if [[ "$plan_only" == 1 ]]; then
+  # This pre-Nix plan is a cheap workflow gate. The normal invocation repeats
+  # selection and validates exports before evaluating or building them.
+  : >"$plan_file"
+  if "$full_matrix"; then
+    printf '*\n' >"$plan_file"
+  else
+    plan_attrs=("${changed_attrs[@]}")
+    [[ "$mode" == all ]] && plan_attrs+=("${baseline_attrs[@]}")
+    if ((${#plan_attrs[@]} > 0)); then
+      printf '%s\n' "${plan_attrs[@]}" | sort -u >"$plan_file"
+    fi
+  fi
+  exit 0
+fi
+
+if ! "$full_matrix" && ((${#changed_attrs[@]} == 0)); then
+  echo "No package-affecting changes detected."
+  exit 0
+fi
+
+# Attribute names do not force derivations. Decide platform membership before
+# evaluating drvPath so a broken Linux export cannot look like a Darwin-only one.
+exports=$(nix eval .#packages --json --apply 'builtins.mapAttrs (_: builtins.attrNames)')
 
 if "$full_matrix"; then
   echo "Shared inputs changed; validating the complete exported package matrix."

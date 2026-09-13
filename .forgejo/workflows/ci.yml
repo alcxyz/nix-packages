@@ -59,6 +59,8 @@ jobs:
           scripts/ci/test-build-changed-packages.sh
           scripts/ci/test-ephemeral-nix-home.sh
           scripts/ci/test-t3code-nix-home.sh
+          scripts/ci/test-verify-t3code-providers.sh
+          scripts/ci/test-nix-build-cache.sh
           scripts/ci/test-require-package-validation.sh
           scripts/ci/test-helium-updater.sh
           python3 scripts/ci/test-t3code-updater.py
@@ -84,6 +86,8 @@ jobs:
   package-builds:
     name: Package builds and provider verification
     runs-on: ubuntu-latest
+    env:
+      NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
     concurrency:
       group: ci-packages-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
       cancel-in-progress: true
@@ -93,26 +97,72 @@ jobs:
           fetch-depth: 0
           github-server-url: https://git.alc.xyz
 
+      - name: Plan affected packages
+        id: plan
+        run: |
+          PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=/tmp/package-plan \
+            scripts/ci/build-changed-packages.sh
+          if test -s /tmp/package-plan; then
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+            cat /tmp/package-plan
+          else
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            echo 'No package builds needed; validation prerequisites still run.'
+          fi
+
       - name: Install runner prerequisites
+        if: steps.plan.outputs.build == 'true'
         run: |
           apt-get update
-          apt-get install -y jq sudo
+          apt-get install -y jq sudo zstd
 
       - uses: https://github.com/cachix/install-nix-action@v30
+        if: steps.plan.outputs.build == 'true'
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build baseline and selected packages
+      - name: Restore package build cache
+        continue-on-error: true
+        if: steps.plan.outputs.build == 'true'
+        id: cache
+        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: nix-packages-bin-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
+          restore-keys: nix-packages-bin-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+
+      - name: Enable local build cache
+        continue-on-error: true
+        if: steps.plan.outputs.build == 'true'
+        run: scripts/ci/nix-build-cache.sh prepare
+
+      - name: Build affected packages
+        if: steps.plan.outputs.build == 'true'
         env:
           NIX_CI_EPHEMERAL_CONTAINER: "1"
         run: scripts/ci/build-changed-packages.sh
 
       - name: Verify T3 Code provider wiring
+        if: steps.plan.outputs.build == 'true'
         env:
           NIX_CI_EPHEMERAL_CONTAINER: "1"
           T3CODE_CI_CLEAN_HOME: "true"
         run: scripts/ci/verify-t3code-providers.sh
+
+      - name: Prepare bounded build cache
+        continue-on-error: true
+        if: steps.plan.outputs.build == 'true' && steps.cache.outputs.cache-hit != 'true'
+        id: export-cache
+        run: scripts/ci/nix-build-cache.sh save
+
+      - name: Save package build cache
+        continue-on-error: true
+        if: steps.export-cache.outputs.save == 'true'
+        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
   package-build:
     name: Package build validation

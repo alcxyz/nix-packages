@@ -43,12 +43,22 @@ CI must:
 - fail with the original diagnostic when any selected exported derivation cannot evaluate, including on non-native systems
 - build every selected `x86_64-linux` export; evaluating another platform is never a fallback for a failed Linux evaluation or build
 - evaluate selected exports on all other systems, reporting this as derivation evaluation rather than a successful native build
-- expand selection to all exports when root flake files, shared inputs, CI scripts, or package inputs consumed by other packages change; keep the shared-package list in the selector aligned with dependencies in `flake.nix`
+- expand selection to all exports when root flake files or shared package inputs change; select package inputs together with their wrapper consumers, keeping those reverse dependencies aligned with `flake.nix`
 - regression-test package selection and failure classification with mocked Nix commands in CI
 - evaluate every advertised package derivation on all four systems on every validation run, including default aliases
-- build baseline and selected exports in one job and one Nix store by default;
-  retain deterministic sharding controls in the selector for manual use if
-  measured package build time later exceeds the runner limit
+- build only affected exports and their wrapper consumers by default; retain
+  explicit baseline, combined baseline-and-selected, and deterministic sharding
+  controls for manual use
+- expose a pre-Nix selection plan so workflow setup and cache work can be
+  skipped when a change has no package validation candidates; normal validation
+  must recompute and verify the selection rather than trusting the plan
+- reuse build outputs through a directory-format Nix binary cache carried by
+  the existing runner Actions cache; do not archive a live Nix store/database
+- cache closures rooted at newly built local outputs, with fast zstd compression
+  and a 2 GiB archive-directory limit; skip cache uploads above that limit
+- key cache snapshots by platform, flake lock, and package source inputs, with
+  same-lock fallback; cache misses and cache-service failures must not bypass
+  builds or fail an otherwise successful validation
 - preserve the required package-validation context through an aggregate job
   that succeeds only when Go tests, validation prerequisites, package builds,
   and provider verification succeed
@@ -118,6 +128,16 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
   installation and checkout overhead and prevented shared closures from being
   reused within one job. The selector retains manual sharding for future
   measured capacity needs.
+- **Build a fixed baseline on every pull request** — Rejected. It adds unrelated
+  native builds to documentation, automation, and targeted package changes.
+  Baseline mode remains available for explicit smoke testing, while ordinary
+  validation follows the changed package graph.
+- **Restore a raw Nix store/database archive** — Rejected for this workflow.
+  Directory-format binary caches use Nix's normal substitution and reference
+  validation while keeping each job's installed store and database independent.
+- **Add a separate binary-cache service immediately** — Deferred. Existing
+  runner-local Actions caches provide reuse without another service to operate.
+  Their host locality and transfer cost must be measured before expanding this.
 - **Plain merge update PRs** — Rejected. Squash merging keeps routine generated updates to one commit per package update and matches the manual recovery process used when stale update PRs failed to auto-merge.
 - **Skip stale-but-clean update PRs until a later updater run refreshes them** — Rejected. A successful update PR merge advances `dev`, which can make every other open update PR stale. Auto-merge should rebase those PRs instead of relying on manual repair.
 
@@ -130,10 +150,22 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
 - Darwin-only packages still need occasional real Darwin builds for full confidence.
 - Evaluation covers every advertised system, but native builds on ARM Linux and Darwin still require their own runners or manual validation.
 - Changes to shared package inputs build the full native matrix and can take longer than isolated package updates.
-- Unsharded validation reuses one Nix store for baseline, selected, and T3 Code
-  provider builds and avoids repeated job setup while preserving complete
-  coverage. A full shared-input change can still approach the runner limit, so
-  the selector's manual sharding support remains available.
+- Unsharded validation reuses one Nix store for affected packages and T3 Code
+  provider checks and avoids repeated job setup. Documentation and general
+  automation changes do not cause native package builds; provider-verification
+  inputs still select both T3 Code exports, and applicable regression checks
+  remain mandatory. A full shared-input change can still approach the runner
+  limit, so explicit baseline and manual sharding support remain available.
+- Each runner warms independently. Pull-request cache writes remain isolated
+  to that PR; later revisions may reuse them, while other PRs may only reuse
+  snapshots written by trusted branch-push validation. Restored archives supply only requested
+  store paths through a local substituter; normal upstream substitution remains
+  enabled. Only this ephemeral, repository-scoped cache is trusted without
+  signatures. A cache hit never replaces package or provider validation.
+- Source-keyed snapshots avoid new copies for documentation/workflow changes
+  and repeated runs of unchanged inputs. The existing runner cache retention
+  still governs total disk use; the upload limit bounds each snapshot, not the
+  entire cache. Oversized snapshots are skipped and builds remain correct.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
