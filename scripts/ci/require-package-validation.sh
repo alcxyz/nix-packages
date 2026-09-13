@@ -2,9 +2,9 @@
 set -euo pipefail
 
 for result_name in \
+  GO_TEST_RESULT \
   PACKAGE_PREREQUISITES_RESULT \
-  PACKAGE_BASELINE_RESULT \
-  PACKAGE_SELECTED_RESULT; do
+  PACKAGE_BUILDS_RESULT; do
   result="${!result_name-}"
   if [[ "$result" != success ]]; then
     echo "${result_name} must be success (got: ${result:-missing})." >&2

@@ -14,10 +14,13 @@ jobs:
   go-test:
     name: Go tool tests
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-go-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
+      cancel-in-progress: true
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           github-server-url: https://git.alc.xyz
 
       - uses: https://github.com/actions/setup-go@v5
@@ -36,6 +39,9 @@ jobs:
   nix-validation:
     name: Package validation prerequisites
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-prerequisites-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
+      cancel-in-progress: true
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
@@ -75,44 +81,12 @@ jobs:
       - name: Test Kubernetes node lifecycle helpers
         run: nix build .#checks.x86_64-linux.k8s-node-reboot-contract
 
-      - name: Verify T3 Code provider wiring
-        env:
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-          T3CODE_CI_CLEAN_HOME: "true"
-        run: scripts/ci/verify-t3code-providers.sh
-
-  baseline-builds:
-    name: Baseline package builds
+  package-builds:
+    name: Package builds and provider verification
     runs-on: ubuntu-latest
-    steps:
-      - uses: https://data.forgejo.org/actions/checkout@v4
-        with:
-          fetch-depth: 0
-          github-server-url: https://git.alc.xyz
-
-      - name: Install runner prerequisites
-        run: |
-          apt-get update
-          apt-get install -y sudo
-
-      - uses: https://github.com/cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - name: Build baseline packages
-        env:
-          PACKAGE_BUILD_MODE: baseline
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-        run: scripts/ci/build-changed-packages.sh
-
-  selected-package-builds:
-    name: Selected package builds (${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
+    concurrency:
+      group: ci-packages-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
+      cancel-in-progress: true
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
@@ -129,22 +103,28 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build and evaluate selected packages
+      - name: Build baseline and selected packages
         env:
           NIX_CI_EPHEMERAL_CONTAINER: "1"
-          PACKAGE_BUILD_MODE: selected
-          PACKAGE_BUILD_SHARD_COUNT: 4
-          PACKAGE_BUILD_SHARD_INDEX: ${{ matrix.shard }}
         run: scripts/ci/build-changed-packages.sh
+
+      - name: Verify T3 Code provider wiring
+        env:
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
+          T3CODE_CI_CLEAN_HOME: "true"
+        run: scripts/ci/verify-t3code-providers.sh
 
   package-build:
     name: Package build validation
     if: always()
     needs:
+      - go-test
       - nix-validation
-      - baseline-builds
-      - selected-package-builds
+      - package-builds
     runs-on: ubuntu-latest
+    concurrency:
+      group: ci-aggregate-${{ forgejo.event_name }}-${{ forgejo.event.pull_request.number || forgejo.run_id }}
+      cancel-in-progress: true
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
@@ -153,7 +133,7 @@ jobs:
 
       - name: Require every package validation job
         env:
+          GO_TEST_RESULT: ${{ needs.go-test.result }}
           PACKAGE_PREREQUISITES_RESULT: ${{ needs.nix-validation.result }}
-          PACKAGE_BASELINE_RESULT: ${{ needs.baseline-builds.result }}
-          PACKAGE_SELECTED_RESULT: ${{ needs.selected-package-builds.result }}
+          PACKAGE_BUILDS_RESULT: ${{ needs.package-builds.result }}
         run: scripts/ci/require-package-validation.sh

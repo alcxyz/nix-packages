@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-09-09
+**Updated:** 2026-09-13
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -46,12 +46,12 @@ CI must:
 - expand selection to all exports when root flake files, shared inputs, CI scripts, or package inputs consumed by other packages change; keep the shared-package list in the selector aligned with dependencies in `flake.nix`
 - regression-test package selection and failure classification with mocked Nix commands in CI
 - evaluate every advertised package derivation on all four systems on every validation run, including default aliases
-- partition selected exports deterministically across independent CI jobs when a
-  complete matrix cannot fit within the runner limit; the ordinary script
-  invocation remains complete and unsharded
+- build baseline and selected exports in one job and one Nix store by default;
+  retain deterministic sharding controls in the selector for manual use if
+  measured package build time later exceeds the runner limit
 - preserve the required package-validation context through an aggregate job
-  that succeeds only when its prerequisites, baseline builds, and every
-  selected-export shard succeed
+  that succeeds only when Go tests, validation prerequisites, package builds,
+  and provider verification succeed
 - keep unavailable optional assets out of named and default exports; required Helium asset download failures stop its updater before package edits
 - compare pull request heads against the target branch, and use a conservative promotion baseline when the runner does not expose a target branch variable
 - avoid stale references to deleted or retired packages
@@ -65,6 +65,8 @@ Runner usage must:
 - leave repository-level default branch deletion disabled so manual promotions do not delete `dev`
 - cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once
 - avoid queueing stale auto-merge runs; a newer auto-merge event should replace an older waiting run
+- cancel superseded pull request validation jobs without sharing cancellation
+  groups across job types or with `main` push validation
 - trigger auto-merge from update pull request changes, with the scheduled auto-merge trigger kept as a nightly fallback
 - rely on pull request validation for automated update merges instead of running duplicate validation on every resulting `dev` push
 
@@ -110,10 +112,12 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
 - **Build a fixed package list in CI** — Rejected. Fixed lists drift as packages are added or retired, and they do not prove the changed package works.
 - **Skip Darwin-only packages on Linux CI** — Rejected. Full Darwin builds are not available on the Linux runner, but metadata evaluation still catches missing attributes and obvious unsupported-system mistakes.
 - **Advertise placeholder or dependency-incompatible exports** — Rejected. Exporting a name promises a usable derivation; missing optional assets remain absent until verified. Choosing a replacement ARM Linux default would change product intent without solving the missing artifact.
-- **Increase the central runner limit** — Rejected for this workflow change.
-  A workflow timeout cannot extend the runner's outer limit, while changing the
-  shared runner would affect other jobs and require a separate host activation.
-  Sharding preserves the existing runner bound and isolation model.
+- **Always shard selected package builds** — Rejected as the default. The
+  September 2026 slowdown was dominated by a runner file-descriptor limit that
+  made Nix process startup abnormally expensive. Sharding multiplied Nix
+  installation and checkout overhead and prevented shared closures from being
+  reused within one job. The selector retains manual sharding for future
+  measured capacity needs.
 - **Plain merge update PRs** — Rejected. Squash merging keeps routine generated updates to one commit per package update and matches the manual recovery process used when stale update PRs failed to auto-merge.
 - **Skip stale-but-clean update PRs until a later updater run refreshes them** — Rejected. A successful update PR merge advances `dev`, which can make every other open update PR stale. Auto-merge should rebase those PRs instead of relying on manual repair.
 
@@ -126,8 +130,10 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
 - Darwin-only packages still need occasional real Darwin builds for full confidence.
 - Evaluation covers every advertised system, but native builds on ARM Linux and Darwin still require their own runners or manual validation.
 - Changes to shared package inputs build the full native matrix and can take longer than isolated package updates.
-- Sharded validation repeats job setup and can duplicate cached dependency work,
-  but reduces work per job while preserving complete coverage.
+- Unsharded validation reuses one Nix store for baseline, selected, and T3 Code
+  provider builds and avoids repeated job setup while preserving complete
+  coverage. A full shared-input change can still approach the runner limit, so
+  the selector's manual sharding support remains available.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
