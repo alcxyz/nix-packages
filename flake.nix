@@ -99,6 +99,7 @@
           wcap = pkgs.callPackage ./tools/wcap { };
         }
         // lib.optionalAttrs isLinux {
+          forgejo-runner-orphan-check = pkgs.callPackage ./tools/forgejo-runner-orphan-check { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           inherit (pkgs) openzfs_7_1;
           stash = pkgs.callPackage ./pkgs/stash { };
