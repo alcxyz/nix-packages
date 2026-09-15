@@ -71,7 +71,7 @@ class SourceTests(unittest.TestCase):
 
 
 class UpdaterTests(unittest.TestCase):
-    def run_updater(self, fail):
+    def run_updater(self, fail_validation=False, fail_preflight=False, fail_discovery=False):
         root = Path(__file__).parents[2]
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -85,6 +85,9 @@ class UpdaterTests(unittest.TestCase):
             helper = (root / "scripts/update-packages/t3code-source.py").read_text()
             helper = helper.replace('version = os.environ.get("T3CODE_VERSION")', 'version = "0.0.41-nightly.20260909.1439"')
             helper = helper.replace('print(resolve_tag(version))', 'print("b" * 40)')
+            if fail_discovery:
+                helper = helper.replace('version = "0.0.41-nightly.20260909.1439"',
+                                        'raise ValueError("discovery unavailable")')
             (work / "scripts/update-packages/t3code-source.py").write_text(helper)
             pin = dict(version="0.0.40", revision="a" * 40, **dict.fromkeys(("hash", "cargoHash", "pnpmDepsHash"), "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
             pin_path = work / "pkgs/t3code/source.json"
@@ -92,29 +95,63 @@ class UpdaterTests(unittest.TestCase):
             original = pin_path.read_bytes()
             nix = work / "bin/nix"
             nix.write_text("""#!/usr/bin/env python3
-import json, sys
+import json, os, pathlib, sys
 value = 'sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=' 
+with pathlib.Path(os.environ['NIX_CALLS']).open('a') as calls:
+    calls.write(' '.join(sys.argv[1:]) + '\\n')
 if sys.argv[1:3] == ['store', 'prefetch-file']:
     print(json.dumps({'hash': value}))
+elif '.#t3code-fork.src' in sys.argv:
+    if os.environ.get('FAIL_PREFLIGHT') == 'true':
+        print('error: fork patch failed to apply', file=sys.stderr)
+        sys.exit(23)
 else:
     print('error: hash mismatch\\n  got: ' + value, file=sys.stderr)
     sys.exit(1)
 """)
             nix.chmod(0o755)
             verify = work / "scripts/ci/verify-t3code-providers.sh"
-            verify.write_text("#!/usr/bin/env bash\n[[ $T3CODE_VERIFY_ALWAYS == true ]] || exit 2\ntouch verified\nexit " + ("1" if fail else "0") + "\n")
+            verify.write_text("#!/usr/bin/env bash\n[[ $T3CODE_VERIFY_ALWAYS == true ]] || exit 2\ntouch verified\nexit " + ("1" if fail_validation else "0") + "\n")
             verify.chmod(0o755)
             output = work / "output"
+            report = work / "preflight.json"
+            report.write_text('{"status": "passed"}\n')
+            nix_calls = work / "nix-calls"
             result = subprocess.run(["bash", "scripts/update-packages/update-t3code.sh"], cwd=work,
-                                    env=os.environ | {"PATH": str(work / "bin") + ":" + os.environ["PATH"], "GITHUB_OUTPUT": str(output), "T3CODE_CI_CLEAN_HOME": "false", "NIX_CI_EPHEMERAL_CONTAINER": "0"},
+                                    env=os.environ | {"PATH": str(work / "bin") + ":" + os.environ["PATH"], "GITHUB_OUTPUT": str(output), "T3CODE_CI_CLEAN_HOME": "false", "NIX_CI_EPHEMERAL_CONTAINER": "0", "T3CODE_PREFLIGHT_REPORT": str(report), "NIX_CALLS": str(nix_calls), "FAIL_PREFLIGHT": str(fail_preflight).lower()},
                                     capture_output=True, text=True)
-            self.assertTrue((work / "verified").exists(), result.stderr)
-            if fail:
+            if fail_discovery:
                 self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(report.exists())
+                self.assertFalse(nix_calls.exists())
+                self.assertFalse(output.exists())
+                self.assertEqual(pin_path.read_bytes(), original)
+                return
+            preflight = json.loads(report.read_text())
+            self.assertEqual(preflight["scope"], "patch-application-only")
+            self.assertFalse(preflight["fullBuildValidated"])
+            calls = nix_calls.read_text()
+            if fail_preflight:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(preflight["status"], "failed")
+                self.assertEqual(preflight["exitCode"], 23)
                 self.assertEqual(pin_path.read_bytes(), original)
                 self.assertFalse(output.exists())
+                self.assertFalse((work / "verified").exists())
+                self.assertNotIn(".#t3code.resourceMonitor", calls)
+                self.assertNotIn(".#t3code.pnpmDeps", calls)
+            elif fail_validation:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(preflight["status"], "passed")
+                self.assertEqual(pin_path.read_bytes(), original)
+                self.assertFalse(output.exists())
+                self.assertTrue((work / "verified").exists(), result.stderr)
             else:
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(preflight["status"], "passed")
+                self.assertTrue((work / "verified").exists(), result.stderr)
+                self.assertLess(calls.index(".#t3code-fork.src"),
+                                calls.index(".#t3code.resourceMonitor"))
                 self.assertEqual(source.validate_pin(json.loads(pin_path.read_text()))["revision"], "b" * 40)
                 self.assertIn("updated=true", output.read_text())
 
@@ -128,10 +165,16 @@ else:
             self.assertEqual(result.returncode, expected, result.stderr)
 
     def test_success_publishes_complete_pin(self):
-        self.run_updater(False)
+        self.run_updater()
 
     def test_validation_failure_restores_pin(self):
-        self.run_updater(True)
+        self.run_updater(fail_validation=True)
+
+    def test_patch_conflict_stops_before_dependency_hash_builds(self):
+        self.run_updater(fail_preflight=True)
+
+    def test_discovery_failure_removes_previous_success_report(self):
+        self.run_updater(fail_discovery=True)
 
 
 if __name__ == "__main__":

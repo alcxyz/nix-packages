@@ -3,6 +3,7 @@
   changelog,
   claude-code,
   codex-cli,
+  fetchFromGitHub,
   fetchPnpmDeps,
   lib,
   libsecret,
@@ -22,6 +23,12 @@
 
 let
   browserSecretArch = if stdenv.hostPlatform.isx86_64 then "x64" else "arm64";
+  spdxLicenseListData = fetchFromGitHub {
+    owner = "spdx";
+    repo = "license-list-data";
+    rev = "c4a7237ec8f4654e867546f9f409749300f1bf4c";
+    hash = "sha256-FbeeEBAg9ih6DkAsXdU6ruZwkC7A2u2zYBvblpl54q0=";
+  };
   resourceMonitor = rustPlatform.buildRustPackage {
     pname = "t3-resource-monitor";
     inherit version src cargoHash;
@@ -48,6 +55,13 @@ in
             ' && vp config --no-agent' \
             ""
         printf '\nverifyDepsBeforeRun: false\n' >> pnpm-workspace.yaml
+
+        # Strict release builds generate third-party notices from this pinned
+        # SPDX revision. Warm the generator's cache so the sandboxed build does
+        # not try to download license templates.
+        mkdir -p .generated/third-party-licenses/spdx
+        ln -s ${spdxLicenseListData}/json/details \
+          .generated/third-party-licenses/spdx/v3.28.0
       '';
 
       nativeBuildInputs =
@@ -68,6 +82,22 @@ in
         fetcherVersion = 4;
         hash = pnpmDepsHash;
       };
+
+      # Build each deliverable directly. The workspace task runner can hide
+      # nested build failures and the package already needs these artifacts in
+      # a fixed order: web assets, the server bundle that embeds them, then the
+      # desktop bundle.
+      buildPhase = ''
+        runHook preBuild
+
+        pnpm --dir apps/web exec vp build
+        pnpm --dir apps/server exec node scripts/cli.ts build --verbose
+        pnpm --dir apps/desktop exec node scripts/build-browser-secret.mjs
+        pnpm --dir apps/desktop exec node scripts/build-preview-annotation-css.mjs
+        pnpm --dir apps/desktop exec vp pack
+
+        runHook postBuild
+      '';
 
       postInstall =
         (previousAttrs.postInstall or "")

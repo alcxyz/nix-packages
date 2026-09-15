@@ -2,12 +2,13 @@
 # Regenerates the checked-in T3 Code feature patch from an explicit checkout.
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: $0 /path/to/t3code-checkout" >&2
+if [[ $# -ne 2 ]]; then
+  echo "usage: $0 /path/to/t3code-checkout feature-base-revision" >&2
   exit 2
 fi
 
 checkout=$(realpath "$1")
+feature_base_input="$2"
 package_root=$(realpath "$(dirname "$0")/../..")
 destination="$package_root/pkgs/t3code/patches/automatic-thread-titles.patch"
 base_revision=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' "$package_root/pkgs/t3code/source.json")
@@ -18,8 +19,21 @@ if [[ ! "$base_revision" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 paths=(
+  apps/mobile/src/Stack.tsx
+  apps/mobile/src/features/home/HomeScreen.tsx
+  apps/mobile/src/features/settings/SettingsRouteScreen.logic.test.ts
+  apps/mobile/src/features/settings/SettingsRouteScreen.logic.ts
   apps/mobile/src/features/settings/SettingsRouteScreen.tsx
-  apps/mobile/src/lib/projectThreadStartTurn.ts
+  apps/mobile/src/features/settings/autoSettleSettingsSync.test.ts
+  apps/mobile/src/features/settings/autoSettleSettingsSync.ts
+  apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx
+  apps/mobile/src/features/threads/ThreadTitleUpdatesSheet.tsx
+  apps/mobile/src/features/threads/thread-list-items.tsx
+  apps/mobile/src/features/threads/thread-list-v2-items.tsx
+  apps/mobile/src/features/threads/threadPresentation.ts
+  apps/mobile/src/features/threads/threadListV2.test.ts
+  apps/mobile/src/features/threads/thread-title-update-indicator.tsx
+  apps/server/src/auth/RpcAuthorization.ts
   apps/server/src/environment/ServerEnvironment.test.ts
   apps/server/src/environment/ServerEnvironment.ts
   apps/server/src/mcp/McpHttpServer.ts
@@ -29,25 +43,35 @@ paths=(
   apps/server/src/mcp/toolkits/threadTitle/handlers.test.ts
   apps/server/src/mcp/toolkits/threadTitle/handlers.ts
   apps/server/src/mcp/toolkits/threadTitle/tools.ts
+  apps/server/src/orchestration/AutomaticThreadTitleRateLimit.test.ts
+  apps/server/src/orchestration/AutomaticThreadTitleRateLimit.ts
   apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts
   apps/server/src/orchestration/Layers/ProjectionPipeline.ts
   apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
   apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts
-  apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts
-  apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
-  apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
-  apps/server/src/orchestration/Services/ProjectionSnapshotQuery.ts
+  apps/server/src/orchestration/ThreadTitlePolicy.ts
+  apps/server/src/orchestration/ThreadTitleUpdates.test.ts
+  apps/server/src/orchestration/ThreadTitleUpdates.ts
   apps/server/src/orchestration/decider.titleOwnership.test.ts
   apps/server/src/orchestration/decider.ts
   apps/server/src/orchestration/projector.ts
+  apps/server/src/persistence/Layers/AutomaticThreadTitleRenameQuery.ts
   apps/server/src/persistence/Layers/ProjectionThreads.ts
+  apps/server/src/persistence/Layers/ThreadTitleUpdatesQuery.test.ts
+  apps/server/src/persistence/Layers/ThreadTitleUpdatesQuery.ts
   apps/server/src/persistence/Migrations.ts
+  apps/server/src/persistence/Migrations/052_ProjectionThreadTitleState.test.ts
+  apps/server/src/persistence/Migrations/052_ProjectionThreadTitleState.ts
   apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.test.ts
   apps/server/src/persistence/Migrations/ForkProjectionThreadTitleSource.ts
+  apps/server/src/persistence/Services/AutomaticThreadTitleRenameQuery.ts
   apps/server/src/persistence/Services/ProjectionThreads.ts
+  apps/server/src/persistence/Services/ThreadTitleUpdatesQuery.ts
   apps/server/src/provider/CodexDeveloperInstructions.ts
   apps/server/src/provider/Layers/AntigravityAdapter.ts
   apps/server/src/provider/Layers/ClaudeAdapter.ts
+  apps/server/src/provider/Layers/ClaudeAdapter.test.ts
+  apps/server/src/mcp/McpProviderSession.ts
   apps/server/src/provider/Layers/CodexAdapter.ts
   apps/server/src/provider/Layers/CodexSessionRuntime.test.ts
   apps/server/src/provider/Layers/CodexSessionRuntime.ts
@@ -59,26 +83,46 @@ paths=(
   apps/server/src/provider/RuntimeInstructions.test.ts
   apps/server/src/provider/RuntimeInstructions.ts
   apps/server/src/provider/Services/ProviderAdapter.ts
-  apps/server/src/serverRuntimeStartup.ts
+  apps/server/src/server.test.ts
+  apps/server/src/server.ts
   apps/server/src/serverSettings.test.ts
   apps/server/src/ws.ts
+  apps/web/src/components/AppSidebarLayout.tsx
   apps/web/src/components/ChatView.tsx
   apps/web/src/components/LegacySidebar.tsx
+  apps/web/src/components/Sidebar.logic.test.ts
+  apps/web/src/components/Sidebar.logic.ts
   apps/web/src/components/Sidebar.tsx
-  apps/web/src/components/chat/ChatHeader.tsx
+  apps/web/src/components/ThreadStatusIndicators.tsx
+  apps/web/src/components/ThreadTitleUpdatesPanel.tsx
   apps/web/src/components/settings/SettingsPanels.tsx
   apps/web/src/components/settings/settingsSearch.test.ts
   apps/web/src/components/settings/settingsSearch.ts
   apps/web/src/components/settings/useAvailableSettingsSearchItems.ts
+  apps/web/src/components/threadActionMenu.logic.test.ts
+  apps/web/src/components/threadActionMenu.logic.ts
+  apps/web/src/hooks/useThreadActionMenu.ts
+  apps/web/src/routes/settings.tsx
+  apps/web/src/state/entities.ts
+  apps/web/src/contextMenuFallback.ts
+  apps/web/src/threadTitleUpdatesPanel.ts
   docs/user/thread-sidebar.md
+  packages/client-runtime/src/operations/commands.ts
+  packages/client-runtime/src/operations/commands.test.ts
+  packages/client-runtime/src/state/threadCommands.ts
+  packages/client-runtime/src/state/orchestration.ts
   packages/client-runtime/src/state/sharedSettings.test.ts
   packages/client-runtime/src/state/sharedSettings.ts
   packages/client-runtime/src/state/threadDetail.ts
   packages/client-runtime/src/state/threadReducer.ts
   packages/contracts/src/environment.ts
   packages/contracts/src/orchestration.ts
+  packages/contracts/src/orchestration.test.ts
+  packages/contracts/src/rpc.ts
   packages/contracts/src/settings.test.ts
   packages/contracts/src/settings.ts
+  packages/shared/src/serverSettings.test.ts
+  packages/shared/src/serverSettings.ts
 )
 
 if ! checkout_root=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null); then
@@ -92,6 +136,24 @@ if ! git -C "$checkout" cat-file -e "${base_revision}^{commit}"; then
   exit 1
 fi
 
+if ! feature_base_revision=$(git -C "$checkout" rev-parse --verify "${feature_base_input}^{commit}"); then
+  echo "feature base revision is unavailable in checkout: $feature_base_input" >&2
+  exit 1
+fi
+
+if [[ "$feature_base_revision" != "$base_revision" ]]; then
+  echo "feature base does not match pinned source: $feature_base_revision" >&2
+  exit 1
+fi
+
+if ! git -C "$checkout" merge-base --is-ancestor "$feature_base_revision" HEAD; then
+  echo "feature base is not an ancestor of checkout HEAD: $feature_base_revision" >&2
+  exit 1
+fi
+
+temporary=$(mktemp)
+trap 'rm -f "$temporary"' EXIT
+
 declare -A allowed=()
 for path in "${paths[@]}"; do
   allowed["$path"]=1
@@ -99,7 +161,7 @@ done
 
 mapfile -t changed < <(
   {
-    git -C "$checkout" diff --name-only "$base_revision" --
+    git -C "$checkout" diff --name-only "$feature_base_revision" --
     git -C "$checkout" ls-files --others --exclude-standard
   } | sort -u
 )
@@ -111,10 +173,7 @@ for path in "${changed[@]}"; do
   fi
 done
 
-temporary=$(mktemp)
-trap 'rm -f "$temporary"' EXIT
-
-git -C "$checkout" diff --binary --no-ext-diff "$base_revision" -- "${paths[@]}" >"$temporary"
+git -C "$checkout" diff --binary --no-ext-diff "$feature_base_revision" -- "${paths[@]}" >"$temporary"
 while IFS= read -r path; do
   git -C "$checkout" diff --binary --no-index -- /dev/null "$path" >>"$temporary" || status=$?
   if [[ ${status:-0} -ne 1 ]]; then

@@ -169,6 +169,17 @@ jobs:
           clean_ephemeral_nix_home
           bash scripts/update-packages/update-${{ matrix.package }}.sh
 
+      - name: Report T3 Code patch preflight
+        if: always() && matrix.package == 't3code'
+        run: |
+          report="${RUNNER_TEMP}/t3code-patch-preflight.json"
+          if [[ -f "$report" ]]; then
+            echo "T3 Code patch preflight report:"
+            python3 -m json.tool "$report" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          else
+            echo "No T3 Code patch preflight report was produced; no candidate update reached patch validation." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+
       - name: Export validated T3 dependencies
         if: steps.update.outputs.updated == 'true' && matrix.package == 't3code'
         continue-on-error: true

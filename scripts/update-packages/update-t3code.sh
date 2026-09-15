@@ -8,6 +8,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../ci/t3code-nix-home.sh"
 PIN_FILE="pkgs/t3code/source.json"
 HELPER="scripts/update-packages/t3code-source.py"
 FAKE_HASH="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+PREFLIGHT_REPORT="${T3CODE_PREFLIGHT_REPORT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/t3code-patch-preflight.json}"
+rm -f -- "$PREFLIGHT_REPORT"
 
 current=$(python3 "$HELPER" read "$PIN_FILE")
 target=$(python3 "$HELPER" target)
@@ -46,6 +48,56 @@ patch_package() {
   python3 "$HELPER" write "$PIN_FILE" "$target_version" "$target_revision" "$src_hash" "$1" "$2"
 }
 
+write_preflight_report() {
+  local status="$1"
+  local exit_code="$2"
+  mkdir -p "$(dirname "$PREFLIGHT_REPORT")"
+  python3 - "$PREFLIGHT_REPORT" "$target_version" "$target_revision" "$status" "$exit_code" <<'PY'
+import json
+from pathlib import Path
+import sys
+import tempfile
+
+path = Path(sys.argv[1])
+report = {
+    "schemaVersion": 1,
+    "check": "t3code-fork-patch-application",
+    "scope": "patch-application-only",
+    "target": {"version": sys.argv[2], "revision": sys.argv[3]},
+    "status": sys.argv[4],
+    "exitCode": int(sys.argv[5]),
+    "fullBuildValidated": False,
+}
+with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as output:
+    temporary = Path(output.name)
+    json.dump(report, output, indent=2)
+    output.write("\n")
+temporary.replace(path)
+PY
+}
+
+preflight_patches() {
+  local log
+  local status
+
+  log=$(mktemp)
+  clean_homeless_shelter
+  if nix build -L .#t3code-fork.src --no-link 2>"$log"; then
+    cat "$log" >&2
+    rm -f "$log"
+    write_preflight_report passed 0
+    return 0
+  else
+    status=$?
+  fi
+
+  cat "$log" >&2
+  rm -f "$log"
+  write_preflight_report failed "$status"
+  echo "T3 Code fork source preflight failed for ${target_version}; stopping before dependency hash builds. See the Nix diagnostic above." >&2
+  return "$status"
+}
+
 collect_hash() {
   local attr="$1"
   local label="$2"
@@ -74,6 +126,8 @@ collect_hash() {
 }
 
 patch_package "$FAKE_HASH" "$FAKE_HASH"
+echo "Checking T3 Code fork patch compatibility..."
+preflight_patches
 echo "Computing resource monitor Cargo hash..."
 cargo_hash=$(collect_hash .#t3code.resourceMonitor cargoHash)
 patch_package "$cargo_hash" "$FAKE_HASH"
