@@ -93,7 +93,9 @@ Runner usage must:
 
 Workflow-authored changes must trigger ordinary pull-request validation. Use an
 explicit automation credential under a non-reserved Actions secret name for
-publishing update branches/PRs and rebasing stale updates. Forgejo's automatic
+publishing update branches/PRs and rebasing stale updates. Bind this credential
+in the consuming step: the runner overwrites job-level `FORGEJO_TOKEN` with
+its automatic token before applying step-level environment values. Forgejo's automatic
 workflow token suppresses downstream workflow events; it is suitable for
 workflow-local operations, but not these writes. Missing automation credentials
 must fail rather than fall back to the automatic token. Credential provisioning

@@ -16,7 +16,6 @@ jobs:
       group: package-update-auto-merge
       cancel-in-progress: false
     env:
-      FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
       FORGEJO_URL: https://git.alc.xyz
       FORGEJO_OWNER: alcxyz
       FORGEJO_REPO: nix-packages
@@ -44,4 +43,7 @@ jobs:
         run: scripts/ci/test-auto-merge-update-prs.sh
 
       - name: Merge green package update PRs
+        # Runner-provided variables override job env; bind the credential here.
+        env:
+          FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
         run: scripts/forgejo/auto-merge-update-prs.sh
