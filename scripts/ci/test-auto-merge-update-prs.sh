@@ -33,7 +33,7 @@ while (($# > 0)); do
       method=$2
       shift 2
       ;;
-    -H|--data)
+    -H|-K|--data)
       shift 2
       ;;
     -*)
@@ -118,6 +118,16 @@ case "$method $url" in
     emit "$(pr_json 2)"
     ;;
   "GET "*'/commits/'*'/status')
+    if [[ "$url" == *'/commits/head-2/status' && "${MOCK_STATUS_CASE:-success}" != success ]]; then
+      case "$MOCK_STATUS_CASE" in
+        null) emit '{"state":"","statuses":null}' ;;
+        absent) emit '{"state":""}' ;;
+        empty) emit '{"state":"","statuses":[]}' ;;
+        pending) emit '{"state":"pending","statuses":[{"context":"Validate changes / Go tool tests (pull_request)","status":"pending"}]}' ;;
+        failure) emit '{"state":"failure","statuses":[{"context":"Validate changes / Go tool tests (pull_request)","status":"failure"}]}' ;;
+      esac
+      exit 0
+    fi
     emit '{"state":"success","statuses":[{"context":"Validate changes / Go tool tests (pull_request)","status":"success","updated_at":"2026-01-01T00:00:00Z"},{"context":"Validate changes / Package build validation (pull_request)","status":"success","updated_at":"2026-01-01T00:00:00Z"}]}'
     ;;
   *)
@@ -128,7 +138,7 @@ esac
 MOCK_CURL
 chmod +x "$mock_bin/curl"
 
-output=$(
+run_queue() {
   PATH="$mock_bin:$PATH" \
     MOCK_STATE_DIR="$state" \
     FORGEJO_TOKEN=test-token \
@@ -138,10 +148,12 @@ output=$(
     BASE_BRANCH=dev \
     POLL_SECONDS=0 \
     WAIT_FOR_MERGEABLE_SECONDS=5 \
-    WAIT_FOR_STATUS_SECONDS=5 \
+    WAIT_FOR_STATUS_SECONDS=0 \
     REQUIRED_STATUS_CONTEXTS=$'Validate changes / Go tool tests (pull_request)\nValidate changes / Package build validation (pull_request)' \
     "$repo_root/scripts/forgejo/auto-merge-update-prs.sh"
-)
+}
+
+output=$(run_queue)
 
 grep -Fq 'waiting for Forgejo to recompute mergeability' <<<"$output"
 grep -Fq 'Package update queue is drained.' <<<"$output"
@@ -149,3 +161,26 @@ grep -Fq 'Package update queue is drained.' <<<"$output"
 [[ ! -e "$state/open-1" && ! -e "$state/open-2" ]]
 
 echo "Verified merge queue waits after rebases and drains every update PR."
+
+for status_case in null absent empty pending failure; do
+  rm -f "$state"/*
+  printf 'base0\n' >"$state/base"
+  touch "$state/open-1" "$state/open-2"
+  export MOCK_STATUS_CASE="$status_case"
+  if output=$(run_queue 2>&1); then
+    echo "Queue unexpectedly succeeded with ${status_case} checks" >&2
+    exit 1
+  fi
+  # The blocked PR stays open, but it must not prevent the next green PR
+  # from being checked and merged. No unchecked head may reach the merge API.
+  [[ -e "$state/open-2" && ! -e "$state/open-1" ]]
+  [[ "$(cat "$state/merged")" == 1 ]]
+  grep -Fq 'Blocked package update PRs remain:' <<<"$output"
+  if [[ "$status_case" == failure ]]; then
+    grep -Fq '#2: required status failed' <<<"$output"
+  else
+    grep -Fq '#2: required status missing or pending' <<<"$output"
+  fi
+done
+
+echo "Verified null, absent, empty, pending, and failed checks block only the affected PR."

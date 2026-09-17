@@ -16,12 +16,13 @@ jobs:
       group: package-update-auto-merge
       cancel-in-progress: false
     env:
-      FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+      FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
       FORGEJO_URL: https://git.alc.xyz
       FORGEJO_OWNER: alcxyz
       FORGEJO_REPO: nix-packages
       BASE_BRANCH: dev
-      WAIT_FOR_STATUS_SECONDS: 1800
+      # Scheduled retries pick up completed checks without occupying a runner.
+      WAIT_FOR_STATUS_SECONDS: 0
       WAIT_FOR_MERGEABLE_SECONDS: 300
       REQUIRED_STATUS_CONTEXTS: |
         Validate changes / Go tool tests (pull_request)

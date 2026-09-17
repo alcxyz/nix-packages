@@ -96,12 +96,13 @@ jobs:
       - name: Decide update mode
         id: update_gate
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
           FORGEJO_URL: https://git.alc.xyz
           FORGEJO_OWNER: alcxyz
           FORGEJO_REPO: nix-packages
           UPDATE_BRANCH: ${{ matrix.branch }}
         run: |
+          : "${FORGEJO_TOKEN:?Package update automation credential is required}"
           api_auth="$(mktemp)"
           response="$(mktemp)"
           trap 'rm -f "$api_auth" "$response"' EXIT
@@ -198,7 +199,7 @@ jobs:
       - name: Open or refresh Forgejo PR
         if: steps.update.outputs.updated == 'true'
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
           FORGEJO_URL: https://git.alc.xyz
           FORGEJO_OWNER: alcxyz
           FORGEJO_REPO: nix-packages

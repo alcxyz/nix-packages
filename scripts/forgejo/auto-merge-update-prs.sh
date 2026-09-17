@@ -17,19 +17,18 @@ wait_for_status_seconds="${WAIT_FOR_STATUS_SECONDS:-0}"
 wait_for_mergeable_seconds="${WAIT_FOR_MERGEABLE_SECONDS:-300}"
 poll_seconds="${POLL_SECONDS:-30}"
 
-api_auth=(
-  -H "Authorization: token ${FORGEJO_TOKEN}"
-  -H "Accept: application/json"
-  -H "Content-Type: application/json"
-)
+api_auth="$(mktemp)"
+printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN" >"$api_auth"
+printf 'header = "Accept: application/json"\n' >>"$api_auth"
+printf 'header = "Content-Type: application/json"\n' >>"$api_auth"
 
 api_base="${FORGEJO_URL}/api/v1/repos/${FORGEJO_OWNER}/${FORGEJO_REPO}"
 pulls_json="$(mktemp)"
 response="$(mktemp)"
 merge_payload="$(mktemp)"
-trap 'rm -f "$pulls_json" "$response" "$merge_payload"' EXIT
+trap 'rm -f "$api_auth" "$pulls_json" "$response" "$merge_payload"' EXIT
 
-curl -fsS "${api_auth[@]}" \
+curl -fsS -K "$api_auth" \
   "${api_base}/pulls?state=open&base=${BASE_BRANCH}&limit=100" \
   -o "$pulls_json"
 
@@ -37,7 +36,7 @@ mapfile -t required_contexts <<<"$REQUIRED_STATUS_CONTEXTS"
 blocked_updates=()
 
 while IFS= read -r number; do
-  pr="$(curl -fsS "${api_auth[@]}" "${api_base}/pulls/${number}")"
+  pr="$(curl -fsS -K "$api_auth" "${api_base}/pulls/${number}")"
   title="$(jq -r '.title' <<<"$pr")"
   head_ref="$(jq -r '.head.ref' <<<"$pr")"
   head_sha="$(jq -r '.head.sha' <<<"$pr")"
@@ -51,7 +50,7 @@ while IFS= read -r number; do
     echo "  rebase: PR is not based on current ${BASE_BRANCH}"
     echo "        merge base: ${merge_base}"
     echo "        base head:  ${base_sha}"
-    update_status="$(curl -sS -o "$response" -w '%{http_code}' "${api_auth[@]}" \
+    update_status="$(curl -sS -o "$response" -w '%{http_code}' -K "$api_auth" \
       -X POST \
       "${api_base}/pulls/${number}/update?style=rebase")"
 
@@ -60,7 +59,7 @@ while IFS= read -r number; do
         echo "  rebased; waiting for Forgejo to recompute mergeability"
         mergeable_deadline=$((SECONDS + wait_for_mergeable_seconds))
         while true; do
-          pr="$(curl -fsS "${api_auth[@]}" "${api_base}/pulls/${number}")"
+          pr="$(curl -fsS -K "$api_auth" "${api_base}/pulls/${number}")"
           head_sha="$(jq -r '.head.sha' <<<"$pr")"
           base_sha="$(jq -r '.base.sha' <<<"$pr")"
           merge_base="$(jq -r '.merge_base // ""' <<<"$pr")"
@@ -103,7 +102,7 @@ while IFS= read -r number; do
 
   deadline=$((SECONDS + wait_for_status_seconds))
   while true; do
-    status_json="$(curl -fsS "${api_auth[@]}" "${api_base}/commits/${head_sha}/status")"
+    status_json="$(curl -fsS -K "$api_auth" "${api_base}/commits/${head_sha}/status")"
     state="$(jq -r '.state' <<<"$status_json")"
 
     missing_contexts=()
@@ -111,7 +110,7 @@ while IFS= read -r number; do
     for context in "${required_contexts[@]}"; do
       [ -n "$context" ] || continue
       context_status="$(jq -r --arg context "$context" '
-        [.statuses[] | select(.context == $context)] | sort_by(.updated_at) | last.status // "missing"
+        [(.statuses // [])[] | select(.context == $context)] | sort_by(.updated_at) | last.status // "missing"
       ' <<<"$status_json")"
 
       case "$context_status" in
@@ -161,7 +160,7 @@ while IFS= read -r number; do
       delete_branch_after_merge: true
     }' >"$merge_payload"
 
-  status="$(curl -sS -o "$response" -w '%{http_code}' "${api_auth[@]}" \
+  status="$(curl -sS -o "$response" -w '%{http_code}' -K "$api_auth" \
     -X POST \
     --data @"$merge_payload" \
     "${api_base}/pulls/${number}/merge")"
@@ -190,7 +189,7 @@ if [ "${#blocked_updates[@]}" -gt 0 ]; then
   exit 1
 fi
 
-curl -fsS "${api_auth[@]}" \
+curl -fsS -K "$api_auth" \
   "${api_base}/pulls?state=open&base=${BASE_BRANCH}&limit=100" \
   -o "$pulls_json"
 

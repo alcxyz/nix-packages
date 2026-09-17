@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-09-13
+**Updated:** 2026-09-17
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -62,6 +62,10 @@ CI must:
 - restore dependencies only when T3 or the full package matrix is selected;
   the existing T3 updater also exports its validated dependencies before
   publishing an update PR, without adding another build
+- preserve runner-local, pull-request-isolated cache writes; this primarily
+  benefits repeated validation of the same PR on the same worker. Successful
+  uploads alone do not establish reuse or warm-build performance, and cross-PR
+  misses are expected without a trusted cache producer
 - key cache snapshots by platform, flake lock, and package source inputs, with
   same-lock fallback; cache misses and cache-service failures must not bypass
   builds or fail an otherwise successful validation
@@ -80,19 +84,32 @@ Runner usage must:
 - treat closed `update/<package>` branches as disposable; stale remote update branches should be deleted because the updater can recreate them from current `dev`
 - leave repository-level default branch deletion disabled so manual promotions do not delete `dev`
 - cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once
-- avoid queueing stale auto-merge runs; a newer auto-merge event should replace an older waiting run
+- serialize auto-merge passes so concurrent runs do not race to rebase or merge the same update
 - stop expensive package/provider commands when their pull-request head is
   superseded, using a bounded Git-ref watcher; do not depend solely on server
   concurrency support, and do not apply PR cancellation to `main` pushes
-- trigger auto-merge from update pull request changes, with the scheduled auto-merge trigger kept as a nightly fallback
+- run auto-merge on a bounded nightly retry schedule, with manual dispatch for recovery; ordinary pull request events trigger validation
 - rely on pull request validation for automated update merges instead of running duplicate validation on every resulting `dev` push
+
+Workflow-authored changes must trigger ordinary pull-request validation. Use an
+explicit automation credential under a non-reserved Actions secret name for
+publishing update branches/PRs and rebasing stale updates. Forgejo's automatic
+workflow token suppresses downstream workflow events; it is suitable for
+workflow-local operations, but not these writes. Missing automation credentials
+must fail rather than fall back to the automatic token. Credential provisioning
+belongs to the hosting configuration, outside this public package repository.
 
 Auto-merge must:
 
 - only operate on `update/*` pull requests targeting `dev`
 - refetch pull request state immediately before acting so one merged update does not leave the rest of the run working from stale base information
 - rebase stale update pull requests onto the current `dev` with Forgejo's pull request update API instead of skipping them indefinitely
-- wait for the explicit required CI contexts, not the combined commit status, because the auto-merge workflow can post its own pull-request status while it is running
+- require the explicit CI contexts rather than the combined commit status;
+  scheduled passes leave missing/pending checks for a later pass instead of
+  occupying a runner while builds finish
+- treat absent, null, and empty status lists as missing required checks;
+  keep the affected PR blocked, continue checking other candidates, and report
+  remaining blocked updates with a non-zero exit
 - use squash merge for update pull requests and include the checked head commit ID in the merge request
 - delete the update branch after a successful squash merge
 
@@ -123,6 +140,15 @@ hashes. The flake exposes Helium as `packages.<system>.default` only where it is
 supported; ARM Linux has no default, rather than an unrelated replacement.
 
 ## Alternatives Considered
+
+- **Use the automatic workflow token for update publication and rebases** —
+  Rejected because its recursion protection suppresses the validation events
+  needed by the merge gate. Explicitly dispatching a second validation path
+  would add coordination and status-context complexity without improving the
+  ordinary pull-request validation contract.
+- **Treat a missing status list as success or abort the entire queue** —
+  Rejected. Missing checks provide no validation evidence, but one blocked
+  candidate should not prevent independently green updates from progressing.
 
 - **Let CI catch bad package expressions after PR creation** — Rejected as the only guard. CI remains a backstop, but updater scripts should fail before creating bad commits.
 - **Automatically retry inside the same updater run** — Rejected for malformed generated state. Retries are reasonable for network fetches, but once a script computes an invalid hash the safest behavior is to stop and make the failure visible.
