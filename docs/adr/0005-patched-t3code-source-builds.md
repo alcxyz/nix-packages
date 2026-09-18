@@ -5,6 +5,7 @@
 **Amended:** 2026-08-27
 **Amended:** 2026-09-09
 **Amended:** 2026-09-12
+**Amended:** 2026-09-16
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
@@ -36,11 +37,20 @@ constraints:
 ## Decision
 
 Expose two source-built variants on every supported platform. `t3code` tracks a
-pinned published upstream nightly, while `t3code-fork` applies narrowly scoped,
-checked-in patches to the same source revision. A shared `source.json` records
-the nightly version, resolved commit, source hash, and dependency hashes. Both
-variants use one shared build recipe so their provider wiring and platform-specific installation stay
-identical.
+pinned published upstream nightly. `t3code-fork` tracks the tested
+`alcxyz/t3code` feature branch and applies a separate, narrowly scoped quota
+recovery patch. A shared `source.json` records each flavor's exact commit,
+source hash, and dependency hashes, together with the fork's tested upstream
+baseline. Both variants use one shared build recipe so their provider wiring
+and platform-specific installation stay identical.
+
+The fork's `feat/automatic-thread-titles` branch is a promotion ref rather than
+an untested development head. Its sync workflow merges a candidate upstream
+main revision, records that revision and the source version in
+`.github/fork-source.json`, validates the candidate, and only then advances the
+branch. Package automation resolves the branch once and reads its metadata and
+archive by that immutable commit. It verifies that the declared baseline is an
+official upstream commit and an ancestor of the promoted fork commit.
 
 Consumers select the variant explicitly while retaining the same service,
 application data, port, and user-facing endpoint. Switching variants must not
@@ -50,7 +60,7 @@ consumer can switch back to `t3code` without migrating or discarding user data.
 
 The package must:
 
-- pin the selected revision, source hash, Cargo dependency hash, and pnpm
+- pin each selected revision, source hash, Cargo dependency hash, and pnpm
   dependency hash;
 - build the web client, server, and desktop application explicitly;
 - disable pnpm's `verifyDepsBeforeRun` nested-install behavior in the build;
@@ -60,24 +70,15 @@ The package must:
 - verify the runtime-reported T3 and provider CLI versions, not only Nix
   derivation names.
 
-When a local feature depends on an upstream pull request that has not reached
-the shared source pin, keep that upstream change as a separate checked-in
-prerequisite patch. Apply prerequisite patches before the local feature patch,
-and verify the feature patch's declared base reproduces the checked-in
-prerequisite exactly. Compatibility fixes required for the upstream change to
-work on the pinned source belong with that prerequisite. Remove the
-prerequisite patch after the shared pin contains the merged upstream change and
-its required compatibility behavior.
-
 An unmerged schema prerequisite must not consume a numbered upstream migration
 identifier. Bootstrap its schema idempotently outside the numbered ledger, then
 explicitly reconcile that bootstrap when the upstream migration lands.
 
-The overnight updater must build the fork's patched source output immediately
-after pinning a candidate source and before computing generated dependency
-hashes. It records that narrow preflight result separately from the later full
-build and provider validation, so a passing patch check is not presented as a
-validated package update.
+The overnight updater must build the fork source with its separate quota patch
+immediately after pinning a candidate source and before computing generated
+dependency hashes. It records that narrow quota-patch preflight separately from
+the later full build and provider validation, so a passing patch check is not
+presented as a validated package update.
 
 Codex CLI follows npm's stable `latest` dist-tag. Prerelease channels create
 substantial update churn and may move between release lines, so the updater
@@ -116,9 +117,10 @@ not a successful GUI launch and must fail runtime verification.
 
 ## Consequences
 
-- Both supported platforms expose matching upstream and patched variants.
-- Unmerged upstream prerequisites remain distinguishable from local feature
-  changes while still sharing the same pinned source as the upstream variant.
+- Both supported platforms expose upstream and fork variants built by the same
+  recipe from independently pinned sources.
+- The fork's declared upstream baseline remains distinguishable from its
+  feature commits and from the separately selected published nightly.
 - Selecting a variant changes only the package used by the existing service;
   application state and network identity are retained.
 - Builds are slower than repackaging release binaries, especially on Darwin.
@@ -129,14 +131,17 @@ not a successful GUI launch and must fail runtime verification.
   because the desktop launcher prepends its build-time runtime package set.
 - Switching desktop distribution identities can require one-time regeneration
   of encrypted connection metadata, while project data remains independent.
-- The overnight updater selects the latest published nightly and advances both
-  variants together. It validates the patch application, both builds, and
-  embedded provider closures before opening an update PR. A patch conflict or
-  failed build leaves the last promoted version in place; automation does not
-  rewrite feature patches. Runtime activation retains its idle-turn guard.
+- The overnight updater selects the latest published nightly and the latest
+  tested fork promotion independently. A change to either source triggers both
+  builds and embedded-provider validation before opening an update PR. A quota
+  patch conflict or failed build leaves the last package pin in place. Runtime
+  activation retains its idle-turn guard.
+- Fork package versions use the tested source version and a monotonically
+  increasing fork revision. This makes a new fork commit visible even when its
+  source version and the selected upstream nightly have not changed.
 - Nightly builds are intentionally newer than stable releases. Pinning one
-  validated nightly per daily scan limits churn while keeping both variants on
-  a comparable baseline. Stable-only updates and a separately frozen fork were
-  rejected because they let the active patched build fall behind silently.
+  validated nightly per daily scan limits upstream churn, while the fork sync
+  workflow qualifies changes from upstream main before package automation can
+  select them.
 - Nightly selection applies to T3 Code only. It does not opt Codex into a
   prerelease channel or replace source builds with official artifacts.

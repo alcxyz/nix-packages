@@ -1,7 +1,14 @@
 {
-  "version": "0.0.41-nightly.20260915.1780",
-  "revision": "719a76ca1dbf5490f1aa33ffb9966301e02be9a9",
-  "hash": "sha256-YV86WqqpGQwjeovXB0IoE3f/o4IUC5DDVdBEdT4xzjc=",
+  "version": "0.0.43-nightly.20260918.1895",
+  "revision": "994654198d5820b6fab9ee09063646a8b6fd8e22",
+  "hash": "sha256-z9PMJbIJjeUtvUcRQdrOmeYqsU0uUsnACq4OoJxNPBg=",
   "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
-  "pnpmDepsHash": "sha256-gEY2em9pNTC1EuVX0V3L/Wu1apZ+BKBXxALEcPQ/pwA="
+  "pnpmDepsHash": "sha256-/eu7Y1TTvVRp/7bHzXKkWMKwdvZR4IFjGYOe4Q6W+DU=",
+  "forkVersion": "0.0.42",
+  "forkRevision": "cbf73c48e5623d6f799164f0b7d2e4fc128de1c8",
+  "forkUpstreamRevision": "56a9bf2bd7d3dcdae722a5de84578909dc11aeda",
+  "forkHash": "sha256-opMwM3NNpS0rLNVC1aN96htd2zeYtxf3yBRFD4pSYZc=",
+  "forkCargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
+  "forkPnpmDepsHash": "sha256-wOFVEnajDsrH4SjnYAM2fzQ3l41mlxrzQyN7PeS4u8Y=",
+  "forkPatchRevision": 20
 }

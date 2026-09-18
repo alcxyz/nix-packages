@@ -170,15 +170,15 @@ jobs:
           clean_ephemeral_nix_home
           bash scripts/update-packages/update-${{ matrix.package }}.sh
 
-      - name: Report T3 Code patch preflight
+      - name: Report T3 Code quota patch preflight
         if: always() && matrix.package == 't3code'
         run: |
           report="${RUNNER_TEMP}/t3code-patch-preflight.json"
           if [[ -f "$report" ]]; then
-            echo "T3 Code patch preflight report:"
+            echo "T3 Code quota patch preflight report:"
             python3 -m json.tool "$report" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
           else
-            echo "No T3 Code patch preflight report was produced; no candidate update reached patch validation." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            echo "No T3 Code quota patch preflight report was produced; no candidate update reached patch validation." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
           fi
 
       - name: Export validated T3 dependencies
@@ -209,5 +209,10 @@ jobs:
           BODY_NAME: ${{ matrix.body_name }}
           VERSION: ${{ steps.update.outputs.version }}
           UPSTREAM_URL: "${{ matrix.upstream }}${{ steps.update.outputs.version }}"
+          UPDATE_UPSTREAM_URL: ${{ steps.update.outputs.upstream_url }}
           EXISTING_UPDATE_PR: ${{ steps.update_gate.outputs.existing_update_pr }}
-        run: scripts/forgejo/upsert-update-pr.sh
+        run: |
+          if [[ -n "${UPDATE_UPSTREAM_URL:-}" ]]; then
+            export UPSTREAM_URL="$UPDATE_UPSTREAM_URL"
+          fi
+          scripts/forgejo/upsert-update-pr.sh

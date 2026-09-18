@@ -15,6 +15,7 @@
   src,
   stdenv,
   t3code,
+  upstreamRevision,
   variant,
   version,
   patchHash ? null,
@@ -121,6 +122,7 @@ in
           patchHash
           patchRevision
           sourceRevision
+          upstreamRevision
           variant
           ;
         embeddedProviderVersions = {

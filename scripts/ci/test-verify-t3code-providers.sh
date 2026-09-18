@@ -99,8 +99,8 @@ assert_not_called() {
   fi
 }
 
-# A fork patch validates only the fork closure.
-new_case 'pkgs/t3code/patches/automatic-thread-titles.patch'
+# The remaining fork-only quota patch validates only the fork closure.
+new_case 'pkgs/t3code/patches/claude-quota-recovery.patch'
 run_case 0
 assert_called 'nix build -L .#t3code-fork --no-link --print-out-paths'
 assert_not_called 'nix build -L .#t3code.pnpmDeps'
@@ -141,7 +141,7 @@ assert_called 'nix build -L .#t3code --no-link --print-out-paths'
 assert_called 'nix build -L .#t3code-fork --no-link --print-out-paths'
 
 # A selected flavor's Nix failure is returned unchanged.
-new_case 'pkgs/t3code/patches/automatic-thread-titles.patch'
+new_case 'pkgs/t3code/patches/claude-quota-recovery.patch'
 export MOCK_FAIL_NIX='build -L .#t3code-fork.resourceMonitor --no-link'
 run_case 47
 grep -Fq 'mocked provider build failure' "$test_root/output"
