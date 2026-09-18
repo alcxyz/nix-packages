@@ -19,6 +19,7 @@ output_file=""
 write_format=""
 method=GET
 url=""
+data_file=""
 while (($# > 0)); do
   case "$1" in
     -o)
@@ -33,7 +34,11 @@ while (($# > 0)); do
       method=$2
       shift 2
       ;;
-    -H|-K|--data)
+    --data)
+      data_file=${2#@}
+      shift 2
+      ;;
+    -H|-K)
       shift 2
       ;;
     -*)
@@ -67,8 +72,12 @@ pr_json() {
   local mergeable=true
   base=$(<"$MOCK_STATE_DIR/base")
 
+  if [[ "$number" == 1 && "${MOCK_QUEUE_CASE:-default}" == stale_first ]]; then
+    merge_base=older-base
+  fi
+
   if [[ "$number" == 1 && -e "$MOCK_STATE_DIR/rebased-1" ]]; then
-    merge_base=$base
+    merge_base=$(<"$MOCK_STATE_DIR/rebased-1")
     head=head-1-rebased
     reads=0
     [[ -r "$MOCK_STATE_DIR/rebased-reads" ]] && reads=$(<"$MOCK_STATE_DIR/rebased-reads")
@@ -87,28 +96,51 @@ pr_json() {
     "$number" "$number" "$number" "$head" "$base" "$merge_base" "$mergeable"
 }
 
+check_merge_payload() {
+  local number=$1
+  local expected_head="head-${number}"
+  if [[ "$number" == 1 && -e "$MOCK_STATE_DIR/rebased-1" ]]; then
+    expected_head=head-1-rebased
+  fi
+  jq -e --arg head "$expected_head" '
+    .head_commit_id == $head and .Do == "squash" and .delete_branch_after_merge == true
+  ' "$data_file" >/dev/null
+  [[ -e "$MOCK_STATE_DIR/checked-${expected_head}" ]]
+  cp "$data_file" "$MOCK_STATE_DIR/merge-payload-${number}"
+}
+
 case "$method $url" in
   "GET "*'/pulls?state=open&base=dev&limit=100')
     items=()
-    [[ -e "$MOCK_STATE_DIR/open-2" ]] && items+=("$(pr_json 2)")
-    [[ -e "$MOCK_STATE_DIR/open-1" ]] && items+=("$(pr_json 1)")
+    order=(2 1)
+    [[ "${MOCK_QUEUE_CASE:-default}" == stale_first ]] && order=(1 2)
+    for number in "${order[@]}"; do
+      [[ -e "$MOCK_STATE_DIR/open-${number}" ]] && items+=("$(pr_json "$number")")
+    done
     body="[$(IFS=,; printf '%s' "${items[*]}")]"
     emit "$body"
     ;;
   "POST "*'/pulls/1/update?style=rebase')
-    touch "$MOCK_STATE_DIR/rebased-1"
+    if [[ "${MOCK_REBASE_CASE:-success}" == success ]]; then
+      cp "$MOCK_STATE_DIR/base" "$MOCK_STATE_DIR/rebased-1"
+    fi
+    printf 'rebase-1:%s\n' "$(<"$MOCK_STATE_DIR/base")" >>"$MOCK_STATE_DIR/events"
     emit '{}'
     ;;
   "POST "*'/pulls/2/merge')
+    check_merge_payload 2
     rm "$MOCK_STATE_DIR/open-2"
     printf 'base2\n' >"$MOCK_STATE_DIR/base"
     printf '2\n' >>"$MOCK_STATE_DIR/merged"
+    printf 'merge-2\n' >>"$MOCK_STATE_DIR/events"
     emit '{}'
     ;;
   "POST "*'/pulls/1/merge')
+    check_merge_payload 1
     rm "$MOCK_STATE_DIR/open-1"
     printf 'base1\n' >"$MOCK_STATE_DIR/base"
     printf '1\n' >>"$MOCK_STATE_DIR/merged"
+    printf 'merge-1\n' >>"$MOCK_STATE_DIR/events"
     emit '{}'
     ;;
   "GET "*'/pulls/1')
@@ -118,6 +150,10 @@ case "$method $url" in
     emit "$(pr_json 2)"
     ;;
   "GET "*'/commits/'*'/status')
+    if [[ "$url" == *'/commits/head-1-rebased/status' && "${MOCK_REBASED_STATUS:-success}" == pending ]]; then
+      emit '{"state":"pending","statuses":[{"context":"Validate changes / Go tool tests (pull_request)","status":"pending"},{"context":"Validate changes / Package build validation (pull_request)","status":"pending"}]}'
+      exit 0
+    fi
     if [[ "$url" == *'/commits/head-2/status' && "${MOCK_STATUS_CASE:-success}" != success ]]; then
       case "$MOCK_STATUS_CASE" in
         null) emit '{"state":"","statuses":null}' ;;
@@ -128,6 +164,9 @@ case "$method $url" in
       esac
       exit 0
     fi
+    checked_head=${url%/status}
+    checked_head=${checked_head##*/}
+    touch "$MOCK_STATE_DIR/checked-${checked_head}"
     emit '{"state":"success","statuses":[{"context":"Validate changes / Go tool tests (pull_request)","status":"success","updated_at":"2026-01-01T00:00:00Z"},{"context":"Validate changes / Package build validation (pull_request)","status":"success","updated_at":"2026-01-01T00:00:00Z"}]}'
     ;;
   *)
@@ -147,20 +186,27 @@ run_queue() {
     FORGEJO_REPO=packages \
     BASE_BRANCH=dev \
     POLL_SECONDS=0 \
-    WAIT_FOR_MERGEABLE_SECONDS=5 \
+    WAIT_FOR_MERGEABLE_SECONDS="${MOCK_WAIT_FOR_MERGEABLE_SECONDS:-5}" \
     WAIT_FOR_STATUS_SECONDS=0 \
     REQUIRED_STATUS_CONTEXTS=$'Validate changes / Go tool tests (pull_request)\nValidate changes / Package build validation (pull_request)' \
     "$repo_root/scripts/forgejo/auto-merge-update-prs.sh"
 }
 
-output=$(run_queue)
+if output=$(run_queue 2>&1); then
+  echo "Queue unexpectedly merged a freshly rebased candidate in the same pass" >&2
+  exit 1
+fi
 
 grep -Fq 'waiting for Forgejo to recompute mergeability' <<<"$output"
+[[ "$(cat "$state/merged")" == 2 ]]
+[[ -e "$state/open-1" && ! -e "$state/open-2" ]]
+[[ ! -e "$state/merge-payload-1" ]]
+output=$(run_queue)
 grep -Fq 'Package update queue is drained.' <<<"$output"
 [[ "$(tr '\n' ' ' <"$state/merged")" == "2 1 " ]]
 [[ ! -e "$state/open-1" && ! -e "$state/open-2" ]]
 
-echo "Verified merge queue waits after rebases and drains every update PR."
+echo "Verified merge queue waits after rebases and defers refreshed candidates to the next pass."
 
 for status_case in null absent empty pending failure; do
   rm -f "$state"/*
@@ -184,3 +230,60 @@ for status_case in null absent empty pending failure; do
 done
 
 echo "Verified null, absent, empty, pending, and failed checks block only the affected PR."
+
+# The stale candidate appears first, with green checks on its old head. A later
+# current candidate can merge immediately. Rebase only after that merge so the
+# stale candidate's next validation uses the final base from this pass.
+rm -f "$state"/*
+printf 'base0\n' >"$state/base"
+touch "$state/open-1" "$state/open-2"
+export MOCK_STATUS_CASE=success MOCK_QUEUE_CASE=stale_first MOCK_REBASED_STATUS=pending
+if output=$(run_queue 2>&1); then
+  echo "Queue unexpectedly succeeded with pending checks on the rebased head" >&2
+  exit 1
+fi
+[[ -e "$state/open-1" && ! -e "$state/open-2" ]]
+[[ ! -e "$state/merge-payload-1" ]]
+[[ "$(cat "$state/merged")" == 2 ]]
+[[ "$(cat "$state/rebased-1")" == base2 ]]
+[[ "$(tr '\n' ' ' <"$state/events")" == "merge-2 rebase-1:base2 " ]]
+grep -Fq 'Blocked package update PRs remain:' <<<"$output"
+
+# A later pass must continue to block the current rebased head while its checks
+# are pending, even though the old head's checks were green.
+if output=$(run_queue 2>&1); then
+  echo "Queue unexpectedly merged a rebased candidate with pending checks" >&2
+  exit 1
+fi
+[[ -e "$state/open-1" && ! -e "$state/merge-payload-1" ]]
+[[ "$(tr '\n' ' ' <"$state/events")" == "merge-2 rebase-1:base2 " ]]
+grep -Fq '#1: required status missing or pending' <<<"$output"
+
+# Once checks complete, the next invocation drains the queue without another
+# rebase or any unchecked merge.
+export MOCK_REBASED_STATUS=success
+output=$(run_queue)
+[[ ! -e "$state/open-1" && ! -e "$state/open-2" ]]
+[[ "$(tr '\n' ' ' <"$state/merged")" == "2 1 " ]]
+[[ "$(tr '\n' ' ' <"$state/events")" == "merge-2 rebase-1:base2 merge-1 " ]]
+jq -e '.head_commit_id == "head-1-rebased"' "$state/merge-payload-1" >/dev/null
+grep -Fq 'Package update queue is drained.' <<<"$output"
+
+echo "Verified stale candidates rebase after ready merges, wait for their new checks, and drain on the next pass with the checked head."
+
+# A successful update API response is insufficient when Forgejo leaves the
+# candidate's merge base unchanged. Bound the wait and leave that PR blocked.
+rm -f "$state"/*
+printf 'base0\n' >"$state/base"
+touch "$state/open-1" "$state/open-2"
+export MOCK_REBASE_CASE=stalled MOCK_WAIT_FOR_MERGEABLE_SECONDS=0
+if output=$(run_queue 2>&1); then
+  echo "Queue unexpectedly succeeded when the rebase never updated the merge base" >&2
+  exit 1
+fi
+[[ -e "$state/open-1" && ! -e "$state/open-2" ]]
+[[ ! -e "$state/rebased-1" && ! -e "$state/merge-payload-1" ]]
+[[ "$(tr '\n' ' ' <"$state/events")" == "merge-2 rebase-1:base2 " ]]
+grep -Fq '#1: not mergeable after rebase' <<<"$output"
+
+echo "Verified an accepted rebase with an unchanged merge base stays blocked."

@@ -34,154 +34,178 @@ curl -fsS -K "$api_auth" \
 
 mapfile -t required_contexts <<<"$REQUIRED_STATUS_CONTEXTS"
 blocked_updates=()
+stale_updates=()
 
-while IFS= read -r number; do
-  pr="$(curl -fsS -K "$api_auth" "${api_base}/pulls/${number}")"
-  title="$(jq -r '.title' <<<"$pr")"
-  head_ref="$(jq -r '.head.ref' <<<"$pr")"
-  head_sha="$(jq -r '.head.sha' <<<"$pr")"
-  base_sha="$(jq -r '.base.sha' <<<"$pr")"
-  merge_base="$(jq -r '.merge_base // ""' <<<"$pr")"
-  mergeable="$(jq -r '.mergeable' <<<"$pr")"
+mapfile -t candidates < <(
+  jq -r --arg base "$BASE_BRANCH" '
+    .[]
+    | select(.base.ref == $base)
+    | select(.head.ref | startswith("update/"))
+    | .number // .index
+  ' "$pulls_json"
+)
 
-  echo "Checking PR #${number} (${head_ref}): ${title}"
+# Finish eligible merges before refreshing stale heads. Otherwise a later
+# merge invalidates checks started by an earlier rebase in the same pass.
+for phase in merge rebase; do
+  if [ "$phase" = rebase ]; then
+    candidates=("${stale_updates[@]}")
+  fi
 
-  if [ "$merge_base" != "$base_sha" ]; then
-    echo "  rebase: PR is not based on current ${BASE_BRANCH}"
-    echo "        merge base: ${merge_base}"
-    echo "        base head:  ${base_sha}"
-    update_status="$(curl -sS -o "$response" -w '%{http_code}' -K "$api_auth" \
-      -X POST \
-      "${api_base}/pulls/${number}/update?style=rebase")"
+  for number in "${candidates[@]}"; do
+    # Refetch after every merge, and again before each deferred rebase.
+    pr="$(curl -fsS -K "$api_auth" "${api_base}/pulls/${number}")"
+    title="$(jq -r '.title' <<<"$pr")"
+    head_ref="$(jq -r '.head.ref' <<<"$pr")"
+    head_sha="$(jq -r '.head.sha' <<<"$pr")"
+    base_sha="$(jq -r '.base.sha' <<<"$pr")"
+    merge_base="$(jq -r '.merge_base // ""' <<<"$pr")"
+    mergeable="$(jq -r '.mergeable' <<<"$pr")"
 
-    case "$update_status" in
-      200 | 201 | 204)
-        echo "  rebased; waiting for Forgejo to recompute mergeability"
-        mergeable_deadline=$((SECONDS + wait_for_mergeable_seconds))
-        while true; do
-          pr="$(curl -fsS -K "$api_auth" "${api_base}/pulls/${number}")"
-          head_sha="$(jq -r '.head.sha' <<<"$pr")"
-          base_sha="$(jq -r '.base.sha' <<<"$pr")"
-          merge_base="$(jq -r '.merge_base // ""' <<<"$pr")"
-          mergeable="$(jq -r '.mergeable' <<<"$pr")"
+    echo "Checking PR #${number} (${head_ref}): ${title}"
 
-          if [ "$mergeable" = "true" ] && [ "$merge_base" = "$base_sha" ]; then
-            break
-          fi
-
-          if [ "$SECONDS" -ge "$mergeable_deadline" ]; then
-            echo "  skip: PR did not become a current, mergeable candidate after rebase"
-            echo "        mergeable: ${mergeable}"
-            echo "        merge base: ${merge_base}"
-            echo "        base head:  ${base_sha}"
-            blocked_updates+=("#${number}: not mergeable after rebase")
-            continue 2
-          fi
-
-          echo "  wait: mergeability has not settled after rebase; checking again in ${poll_seconds}s"
-          sleep "$poll_seconds"
-        done
-        ;;
-      409)
-        echo "  skip: rebase update reported a conflict"
-        cat "$response"
-        blocked_updates+=("#${number}: rebase conflict")
+    if [ "$merge_base" != "$base_sha" ]; then
+      if [ "$phase" = merge ]; then
+        echo "  defer: rebase after eligible merges finish"
+        stale_updates+=("$number")
         continue
+      fi
+      echo "  rebase: PR is not based on current ${BASE_BRANCH}"
+      echo "        merge base: ${merge_base}"
+      echo "        base head:  ${base_sha}"
+      update_status="$(curl -sS -o "$response" -w '%{http_code}' -K "$api_auth" \
+        -X POST \
+        "${api_base}/pulls/${number}/update?style=rebase")"
+
+      case "$update_status" in
+        200 | 201 | 204)
+          echo "  rebased; waiting for Forgejo to recompute mergeability"
+          mergeable_deadline=$((SECONDS + wait_for_mergeable_seconds))
+          while true; do
+            pr="$(curl -fsS -K "$api_auth" "${api_base}/pulls/${number}")"
+            head_sha="$(jq -r '.head.sha' <<<"$pr")"
+            base_sha="$(jq -r '.base.sha' <<<"$pr")"
+            merge_base="$(jq -r '.merge_base // ""' <<<"$pr")"
+            mergeable="$(jq -r '.mergeable' <<<"$pr")"
+
+            if [ "$mergeable" = "true" ] && [ "$merge_base" = "$base_sha" ]; then
+              break
+            fi
+
+            if [ "$SECONDS" -ge "$mergeable_deadline" ]; then
+              echo "  skip: PR did not become a current, mergeable candidate after rebase"
+              echo "        mergeable: ${mergeable}"
+              echo "        merge base: ${merge_base}"
+              echo "        base head:  ${base_sha}"
+              blocked_updates+=("#${number}: not mergeable after rebase")
+              continue 2
+            fi
+
+            echo "  wait: mergeability has not settled after rebase; checking again in ${poll_seconds}s"
+            sleep "$poll_seconds"
+          done
+          ;;
+        409)
+          echo "  skip: rebase update reported a conflict"
+          cat "$response"
+          blocked_updates+=("#${number}: rebase conflict")
+          continue
+          ;;
+        *)
+          echo "  rebase update failed: HTTP ${update_status}" >&2
+          cat "$response" >&2
+          exit 1
+          ;;
+      esac
+    elif [ "$mergeable" != "true" ]; then
+      echo "  skip: current PR is not mergeable"
+      blocked_updates+=("#${number}: not mergeable")
+      continue
+    fi
+
+    if [ "$phase" = rebase ]; then
+      echo "  defer: check refreshed head on the next merge pass"
+      blocked_updates+=("#${number}: refreshed head awaiting next pass")
+      continue
+    fi
+
+    deadline=$((SECONDS + wait_for_status_seconds))
+    while true; do
+      status_json="$(curl -fsS -K "$api_auth" "${api_base}/commits/${head_sha}/status")"
+      state="$(jq -r '.state' <<<"$status_json")"
+
+      missing_contexts=()
+      failed_contexts=()
+      for context in "${required_contexts[@]}"; do
+        [ -n "$context" ] || continue
+        context_status="$(jq -r --arg context "$context" '
+          [(.statuses // [])[] | select(.context == $context)] | sort_by(.updated_at) | last.status // "missing"
+        ' <<<"$status_json")"
+
+        case "$context_status" in
+          success)
+            ;;
+          failure | error)
+            failed_contexts+=("${context}: ${context_status}")
+            ;;
+          *)
+            missing_contexts+=("${context}: ${context_status}")
+            ;;
+        esac
+      done
+
+      if [ "${#failed_contexts[@]}" -gt 0 ]; then
+        echo "  skip: required status context failed"
+        printf '        %s\n' "${failed_contexts[@]}"
+        blocked_updates+=("#${number}: required status failed")
+        continue 2
+      fi
+
+      if [ "${#missing_contexts[@]}" -eq 0 ]; then
+        break
+      fi
+
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        echo "  skip: required status contexts are not successful"
+        echo "        combined status: ${state}"
+        printf '        %s\n' "${missing_contexts[@]}"
+        blocked_updates+=("#${number}: required status missing or pending")
+        continue 2
+      fi
+
+      echo "  wait: required status contexts are not successful; combined status is ${state}; checking again in ${poll_seconds}s"
+      sleep "$poll_seconds"
+    done
+
+    jq -n \
+      --arg title "${title} (#${number})" \
+      --arg message "" \
+      --arg head_sha "$head_sha" \
+      '{
+        Do: "squash",
+        MergeTitleField: $title,
+        MergeMessageField: $message,
+        head_commit_id: $head_sha,
+        delete_branch_after_merge: true
+      }' >"$merge_payload"
+
+    status="$(curl -sS -o "$response" -w '%{http_code}' -K "$api_auth" \
+      -X POST \
+      --data @"$merge_payload" \
+      "${api_base}/pulls/${number}/merge")"
+
+    case "$status" in
+      200 | 201 | 204)
+        echo "  merged"
         ;;
       *)
-        echo "  rebase update failed: HTTP ${update_status}" >&2
+        echo "  merge failed: HTTP ${status}" >&2
         cat "$response" >&2
         exit 1
         ;;
     esac
-  elif [ "$mergeable" != "true" ]; then
-    echo "  skip: current PR is not mergeable"
-    blocked_updates+=("#${number}: not mergeable")
-    continue
-  fi
-
-  deadline=$((SECONDS + wait_for_status_seconds))
-  while true; do
-    status_json="$(curl -fsS -K "$api_auth" "${api_base}/commits/${head_sha}/status")"
-    state="$(jq -r '.state' <<<"$status_json")"
-
-    missing_contexts=()
-    failed_contexts=()
-    for context in "${required_contexts[@]}"; do
-      [ -n "$context" ] || continue
-      context_status="$(jq -r --arg context "$context" '
-        [(.statuses // [])[] | select(.context == $context)] | sort_by(.updated_at) | last.status // "missing"
-      ' <<<"$status_json")"
-
-      case "$context_status" in
-        success)
-          ;;
-        failure | error)
-          failed_contexts+=("${context}: ${context_status}")
-          ;;
-        *)
-          missing_contexts+=("${context}: ${context_status}")
-          ;;
-      esac
-    done
-
-    if [ "${#failed_contexts[@]}" -gt 0 ]; then
-      echo "  skip: required status context failed"
-      printf '        %s\n' "${failed_contexts[@]}"
-      blocked_updates+=("#${number}: required status failed")
-      continue 2
-    fi
-
-    if [ "${#missing_contexts[@]}" -eq 0 ]; then
-      break
-    fi
-
-    if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "  skip: required status contexts are not successful"
-      echo "        combined status: ${state}"
-      printf '        %s\n' "${missing_contexts[@]}"
-      blocked_updates+=("#${number}: required status missing or pending")
-      continue 2
-    fi
-
-    echo "  wait: required status contexts are not successful; combined status is ${state}; checking again in ${poll_seconds}s"
-    sleep "$poll_seconds"
   done
-
-  jq -n \
-    --arg title "${title} (#${number})" \
-    --arg message "" \
-    --arg head_sha "$head_sha" \
-    '{
-      Do: "squash",
-      MergeTitleField: $title,
-      MergeMessageField: $message,
-      head_commit_id: $head_sha,
-      delete_branch_after_merge: true
-    }' >"$merge_payload"
-
-  status="$(curl -sS -o "$response" -w '%{http_code}' -K "$api_auth" \
-    -X POST \
-    --data @"$merge_payload" \
-    "${api_base}/pulls/${number}/merge")"
-
-  case "$status" in
-    200 | 201 | 204)
-      echo "  merged"
-      ;;
-    *)
-      echo "  merge failed: HTTP ${status}" >&2
-      cat "$response" >&2
-      exit 1
-      ;;
-  esac
-done < <(
-  jq -c --arg base "$BASE_BRANCH" '
-    .[]
-    | select(.base.ref == $base)
-    | select(.head.ref | startswith("update/"))
-  ' "$pulls_json" | jq -r '.number // .index'
-)
+done
 
 if [ "${#blocked_updates[@]}" -gt 0 ]; then
   echo "Blocked package update PRs remain:" >&2

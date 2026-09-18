@@ -3,9 +3,9 @@ run-name: "Merge update PR queue (${{ forgejo.event_name }})"
 
 on:
   schedule:
-    # Retry throughout the validation window. Each run drains every update it
-    # can and a later run catches PRs created after an earlier snapshot.
-    - cron: "TZ=Europe/Oslo 30 4-7 * * *"
+    # Keep retrying after rebases and late checks, including after the morning
+    # scan. Passes never wait for package builds to finish.
+    - cron: "TZ=Europe/Oslo 30 * * * *"
   workflow_dispatch:
 
 jobs:

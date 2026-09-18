@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-09-17
+**Updated:** 2026-09-18
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -88,7 +88,7 @@ Runner usage must:
 - stop expensive package/provider commands when their pull-request head is
   superseded, using a bounded Git-ref watcher; do not depend solely on server
   concurrency support, and do not apply PR cancellation to `main` pushes
-- run auto-merge on a bounded nightly retry schedule, with manual dispatch for recovery; ordinary pull request events trigger validation
+- run short auto-merge passes hourly throughout the day, with manual dispatch for recovery; ordinary pull request events trigger validation
 - rely on pull request validation for automated update merges instead of running duplicate validation on every resulting `dev` push
 
 Workflow-authored changes must trigger ordinary pull-request validation. Use an
@@ -105,7 +105,7 @@ Auto-merge must:
 
 - only operate on `update/*` pull requests targeting `dev`
 - refetch pull request state immediately before acting so one merged update does not leave the rest of the run working from stale base information
-- rebase stale update pull requests onto the current `dev` with Forgejo's pull request update API instead of skipping them indefinitely
+- finish eligible merges before rebasing stale update pull requests onto the resulting `dev` with Forgejo's pull request update API; refetch each deferred candidate and leave refreshed heads for a later pass instead of invalidating their checks with another merge in the same pass
 - require the explicit CI contexts rather than the combined commit status;
   scheduled passes leave missing/pending checks for a later pass instead of
   occupying a runner while builds finish
@@ -148,6 +148,13 @@ supported; ARM Linux has no default, rather than an unrelated replacement.
   needed by the merge gate. Explicitly dispatching a second validation path
   would add coordination and status-context complexity without improving the
   ordinary pull-request validation contract.
+- **Retry only during the morning window or rebase before later merges**:
+  Rejected after a green update repeatedly became stale as other updates merged.
+  One accepted rebase did not advance its merge base within the bounded wait;
+  a later successful rebase finished validation after the final morning pass.
+  Hourly passes permit recovery without holding a runner for builds. Merging
+  before rebasing prevents avoidable checks against intermediate bases. The
+  consumer should poll after these passes, retaining its queue-drained gate.
 - **Treat a missing status list as success or abort the entire queue** —
   Rejected. Missing checks provide no validation evidence, but one blocked
   candidate should not prevent independently green updates from progressing.
