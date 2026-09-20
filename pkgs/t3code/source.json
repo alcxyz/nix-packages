@@ -1,9 +1,9 @@
 {
-  "version": "0.0.43-nightly.20260918.1895",
-  "revision": "994654198d5820b6fab9ee09063646a8b6fd8e22",
-  "hash": "sha256-z9PMJbIJjeUtvUcRQdrOmeYqsU0uUsnACq4OoJxNPBg=",
+  "version": "0.0.43-nightly.20260919.1978",
+  "revision": "8dd02470b1e7603b8d36a21ae27c510480351f18",
+  "hash": "sha256-iSk7nYPWNZ9ilq1skNwbNL/s3ZiPRJunWHZ5AaBZWg0=",
   "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
-  "pnpmDepsHash": "sha256-/eu7Y1TTvVRp/7bHzXKkWMKwdvZR4IFjGYOe4Q6W+DU=",
+  "pnpmDepsHash": "sha256-H3AmAQzzyAHMt/IazLb1Ci5vM6aOXW905meJcOCKhEQ=",
   "forkVersion": "0.0.42",
   "forkRevision": "cbf73c48e5623d6f799164f0b7d2e4fc128de1c8",
   "forkUpstreamRevision": "56a9bf2bd7d3dcdae722a5de84578909dc11aeda",
