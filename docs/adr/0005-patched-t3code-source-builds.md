@@ -6,6 +6,7 @@
 **Amended:** 2026-09-09
 **Amended:** 2026-09-12
 **Amended:** 2026-09-16
+**Amended:** 2026-09-21
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
@@ -36,13 +37,20 @@ constraints:
 
 ## Decision
 
-Expose two source-built variants on every supported platform. `t3code` tracks a
+Expose two source-built variants on `x86_64-linux`. `t3code` tracks a
 pinned published upstream nightly. `t3code-fork` tracks the tested
 `alcxyz/t3code` feature branch and applies a separate, narrowly scoped quota
 recovery patch. A shared `source.json` records each flavor's exact commit,
 source hash, and dependency hashes, together with the fork's tested upstream
 baseline. Both variants use one shared build recipe so their provider wiring
 and platform-specific installation stay identical.
+
+On macOS, use the upstream developer-signed nightly app through the
+`t3-code@nightly` Homebrew cask, declared by nix-darwin, with existing profile
+wiring retained in Home Manager. Do not export Darwin T3 packages: Mac rebuilds
+no longer consume them, and CI should not evaluate unused Darwin variants.
+The native desktop uses its matching upstream server; it is not a client for a
+locally patched server. This platform exception follows nix-config ADR-0073.
 
 The fork's `feat/automatic-thread-titles` branch is a promotion ref rather than
 an untested development head. Its sync workflow merges a candidate upstream
@@ -64,9 +72,8 @@ The package must:
   dependency hash;
 - build the web client, server, and desktop application explicitly;
 - disable pnpm's `verifyDepsBeforeRun` nested-install behavior in the build;
-- preserve platform-specific installation logic from the nixpkgs source
-  package, including the Darwin `.app` bundle;
-- be built and smoke-tested on both Linux and Darwin before deployment;
+- preserve Linux installation logic from the nixpkgs source package;
+- be built and smoke-tested on Linux before deployment;
 - verify the runtime-reported T3 and provider CLI versions, not only Nix
   derivation names.
 
@@ -101,8 +108,9 @@ not a successful GUI launch and must fail runtime verification.
 
 ## Alternatives Considered
 
-- **Use official artifacts for the upstream channel** — Rejected because source
-  builds keep the two selectable variants structurally identical.
+- **Use official artifacts for the upstream channel on Linux** — Rejected
+  because source builds keep the two selectable variants structurally identical.
+  macOS uses official artifacts to retain upstream application identity.
 - **Run upstream and fork as separate services** — Rejected for small,
   data-compatible patches because it fragments conversation history and changes
   the user-facing endpoint.
@@ -117,8 +125,9 @@ not a successful GUI launch and must fail runtime verification.
 
 ## Consequences
 
-- Both supported platforms expose upstream and fork variants built by the same
-  recipe from independently pinned sources.
+- Linux exposes upstream and fork variants built by the same recipe from
+  independently pinned sources. macOS uses upstream nightly releases and does
+  not receive fork-only patches through this package set.
 - The fork's declared upstream baseline remains distinguishable from its
   feature commits and from the separately selected published nightly.
 - Selecting a variant changes only the package used by the existing service;
@@ -144,4 +153,5 @@ not a successful GUI launch and must fail runtime verification.
   workflow qualifies changes from upstream main before package automation can
   select them.
 - Nightly selection applies to T3 Code only. It does not opt Codex into a
-  prerelease channel or replace source builds with official artifacts.
+  prerelease channel. Linux retains source builds; macOS app versions follow
+  the cask or upstream updater rather than the Nix lock file.

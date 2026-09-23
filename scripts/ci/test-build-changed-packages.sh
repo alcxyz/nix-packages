@@ -476,10 +476,10 @@ assert_called 'build .#packages.x86_64-linux.openzfs_7_1 -L'
 
 new_case t3-fork-only
 change_file pkgs/t3code/patches/fork-only.patch
-printf '{"x86_64-linux":["t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+printf '{"x86_64-linux":["t3code","t3code-fork"]}\n' >exports
 run_case 0
 assert_called 'build .#packages.x86_64-linux.t3code-fork -L'
-assert_called 'eval .#packages.aarch64-darwin.t3code-fork.drvPath'
+assert_not_called '.#packages.aarch64-darwin.t3code'
 assert_not_called '.#packages.x86_64-linux.t3code.pnpmDeps'
 assert_not_called '.#packages.x86_64-linux.t3code.resourceMonitor'
 assert_not_called '.#packages.x86_64-linux.t3code -L'
@@ -490,7 +490,7 @@ touch "$test_root/.dockerenv"
 export NIX_CI_EPHEMERAL_CONTAINER=1
 export MOCK_RECREATE_HOME_AFTER_BUILD=true
 change_file pkgs/t3code/source.json
-printf '{"x86_64-linux":["t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+printf '{"x86_64-linux":["t3code","t3code-fork"]}\n' >exports
 run_case 0
 python3 - <<'PYTEST'
 from pathlib import Path
@@ -506,8 +506,7 @@ for call in expected:
     index = calls.index(call)
     assert calls[index - 1] == "cleanup", (call, calls[index - 1])
 PYTEST
-assert_called 'eval .#packages.aarch64-darwin.t3code.drvPath'
-assert_called 'eval .#packages.aarch64-darwin.t3code-fork.drvPath'
+assert_not_called '.#packages.aarch64-darwin.t3code'
 assert_not_called 'build .#packages.aarch64-darwin.'
 
 new_case t3-dependency-failure

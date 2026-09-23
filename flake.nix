@@ -82,7 +82,7 @@
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
         }
-        // lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-darwin") {
+        // lib.optionalAttrs (system == "x86_64-linux") {
           t3code = unstablePkgs.callPackage ./pkgs/t3code {
             inherit (allPackages) claude-code codex-cli;
           };
