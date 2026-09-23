@@ -11,6 +11,7 @@ test_helper="$test_root/ephemeral-nix-home.sh"
 sed \
   -e "s|^nix_ci_homeless_shelter=/homeless-shelter$|nix_ci_homeless_shelter=$test_root/homeless-shelter|" \
   -e "s|^nix_ci_container_marker=/.dockerenv$|nix_ci_container_marker=$test_root/.dockerenv|" \
+  -e "s|^nix_ci_podman_container_marker=/run/.containerenv$|nix_ci_podman_container_marker=$test_root/.containerenv|" \
   "$repo_root/scripts/ci/ephemeral-nix-home.sh" >"$test_helper"
 if cmp -s "$repo_root/scripts/ci/ephemeral-nix-home.sh" "$test_helper"; then
   echo "Cleanup fixture did not replace the production paths." >&2
@@ -32,12 +33,15 @@ run_case() {
   local marker=$3
   local expect_cleanup=$4
 
-  "$real_rm" -rf "$test_root/homeless-shelter" "$test_root/.dockerenv"
+  "$real_rm" -rf "$test_root/homeless-shelter" "$test_root/.dockerenv" "$test_root/.containerenv"
   mkdir -p "$test_root/homeless-shelter"
   printf 'preserve\n' >"$test_root/homeless-shelter/inside"
   printf 'preserve\n' >"$test_root/outside/sentinel"
   : >"$test_root/rm-calls"
-  [[ "$marker" == true ]] && touch "$test_root/.dockerenv"
+  case "$marker" in
+    docker) touch "$test_root/.dockerenv" ;;
+    podman) touch "$test_root/.containerenv" ;;
+  esac
 
   PATH="$test_root/bin:$PATH" \
     REAL_RM="$real_rm" \
@@ -56,10 +60,12 @@ run_case() {
   fi
 }
 
-run_case neither-signal 0 false false
-run_case opt-in-only 1 false false
-run_case identity-only 0 true false
-run_case both-signals 1 true true
+run_case neither-marker-opt-in-missing 0 none false
+run_case opt-in-missing-docker-marker 0 docker false
+run_case opt-in-missing-podman-marker 0 podman false
+run_case opt-in-only 1 none false
+run_case docker-marker-opted-in 1 docker true
+run_case podman-marker-opted-in 1 podman true
 
 # The literal source expression is the contract under test.
 # shellcheck disable=SC2016

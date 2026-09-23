@@ -44,8 +44,10 @@ fi
 
 homeless_shelter=/homeless-shelter
 container_marker=/.dockerenv
+podman_container_marker=/run/.containerenv
 can_clean_homeless_shelter=false
-if [[ "${NIX_CI_EPHEMERAL_CONTAINER:-0}" == "1" && -e "$container_marker" ]]; then
+if [[ "${NIX_CI_EPHEMERAL_CONTAINER:-0}" == "1" &&
+      ( -e "$container_marker" || -e "$podman_container_marker" ) ]]; then
   can_clean_homeless_shelter=true
 fi
 

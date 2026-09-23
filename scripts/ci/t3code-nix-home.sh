@@ -12,8 +12,8 @@ clean_homeless_shelter() {
     return 0
   fi
   if [[ "${NIX_CI_EPHEMERAL_CONTAINER:-0}" != "1" ||
-        ! -e "$nix_ci_container_marker" ||
-        -L "$nix_ci_homeless_shelter" ]]; then
+        -L "$nix_ci_homeless_shelter" ]] ||
+      ! nix_ci_container_marker_present; then
     echo "Refusing T3 Code home cleanup outside the declared ephemeral CI container." >&2
     return 1
   fi

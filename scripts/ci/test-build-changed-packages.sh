@@ -11,6 +11,7 @@ test_script="$test_root/build-changed-packages.sh"
 sed \
   -e "s|^homeless_shelter=/homeless-shelter$|homeless_shelter=$test_root/homeless-shelter|" \
   -e "s|^container_marker=/.dockerenv$|container_marker=$test_root/.dockerenv|" \
+  -e "s|^podman_container_marker=/run/.containerenv$|podman_container_marker=$test_root/.containerenv|" \
   "$repo_root/scripts/ci/build-changed-packages.sh" >"$test_script"
 if cmp -s "$repo_root/scripts/ci/build-changed-packages.sh" "$test_script"; then
   echo "Cleanup fixture did not replace the production paths." >&2
@@ -64,7 +65,7 @@ chmod +x "$test_root/bin/"*
 
 new_case() {
   case_root="$test_root/$1"
-  "$real_rm" -rf "$test_root/homeless-shelter" "$test_root/.dockerenv"
+  "$real_rm" -rf "$test_root/homeless-shelter" "$test_root/.dockerenv" "$test_root/.containerenv"
   mkdir -p "$case_root"
   cd "$case_root"
   git init -q
@@ -155,9 +156,17 @@ run_case 0
 assert_cleanup_preserved
 assert_called 'build .#agent-sync-check -L'
 
-new_case cleanup-identity-only
+new_case cleanup-opt-in-missing-docker-marker
 prepare_cleanup_fixture
 touch "$test_root/.dockerenv"
+export PACKAGE_BUILD_MODE=baseline
+run_case 0
+assert_cleanup_preserved
+assert_called 'build .#agent-sync-check -L'
+
+new_case cleanup-opt-in-missing-podman-marker
+prepare_cleanup_fixture
+touch "$test_root/.containerenv"
 export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
@@ -171,17 +180,23 @@ run_case 44
 assert_cleanup_preserved
 [[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 1 ]]
 
-new_case cleanup-permitted-retry
-prepare_cleanup_fixture
-touch "$test_root/.dockerenv"
-export NIX_CI_EPHEMERAL_CONTAINER=1
-export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
-export PACKAGE_BUILD_MODE=baseline
-run_case 0
-assert_cleanup_called
-[[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 2 ]]
-[[ ! -e "$test_root/homeless-shelter" ]]
-[[ -f "$test_root/outside/sentinel" ]]
+for marker in docker podman; do
+  new_case "cleanup-permitted-retry-${marker}"
+  prepare_cleanup_fixture
+  if [[ "$marker" == docker ]]; then
+    touch "$test_root/.dockerenv"
+  else
+    touch "$test_root/.containerenv"
+  fi
+  export NIX_CI_EPHEMERAL_CONTAINER=1
+  export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
+  export PACKAGE_BUILD_MODE=baseline
+  run_case 0
+  assert_cleanup_called
+  [[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 2 ]]
+  [[ ! -e "$test_root/homeless-shelter" ]]
+  [[ -f "$test_root/outside/sentinel" ]]
+done
 
 assert_not_called() {
   if [[ -f calls ]] && grep -Fq -- "$1" calls; then
