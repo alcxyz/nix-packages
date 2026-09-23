@@ -131,10 +131,9 @@ buildGoModule (
 
     # Upstream ships a stale vendor tree. Remove it only in buildGoModule's
     # dependency fetcher; the final build needs the freshly generated tree.
-    overrideModAttrs = old: {
+    overrideModAttrs = _: {
       preBuild = ''
         rm -rf vendor
-        ${old.preBuild or ""}
       '';
     };
 
