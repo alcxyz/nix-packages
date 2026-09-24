@@ -6,10 +6,11 @@ shard_count="${PACKAGE_BUILD_SHARD_COUNT:-1}"
 shard_index="${PACKAGE_BUILD_SHARD_INDEX:-0}"
 plan_only="${PACKAGE_BUILD_PLAN_ONLY:-0}"
 plan_file="${PACKAGE_BUILD_PLAN_FILE:-}"
+selected_file="${PACKAGE_BUILD_SELECTED_FILE:-}"
 baseline_attrs=(agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap)
 
 case "$mode" in
-  all|baseline|selected) ;;
+  all | baseline | selected) ;;
   *)
     echo "PACKAGE_BUILD_MODE must be all, baseline, or selected (got: ${mode})." >&2
     exit 2
@@ -36,6 +37,7 @@ if [[ "$plan_only" == 1 && -z "$plan_file" ]]; then
   echo "PACKAGE_BUILD_PLAN_FILE is required in plan-only mode." >&2
   exit 2
 fi
+[[ -z "$selected_file" ]] || : >"$selected_file"
 
 if [[ "$plan_only" == 1 && "$mode" == baseline ]]; then
   printf '%s\n' "${baseline_attrs[@]}" >"$plan_file"
@@ -47,7 +49,7 @@ container_marker=/.dockerenv
 podman_container_marker=/run/.containerenv
 can_clean_homeless_shelter=false
 if [[ "${NIX_CI_EPHEMERAL_CONTAINER:-0}" == "1" &&
-      ( -e "$container_marker" || -e "$podman_container_marker" ) ]]; then
+  (-e "$container_marker" || -e "$podman_container_marker") ]]; then
   can_clean_homeless_shelter=true
 fi
 
@@ -122,10 +124,10 @@ changed_attrs=()
 full_matrix=false
 while IFS= read -r path; do
   case "$path" in
-    scripts/ci/verify-t3code-providers.sh|scripts/ci/t3code-nix-home.sh|scripts/ci/ephemeral-nix-home.sh)
+    scripts/ci/verify-t3code-providers.sh | scripts/ci/t3code-nix-home.sh | scripts/ci/ephemeral-nix-home.sh)
       changed_attrs+=(t3code t3code-fork)
       ;;
-    ""|docs/*|README.md|AGENTS.md|LICENSE*|.forgejo/*|scripts/ci/*|scripts/forgejo/*|scripts/update-packages/*) ;;
+    "" | docs/* | README.md | AGENTS.md | LICENSE* | .forgejo/* | scripts/ci/* | scripts/forgejo/* | scripts/update-packages/*) ;;
     # Keep these reverse dependencies aligned with the explicit package inputs
     # in flake.nix. A wrapper must be validated when its packaged input changes.
     pkgs/claude-code/*)
@@ -141,14 +143,14 @@ while IFS= read -r path; do
       # The default export aliases Helium on supported systems.
       changed_attrs+=(default helium)
       ;;
-    pkgs/t3code/fork.nix|pkgs/t3code/patches/*)
+    pkgs/t3code/fork.nix | pkgs/t3code/patches/*)
       changed_attrs+=(t3code-fork)
       ;;
     pkgs/t3code/*)
       # Both exports share this source pin and recipe; the fork adds a patch.
       changed_attrs+=(t3code t3code-fork)
       ;;
-    pkgs/*/*|tools/*/*)
+    pkgs/*/* | tools/*/*)
       attr=${path#*/}
       attr=${attr%%/*}
       # The overlay attribute uses an underscore in its version suffix.
@@ -202,6 +204,7 @@ while IFS= read -r attr; do
     continue
   fi
   ((selected_index += 1))
+  [[ -z "$selected_file" ]] || printf '%s\n' "$attr" >>"$selected_file"
   echo "::group::changed package ${attr}"
   systems=$(jq -r --arg attr "$attr" 'to_entries[] | select(.value | index($attr)) | .key' <<<"$exports")
   if [[ -z "$systems" ]]; then

@@ -98,7 +98,9 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
             "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1",
             **settings,
         }
-        result = subprocess.run([str(deploy), "--config", str(config), *args], cwd=root, env=env, capture_output=True, text=True, timeout=15)
+        # CI's pressure guard may freeze the runner longer than the old 15s
+        # limit. This is only a hang bound; the assertions below check behavior.
+        result = subprocess.run([str(deploy), "--config", str(config), *args], cwd=root, env=env, capture_output=True, text=True, timeout=120)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         assert result.returncode == status, (args, result.returncode, result.stdout, result.stderr)
         return calls, result

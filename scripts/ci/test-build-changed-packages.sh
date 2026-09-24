@@ -82,7 +82,7 @@ new_case() {
   unset MOCK_FAIL_EVAL MOCK_FAIL_BUILD MOCK_RECREATE_HOME_ONCE \
     MOCK_RECREATE_HOME_AFTER_BUILD PACKAGE_BUILD_MODE \
     PACKAGE_BUILD_SHARD_COUNT PACKAGE_BUILD_SHARD_INDEX \
-    PACKAGE_BUILD_PLAN_ONLY PACKAGE_BUILD_PLAN_FILE
+    PACKAGE_BUILD_PLAN_ONLY PACKAGE_BUILD_PLAN_FILE PACKAGE_BUILD_SELECTED_FILE
   cat >exports <<'JSON'
 {"x86_64-linux":["widget"],"aarch64-linux":["widget"],"aarch64-darwin":["widget","mac-only"],"x86_64-darwin":["mac-only"]}
 JSON
@@ -404,11 +404,13 @@ for shard in 0 1 2 3; do
   export PACKAGE_BUILD_MODE=selected
   export PACKAGE_BUILD_SHARD_COUNT=4
   export PACKAGE_BUILD_SHARD_INDEX="$shard"
+  export PACKAGE_BUILD_SELECTED_FILE=selected
   run_case 0
   assert_not_called 'build .#agent-sync-check'
   grep -E '^(eval|build) \.#packages\.' calls >>"$partition_root/sharded-calls"
   sed -n 's/^::group::changed package /'"$shard"' /p' output >>"$partition_root/assignments"
   sed -n 's/^::group::changed package //p' output >"$partition_root/shard-${shard}"
+  diff -u "$partition_root/shard-${shard}" selected
 done
 
 if [[ "$(cut -d' ' -f2 "$partition_root/assignments" | sort | uniq -d)" != '' ]]; then
@@ -426,6 +428,25 @@ diff -u "$partition_root/expected-calls" "$partition_root/actual-calls"
 run_case 0
 sed -n 's/^::group::changed package //p' output >"$partition_root/shard-3-repeat"
 diff -u "$partition_root/shard-3" "$partition_root/shard-3-repeat"
+
+new_case full-matrix-t3-shards
+printf '{"x86_64-linux":["alpha","t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+change_file flake.lock
+export PACKAGE_BUILD_SHARD_COUNT=2 PACKAGE_BUILD_SELECTED_FILE=selected
+for shard in 0 1; do
+  export PACKAGE_BUILD_SHARD_INDEX="$shard"
+  run_case 0
+  cp selected "shard-$shard"
+done
+cat shard-0 shard-1 | sort >actual
+printf '%s\n' alpha t3code t3code-fork | sort >expected
+diff -u expected actual
+if grep -Fqx t3code shard-0; then
+  grep -Fqx t3code-fork shard-1
+else
+  grep -Fqx t3code shard-1
+  grep -Fqx t3code-fork shard-0
+fi
 
 for invalid in \
   'selected 0 0' \

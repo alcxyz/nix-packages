@@ -81,6 +81,8 @@ jobs:
   package-builds:
     name: Package builds and provider verification
     runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
     env:
       NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
       CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
@@ -96,18 +98,26 @@ jobs:
         run: |
           PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=/tmp/package-plan \
             scripts/ci/build-changed-packages.sh
-          if test -s /tmp/package-plan; then
-            echo 'build=true' >> "$GITHUB_OUTPUT"
+          full=false
+          build=false
+          cache=false
+          if grep -Fqx '*' /tmp/package-plan; then
+            full=true
+            echo 'Complete export matrix selected; serialized shard jobs will build it.'
+          elif test -s /tmp/package-plan; then
+            build=true
             cat /tmp/package-plan
+            while IFS= read -r attr; do
+              case "$attr" in t3code|t3code-fork) cache=true ;; esac
+            done < /tmp/package-plan
           else
-            echo 'build=false' >> "$GITHUB_OUTPUT"
             echo 'No package builds needed; validation prerequisites still run.'
           fi
-          cache=false
-          while IFS= read -r attr; do
-            case "$attr" in '*'|t3code|t3code-fork) cache=true ;; esac
-          done < /tmp/package-plan
-          echo "cache=$cache" >> "$GITHUB_OUTPUT"
+          {
+            echo "full=$full"
+            echo "build=$build"
+            echo "cache=$cache"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install runner prerequisites
         if: steps.plan.outputs.build == 'true'
@@ -163,6 +173,140 @@ jobs:
           path: /tmp/nix-packages-cache
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
+  package-builds-full-0:
+    name: Full export builds, shard 0
+    needs: package-builds
+    if: needs.package-builds.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    env:
+      NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
+      CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
+      CI_PULL_REQUEST_HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
+      PACKAGE_BUILD_SHARD_COUNT: "2"
+      PACKAGE_BUILD_SHARD_INDEX: "0"
+      PACKAGE_BUILD_SELECTED_FILE: /tmp/package-shard-selected
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          github-server-url: https://git.alc.xyz
+
+      - name: Install runner prerequisites
+        run: |
+          apt-get update
+          apt-get install -y jq sudo zstd
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Restore package dependency cache
+        continue-on-error: true
+        id: cache
+        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}-shard-0
+          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+
+      - name: Enable local build cache
+        continue-on-error: true
+        run: scripts/ci/nix-build-cache.sh prepare
+
+      - name: Build full export shard
+        env:
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
+        run: scripts/ci/run-current-pr.sh scripts/ci/build-changed-packages.sh
+
+      - name: Verify shard T3 Code provider wiring
+        env:
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
+          T3CODE_CI_CLEAN_HOME: "true"
+        run: scripts/ci/run-current-pr.sh scripts/ci/verify-t3code-providers.sh
+
+      - name: Prepare bounded build cache
+        continue-on-error: true
+        if: steps.cache.outputs.cache-hit != 'true'
+        id: export-cache
+        run: scripts/ci/nix-build-cache.sh save
+
+      - name: Save package dependency cache
+        continue-on-error: true
+        if: steps.export-cache.outputs.save == 'true'
+        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  package-builds-full-1:
+    name: Full export builds, shard 1
+    needs:
+      - package-builds
+      - package-builds-full-0
+    if: needs.package-builds.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    env:
+      NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
+      CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
+      CI_PULL_REQUEST_HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
+      PACKAGE_BUILD_SHARD_COUNT: "2"
+      PACKAGE_BUILD_SHARD_INDEX: "1"
+      PACKAGE_BUILD_SELECTED_FILE: /tmp/package-shard-selected
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          github-server-url: https://git.alc.xyz
+
+      - name: Install runner prerequisites
+        run: |
+          apt-get update
+          apt-get install -y jq sudo zstd
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Restore package dependency cache
+        continue-on-error: true
+        id: cache
+        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}-shard-1
+          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+
+      - name: Enable local build cache
+        continue-on-error: true
+        run: scripts/ci/nix-build-cache.sh prepare
+
+      - name: Build full export shard
+        env:
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
+        run: scripts/ci/run-current-pr.sh scripts/ci/build-changed-packages.sh
+
+      - name: Verify shard T3 Code provider wiring
+        env:
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
+          T3CODE_CI_CLEAN_HOME: "true"
+        run: scripts/ci/run-current-pr.sh scripts/ci/verify-t3code-providers.sh
+
+      - name: Prepare bounded build cache
+        continue-on-error: true
+        if: steps.cache.outputs.cache-hit != 'true'
+        id: export-cache
+        run: scripts/ci/nix-build-cache.sh save
+
+      - name: Save package dependency cache
+        continue-on-error: true
+        if: steps.export-cache.outputs.save == 'true'
+        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
   package-build:
     name: Package build validation
     if: always()
@@ -170,6 +314,8 @@ jobs:
       - go-test
       - nix-validation
       - package-builds
+      - package-builds-full-0
+      - package-builds-full-1
     runs-on: ubuntu-latest
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
@@ -182,4 +328,7 @@ jobs:
           GO_TEST_RESULT: ${{ needs.go-test.result }}
           PACKAGE_PREREQUISITES_RESULT: ${{ needs.nix-validation.result }}
           PACKAGE_BUILDS_RESULT: ${{ needs.package-builds.result }}
+          PACKAGE_FULL_MATRIX: ${{ needs.package-builds.outputs.full }}
+          PACKAGE_FULL_SHARD_0_RESULT: ${{ needs.package-builds-full-0.result }}
+          PACKAGE_FULL_SHARD_1_RESULT: ${{ needs.package-builds-full-1.result }}
         run: scripts/ci/require-package-validation.sh

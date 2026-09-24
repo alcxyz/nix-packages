@@ -67,7 +67,7 @@ new_case() {
   export MOCK_STATE="$test_root"
   export MOCK_CHANGED="$1"
   export CASE_BASE_REF=dev
-  unset MOCK_FAIL_NIX T3CODE_VERIFY_ALWAYS
+  unset MOCK_FAIL_NIX T3CODE_VERIFY_ALWAYS PACKAGE_BUILD_SELECTED_FILE
 }
 
 run_case() {
@@ -117,6 +117,26 @@ new_case 'flake.lock'
 run_case 0
 assert_called 'nix build -L .#t3code --no-link --print-out-paths'
 assert_called 'nix build -L .#t3code-fork --no-link --print-out-paths'
+
+# Full-matrix shards verify only the T3 variant built in that same job.
+for flavor in t3code t3code-fork; do
+  new_case 'flake.lock'
+  export PACKAGE_BUILD_SELECTED_FILE="$test_root/shard-selected"
+  printf '%s\n' "$flavor" >"$PACKAGE_BUILD_SELECTED_FILE"
+  run_case 0
+  assert_called "nix build -L .#${flavor} --no-link --print-out-paths"
+  if [[ $flavor == t3code ]]; then
+    assert_not_called 'nix build -L .#t3code-fork'
+  else
+    assert_not_called 'nix build -L .#t3code.pnpmDeps'
+  fi
+done
+
+new_case 'flake.lock'
+export PACKAGE_BUILD_SELECTED_FILE="$test_root/missing-selected"
+rm -f "$PACKAGE_BUILD_SELECTED_FILE"
+run_case 2
+assert_not_called 'nix '
 
 # Unrelated package changes do not invoke Nix from provider verification.
 new_case 'pkgs/kdash/default.nix'

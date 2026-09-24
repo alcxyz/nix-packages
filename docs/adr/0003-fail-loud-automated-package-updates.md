@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-09-18
+**Updated:** 2026-09-24
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -258,3 +258,16 @@ disabled and normal content verification enabled. Cold realization took 1m48s;
 cache restore plus Nix realization took 19s. Export and upload cost 47s on the
 first write. These are measurements from one runner, not a guaranteed build
 latency; application compilation and runner contention remain separate costs.
+
+### Bounded complete-export validation
+
+A complete export build reached the runner's job-duration limit before provider
+verification and cache export finished. Keep ordinary affected-package builds
+unsharded. When the pre-Nix plan selects the complete matrix, split its sorted
+exports across two deterministic shards. The second job depends on the first,
+so the workflow graph enforces serialization even when Forgejo does not honor
+matrix parallelism limits. Each shard evaluates every platform of its selected
+exports, builds their native Linux outputs, and verifies the T3 Code flavor it
+built. The all-export platform check and every other prerequisite still run, and the
+aggregate validation context requires both shards. Each job retains the same
+2 GiB dependency-cache limit and a distinct cache key.

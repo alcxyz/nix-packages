@@ -4,7 +4,18 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
 flavors=(t3code t3code-fork)
-if [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
+if [[ -n "${PACKAGE_BUILD_SELECTED_FILE:-}" ]]; then
+  [[ -f "$PACKAGE_BUILD_SELECTED_FILE" ]] || {
+    echo "Selected package list is missing: $PACKAGE_BUILD_SELECTED_FILE" >&2
+    exit 2
+  }
+  flavors=()
+  for flavor in t3code t3code-fork; do
+    if grep -Fqx "$flavor" "$PACKAGE_BUILD_SELECTED_FILE"; then
+      flavors+=("$flavor")
+    fi
+  done
+elif [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
   plan_file=$(mktemp)
   trap 'rm -f "$plan_file"' EXIT
   PACKAGE_BUILD_MODE=selected \
@@ -22,10 +33,10 @@ if [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
     grep -Fqx t3code-fork "$plan_file" && flavors+=(t3code-fork)
   fi
 
-  if ((${#flavors[@]} == 0)); then
-    echo "No T3 Code provider inputs changed; skipping provider closure verification."
-    exit 0
-  fi
+fi
+if ((${#flavors[@]} == 0)); then
+  echo "No T3 Code provider inputs changed; skipping provider closure verification."
+  exit 0
 fi
 
 # shellcheck source=scripts/ci/t3code-nix-home.sh disable=SC1091
