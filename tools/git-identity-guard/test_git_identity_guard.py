@@ -179,9 +179,10 @@ class GuardTest(unittest.TestCase):
         )
         bad = self.oid()
         row = f"refs/heads/main {bad} refs/heads/main {base}\n".encode()
-        self.assertEqual(
-            self.hook("pre-push", "origin", "unused", input_data=row).returncode, 1
-        )
+        rejected = self.hook("pre-push", "origin", "unused", input_data=row)
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn(bad[:12].encode(), rejected.stderr)
+        self.assertNotIn(BLOCKED.encode(), rejected.stderr)
         self.assertEqual(
             self.hook(
                 "pre-push",
@@ -297,6 +298,71 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(
             self.hook("pre-push", "origin", "unused", input_data=row).returncode, 0
         )
+
+
+class GlobalHooksTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        policy = self.root / "policy.json"
+        policy.write_text(json.dumps({"blockedEmails": [BLOCKED]}))
+        self.config = self.root / "gitconfig"
+        self.config.write_text(
+            f"[core]\n hooksPath = {HOOKS}\n"
+            f"[identityGuard]\n policyFile = {policy}\n"
+            "[user]\n name = Example User\n email = safe@invalid.test\n"
+        )
+        self.env = os.environ.copy()
+        for key in list(self.env):
+            if key.startswith(
+                ("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG_")
+            ) or key in (
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+            ):
+                del self.env[key]
+        self.env.update(
+            HOME=str(self.root),
+            XDG_CONFIG_HOME=str(self.root),
+            GIT_CONFIG_GLOBAL=str(self.config),
+            GIT_CONFIG_NOSYSTEM="1",
+            GIT_CONFIG_SYSTEM=os.devnull,
+        )
+
+    def git(self, *args, cwd=None):
+        result = subprocess.run(
+            ["git", *map(str, args)],
+            cwd=cwd or self.root,
+            env=self.env,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        return result
+
+    def test_global_hooks_allow_init_outside_and_inside_repository_and_clone(self):
+        source = self.root / "source"
+        self.git("init", "-q", source)
+        self.git("init", "-q", "nested", cwd=source)
+        (source / "file").write_text("content")
+        self.git("-C", source, "add", "file")
+        self.git("-C", source, "commit", "-qm", "safe")
+        clone = self.root / "clone"
+        self.git("clone", "-q", source, clone)
+        self.assertTrue((clone / "file").exists())
+
+    def test_global_init_delegates_template_reference_transaction_hook(self):
+        template = self.root / "template"
+        (template / "hooks").mkdir(parents=True)
+        marker = self.root / "template-hook-ran"
+        hook = template / "hooks/reference-transaction"
+        hook.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\n")
+        hook.chmod(0o755)
+        self.git("config", "--file", self.config, "init.templateDir", template)
+        self.git("init", "-q", self.root / "templated")
+        self.assertTrue(marker.exists())
 
 
 if __name__ == "__main__":

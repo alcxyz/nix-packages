@@ -10,6 +10,7 @@ from pathlib import Path
 
 IDENT_RE = re.compile(r"^[^<>]*<([^<>]+)> ")
 ZERO_OID_RE = re.compile(r"^0+$")
+GUARDED_HOOKS = {"pre-commit", "prepare-commit-msg", "commit-msg", "pre-push"}
 
 
 class GuardError(Exception):
@@ -166,9 +167,13 @@ def check_push(args, stdin_data, emails):
         if len(fields) != 3:
             raise GuardError("commit metadata could not be read")
         if fields[0].casefold() in emails or fields[1].casefold() in emails:
-            raise GuardError("configured email is used by an outgoing commit identity")
+            raise GuardError(
+                f"outgoing commit {oid[:12]} uses a blocked identity email"
+            )
         if contains_blocked(fields[2], emails):
-            raise GuardError("configured email appears in an outgoing commit message")
+            raise GuardError(
+                f"outgoing commit {oid[:12]} message contains a blocked email"
+            )
 
 
 def check_tag_chain(oid, emails):
@@ -198,16 +203,31 @@ def check_tag_chain(oid, emails):
         if not match:
             raise GuardError("tag identity could not be read")
         if match.group(1).casefold() in emails:
-            raise GuardError("configured email is used by an outgoing tag identity")
+            raise GuardError(f"outgoing tag {oid[:12]} uses a blocked tagger email")
         if contains_blocked(message, emails):
-            raise GuardError("configured email appears in an outgoing tag message")
+            raise GuardError(
+                f"outgoing tag {oid[:12]} message contains a blocked email"
+            )
         oid = target
 
 
 def delegate(hook, args, stdin_data):
     hook_dir = configured_path("identityGuard.repositoryHooksPath")
     if hook_dir is None:
-        common_dir = Path(os.fsdecode(git("rev-parse", "--git-common-dir")).strip())
+        try:
+            common_dir = Path(os.fsdecode(git("rev-parse", "--git-common-dir")).strip())
+        except GuardError:
+            # Git invokes reference-transaction while initializing a repo,
+            # before HEAD exists and rev-parse can recognize GIT_DIR. Git has
+            # already created its hooks directory at that point.
+            if hook in GUARDED_HOOKS:
+                raise
+            provisional_dir = os.environ.get("GIT_COMMON_DIR") or os.environ.get(
+                "GIT_DIR"
+            )
+            if not provisional_dir:
+                raise
+            common_dir = Path(provisional_dir)
         hook_dir = common_dir / "hooks"
     active_dir = configured_path("core.hooksPath")
     if active_dir is not None and hook_dir.resolve() == active_dir.resolve():
@@ -231,7 +251,7 @@ def main(argv):
         return 2
     stdin_data = sys.stdin.buffer.read() if hook == "pre-push" else None
     try:
-        emails = policy()
+        emails = policy() if hook in GUARDED_HOOKS else None
         if emails:
             if hook == "pre-commit":
                 current_ident("AUTHOR", emails)

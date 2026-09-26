@@ -9,8 +9,10 @@ This package supplies a Git hook directory at
 ```
 
 The policy file is read at hook runtime. Keep sensitive policy contents out of
-public source and caches. An absent policy setting leaves the dispatcher in delegation-only mode.
-A configured file that is missing, empty, or malformed blocks the operation.
+public source and caches. An absent policy setting leaves the dispatcher in
+delegation-only mode.
+A configured file that is missing, empty, or malformed blocks guarded commits
+and pushes.
 The guard checks effective author and committer identities, commit messages,
 and outgoing commits. Annotated tag objects are checked for tagger identity and
 message on push. A new remote ref uses that remote's tracking refs as the
