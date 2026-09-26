@@ -45,6 +45,7 @@
         allPackages = {
           agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
+          git-identity-guard = pkgs.callPackage ./tools/git-identity-guard { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
           codex-app-server = pkgs.callPackage ./pkgs/codex-app-server { };
@@ -171,6 +172,19 @@
             ''
               shellcheck ${./tools/nix-deploy/deploy}
               python3 ${./tools/nix-deploy/test-deploy.py} ${./tools/nix-deploy/deploy}
+              touch "$out"
+            '';
+        checks.git-identity-guard-contract =
+          pkgs.runCommand "git-identity-guard-contract"
+            {
+              nativeBuildInputs = [
+                pkgs.git
+                pkgs.python3
+              ];
+            }
+            ''
+              python3 ${./tools/git-identity-guard/test_git_identity_guard.py} \
+                ${allPackages.git-identity-guard}/share/git-identity-guard/hooks
               touch "$out"
             '';
       }
