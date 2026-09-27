@@ -1,0 +1,137 @@
+--- a/pkg/agent/flannel/flannel.go
++++ b/pkg/agent/flannel/flannel.go
+@@ -56,8 +56,8 @@
+ 	ExternalIPv6Annotation = BaseAnnotation + "/public-ipv6-overwrite"
+ )
+ 
+-func flannel(ctx context.Context, wg *sync.WaitGroup, flannelIface *net.Interface, flannelConf, kubeConfigFile string, flannelIPv6Masq bool, nm netMode) error {
+-	extIface, err := LookupExtInterface(flannelIface, nm)
++func flannel(ctx context.Context, wg *sync.WaitGroup, flannelIface *net.Interface, nodeIPs []net.IP, flannelConf, kubeConfigFile string, flannelIPv6Masq bool, nm netMode) error {
++	extIface, err := LookupExtInterface(flannelIface, nm, nodeIPs)
+ 	if err != nil {
+ 		return errors.WithMessage(err, "failed to find the interface")
+ 	}
+@@ -129,10 +129,11 @@
+ 	return nil
+ }
+ 
+-func LookupExtInterface(iface *net.Interface, nm netMode) (*backend.ExternalInterface, error) {
++func LookupExtInterface(iface *net.Interface, nm netMode, nodeIPs []net.IP) (*backend.ExternalInterface, error) {
+ 	var ifaceAddr []net.IP
+ 	var ifacev6Addr []net.IP
+ 	var err error
++	explicitIface := iface != nil
+ 
+ 	if iface == nil {
+ 		logrus.Debug("No interface defined for flannel in the config. Fetching the default gateway interface")
+@@ -152,6 +153,13 @@
+ 		ifaceAddr, err = ip.GetInterfaceIP4Addrs(iface)
+ 		if err != nil {
+ 			return nil, errors.WithMessagef(err, "failed to find IPv4 address for interface %s", iface.Name)
++		}
++		if explicitIface {
++			selected, err := selectNodeIPv4(iface.Name, ifaceAddr, nodeIPs)
++			if err != nil {
++				return nil, err
++			}
++			ifaceAddr[0] = selected
+ 		}
+ 		logrus.Infof("The interface %s with ipv4 address %s will be used by flannel", iface.Name, ifaceAddr[0])
+ 	} else {
+@@ -179,6 +187,22 @@
+ 		ExtAddr:     ifaceAddr[0],
+ 		ExtV6Addr:   ifacev6Addr[0],
+ 	}, nil
++}
++
++// selectNodeIPv4 uses the configured node address only if it belongs to the selected interface.
++func selectNodeIPv4(ifaceName string, ifaceAddrs, nodeIPs []net.IP) (net.IP, error) {
++	for _, nodeIP := range nodeIPs {
++		if nodeIP.To4() == nil {
++			continue
++		}
++		for _, ifaceAddr := range ifaceAddrs {
++			if ifaceAddr.Equal(nodeIP) {
++				return ifaceAddr, nil
++			}
++		}
++		return nil, fmt.Errorf("node IPv4 address %s is not assigned to flannel interface %s", nodeIP, ifaceName)
++	}
++	return nil, fmt.Errorf("no IPv4 node address is available for flannel interface %s", ifaceName)
+ }
+ 
+ // WriteSubnetFile atomically writes the flannel subnet configuration file.
+--- a/pkg/agent/flannel/setup.go
++++ b/pkg/agent/flannel/setup.go
+@@ -115,7 +115,7 @@
+ 		return errors.WithMessage(err, "failed to check netMode for flannel")
+ 	}
+ 	go func() {
+-		err := flannel(ctx, wg, nodeConfig.Flannel.Iface, nodeConfig.Flannel.ConfFile, kubeConfig, nodeConfig.Flannel.IPv6Masq, nm)
++		err := flannel(ctx, wg, nodeConfig.Flannel.Iface, nodeConfig.AgentConfig.NodeIPs, nodeConfig.Flannel.ConfFile, kubeConfig, nodeConfig.Flannel.IPv6Masq, nm)
+ 		if err != nil && !errors.Is(err, context.Canceled) {
+ 			signals.RequestShutdown(errors.WithMessage(err, "flannel exited"))
+ 		}
+@@ -157,7 +157,7 @@
+ 
+ 	cniConfJSON := cniConf
+ 	if goruntime.GOOS == "windows" {
+-		extIface, err := LookupExtInterface(nodeConfig.Flannel.Iface, ipv4)
++		extIface, err := LookupExtInterface(nodeConfig.Flannel.Iface, ipv4, nodeConfig.AgentConfig.NodeIPs)
+ 		if err != nil {
+ 			return err
+ 		}
+--- a/pkg/agent/flannel/source_test.go
++++ b/pkg/agent/flannel/source_test.go
+@@ -0,0 +1,51 @@
++package flannel
++
++import (
++	"net"
++	"strings"
++	"testing"
++)
++
++func TestSelectNodeIPv4(t *testing.T) {
++	vip := net.ParseIP("192.0.2.250")
++	node := net.ParseIP("192.0.2.10")
++	ifaceAddrs := []net.IP{vip, node}
++
++	t.Run("VIP precedes node address", func(t *testing.T) {
++		selected, err := selectNodeIPv4("eth0", ifaceAddrs, []net.IP{node})
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !selected.Equal(node) {
++			t.Fatalf("selected %s, want %s", selected, node)
++		}
++	})
++
++	t.Run("node address absent from interface", func(t *testing.T) {
++		_, err := selectNodeIPv4("eth0", []net.IP{vip}, []net.IP{node})
++		if err == nil || !strings.Contains(err.Error(), "not assigned to flannel interface eth0") {
++			t.Fatalf("expected interface ownership error, got %v", err)
++		}
++	})
++
++	t.Run("IPv6 node address precedes IPv4", func(t *testing.T) {
++		selected, err := selectNodeIPv4("eth0", ifaceAddrs, []net.IP{net.ParseIP("2001:db8::10"), node})
++		if err != nil || !selected.Equal(node) {
++			t.Fatalf("selected %s, error %v; want %s", selected, err, node)
++		}
++	})
++
++	t.Run("no IPv4 node address", func(t *testing.T) {
++		_, err := selectNodeIPv4("eth0", ifaceAddrs, []net.IP{net.ParseIP("2001:db8::10")})
++		if err == nil || !strings.Contains(err.Error(), "no IPv4 node address") {
++			t.Fatalf("expected missing IPv4 error, got %v", err)
++		}
++	})
++
++	t.Run("no node addresses", func(t *testing.T) {
++		_, err := selectNodeIPv4("eth0", ifaceAddrs, nil)
++		if err == nil || !strings.Contains(err.Error(), "no IPv4 node address") {
++			t.Fatalf("expected missing node address error, got %v", err)
++		}
++	})
++}

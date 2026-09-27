@@ -143,6 +143,10 @@ while IFS= read -r path; do
       # The default export aliases Helium on supported systems.
       changed_attrs+=(default helium)
       ;;
+    pkgs/k3s-flannel-node-source/*)
+      # This is a package function applied to the consumer's K3s pin, not a
+      # standalone package export from this repository's nixpkgs lock.
+      ;;
     pkgs/t3code/fork.nix | pkgs/t3code/patches/*)
       changed_attrs+=(t3code-fork)
       ;;

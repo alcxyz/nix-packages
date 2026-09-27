@@ -333,6 +333,12 @@ change_file pkgs/new-package/default.nix
 run_case 1
 grep -q 'has source files but no exported package' output
 
+new_case consumer-pinned-k3s-patch
+change_file pkgs/k3s-flannel-node-source/default.nix
+run_case 0
+grep -q 'No package-affecting changes detected.' output
+assert_not_called 'eval .#packages'
+
 new_case baseline-only
 export PACKAGE_BUILD_MODE=baseline
 run_case 0
