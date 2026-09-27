@@ -13,8 +13,24 @@ on:
 jobs:
   go-test:
     name: Go tool tests
-    runs-on: ubuntu-latest
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
     steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: 1
@@ -35,8 +51,24 @@ jobs:
 
   nix-validation:
     name: Package validation prerequisites
-    runs-on: ubuntu-latest
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
     steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: 0
@@ -80,7 +112,9 @@ jobs:
 
   package-builds:
     name: Package builds and provider verification
-    runs-on: ubuntu-latest
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
     outputs:
       full: ${{ steps.plan.outputs.full }}
     env:
@@ -88,6 +122,20 @@ jobs:
       CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
       CI_PULL_REQUEST_HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
     steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: 0
@@ -177,7 +225,9 @@ jobs:
     name: Full export builds, shard 0
     needs: package-builds
     if: needs.package-builds.outputs.full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
     env:
       NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
       CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
@@ -186,6 +236,20 @@ jobs:
       PACKAGE_BUILD_SHARD_INDEX: "0"
       PACKAGE_BUILD_SELECTED_FILE: /tmp/package-shard-selected
     steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: 0
@@ -245,7 +309,9 @@ jobs:
       - package-builds
       - package-builds-full-0
     if: needs.package-builds.outputs.full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
     env:
       NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
       CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
@@ -254,6 +320,20 @@ jobs:
       PACKAGE_BUILD_SHARD_INDEX: "1"
       PACKAGE_BUILD_SELECTED_FILE: /tmp/package-shard-selected
     steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: 0
@@ -316,8 +396,24 @@ jobs:
       - package-builds
       - package-builds-full-0
       - package-builds-full-1
-    runs-on: ubuntu-latest
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
     steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
       - uses: https://data.forgejo.org/actions/checkout@v4
         with:
           fetch-depth: 1
