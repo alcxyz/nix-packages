@@ -221,6 +221,42 @@ class GuardTest(unittest.TestCase):
             1,
         )
 
+    def test_existing_ref_skips_commits_published_on_other_remote_refs(self):
+        remote = self.root / "remote.git"
+        self.run_git("init", "--bare", "-q", str(remote))
+        self.run_git("remote", "add", "origin", str(remote))
+        self.run_git("push", "-q", "origin", "main:main", "main:dev")
+        self.assertEqual(
+            self.commit(
+                "published old author", env=self.bad_env(), bypass=True
+            ).returncode,
+            0,
+        )
+        self.run_git("-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "main")
+        self.run_git("fetch", "-q", "origin")
+        dev_tip = (
+            self.run_git("rev-parse", "origin/dev").stdout.decode().strip()
+        )
+        # Merging published main back into dev sends no new bad commits.
+        row = f"refs/heads/main {self.oid()} refs/heads/dev {dev_tip}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "origin", str(remote), input_data=row).returncode, 0
+        )
+        # URL pushes still check everything missing from the old tip.
+        self.assertEqual(
+            self.hook("pre-push", str(remote), str(remote), input_data=row).returncode,
+            1,
+        )
+        # New bad commits are still rejected on an existing ref.
+        self.assertEqual(
+            self.commit("unpublished old author", env=self.bad_env(), bypass=True).returncode,
+            0,
+        )
+        row = f"refs/heads/main {self.oid()} refs/heads/dev {dev_tip}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "origin", str(remote), input_data=row).returncode, 1
+        )
+
     def test_real_push_rejects_old_author_and_keeps_remote_tip(self):
         remote = self.root / "remote.git"
         self.run_git("init", "--bare", "-q", str(remote))

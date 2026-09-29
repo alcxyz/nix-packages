@@ -15,10 +15,11 @@ A configured file that is missing, empty, or malformed blocks guarded commits
 and pushes.
 The guard checks effective author and committer identities, commit messages,
 and outgoing commits. Annotated tag objects are checked for tagger identity and
-message on push. A new remote ref uses that remote's tracking refs as the
-published boundary. If none are available, or the push uses a URL, it checks
-the full reachable history. Existing remote refs whose old object is not
-available locally require a fetch before push.
+message on push. Commits already reachable from the pushed-to remote's
+tracking refs count as published, so merging a published branch into another
+does not re-check its history. A new ref without tracking refs, or any push to
+a URL, checks the full reachable history. Existing remote refs whose old object
+is not available locally require a fetch before push.
 
 The dispatcher also runs executable ordinary repository hooks from
 `git rev-parse --git-common-dir`/`hooks`. To preserve a custom repository

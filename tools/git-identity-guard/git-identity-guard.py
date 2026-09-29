@@ -86,9 +86,29 @@ def message_file(path, emails):
         raise GuardError("configured email appears in the commit message")
 
 
+def published_boundary(remote_name, remote_url):
+    """Return rev-list arguments excluding commits already on this remote.
+
+    Only the pushed-to remote's tracking refs count, and only when the push
+    uses its configured URL; URL pushes have no trustworthy tracking namespace.
+    """
+    try:
+        configured_url = git("remote", "get-url", "--push", remote_name).decode().strip()
+    except GuardError:
+        return []
+    if configured_url != remote_url:
+        return []
+    tracking = git("for-each-ref", "--format=%(objectname)", f"refs/remotes/{remote_name}")
+    if not tracking.strip():
+        return []
+    # --remotes expands as positive revisions; --not negates them.
+    return ["--not", f"--remotes={remote_name}"]
+
+
 def outgoing_commits(remote_name, remote_url, lines):
     """Yield only commits added by the proposed ref updates."""
     seen = set()
+    boundary = None
     for line in lines.splitlines():
         fields = line.split()
         if len(fields) != 4:
@@ -107,31 +127,12 @@ def outgoing_commits(remote_name, remote_url, lines):
                 continue
             raise
 
+        if boundary is None:
+            boundary = published_boundary(remote_name, remote_url)
         if ZERO_OID_RE.fullmatch(remote_oid):
-            # A new ref has no old tip. Use this remote's known refs as the
-            # published boundary, never refs belonging to a different remote.
-            configured_url = None
-            try:
-                configured_url = (
-                    git("remote", "get-url", "--push", remote_name).decode().strip()
-                )
-            except GuardError:
-                pass
-            if configured_url == remote_url:
-                tracking = git(
-                    "for-each-ref",
-                    "--format=%(objectname)",
-                    f"refs/remotes/{remote_name}",
-                )
-                if tracking.strip():
-                    # --remotes expands as positive revisions; --not negates them.
-                    revisions = [local_commit, "--not", f"--remotes={remote_name}"]
-                else:
-                    revisions = [local_commit]
-            else:
-                # URL pushes have no trustworthy tracking namespace. Inspect
-                # full ancestry rather than silently assuming a remote base.
-                revisions = [local_commit]
+            # A new ref has no old tip. Without this remote's known refs,
+            # inspect full ancestry rather than silently assuming a base.
+            revisions = [local_commit, *boundary]
         else:
             try:
                 remote_commit = (
@@ -141,7 +142,9 @@ def outgoing_commits(remote_name, remote_url, lines):
                 )
             except GuardError as exc:
                 raise GuardError("fetch the remote ref before pushing") from exc
-            revisions = [local_commit, f"^{remote_commit}"]
+            # Commits already published on another branch of this remote, such
+            # as main merged back into dev, are not newly published.
+            revisions = [local_commit, f"^{remote_commit}", *boundary]
 
         for oid in git("rev-list", *revisions).decode().splitlines():
             if oid not in seen:
