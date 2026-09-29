@@ -43,7 +43,6 @@
 
         # All packages — some are platform-specific
         allPackages = {
-          agent-sync-check = pkgs.callPackage ./tools/agent-sync-check { };
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
           git-identity-guard = pkgs.callPackage ./tools/git-identity-guard { };
           kdash = pkgs.callPackage ./pkgs/kdash { };

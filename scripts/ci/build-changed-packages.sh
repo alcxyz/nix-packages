@@ -7,7 +7,7 @@ shard_index="${PACKAGE_BUILD_SHARD_INDEX:-0}"
 plan_only="${PACKAGE_BUILD_PLAN_ONLY:-0}"
 plan_file="${PACKAGE_BUILD_PLAN_FILE:-}"
 selected_file="${PACKAGE_BUILD_SELECTED_FILE:-}"
-baseline_attrs=(agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap)
+baseline_attrs=(forge-mirror nix-deploy zfs-auto-unlock devlog wcap)
 
 case "$mode" in
   all | baseline | selected) ;;

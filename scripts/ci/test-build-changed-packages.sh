@@ -146,7 +146,7 @@ prepare_cleanup_fixture
 export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
-assert_called 'build .#agent-sync-check -L'
+assert_called 'build .#forge-mirror -L'
 
 new_case cleanup-opt-in-only
 prepare_cleanup_fixture
@@ -154,7 +154,7 @@ export NIX_CI_EPHEMERAL_CONTAINER=1
 export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
-assert_called 'build .#agent-sync-check -L'
+assert_called 'build .#forge-mirror -L'
 
 new_case cleanup-opt-in-missing-docker-marker
 prepare_cleanup_fixture
@@ -162,7 +162,7 @@ touch "$test_root/.dockerenv"
 export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
-assert_called 'build .#agent-sync-check -L'
+assert_called 'build .#forge-mirror -L'
 
 new_case cleanup-opt-in-missing-podman-marker
 prepare_cleanup_fixture
@@ -170,15 +170,15 @@ touch "$test_root/.containerenv"
 export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_cleanup_preserved
-assert_called 'build .#agent-sync-check -L'
+assert_called 'build .#forge-mirror -L'
 
 new_case cleanup-local-failure
 prepare_cleanup_fixture
-export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
+export MOCK_RECREATE_HOME_ONCE='build .#forge-mirror -L'
 export PACKAGE_BUILD_MODE=baseline
 run_case 44
 assert_cleanup_preserved
-[[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 1 ]]
+[[ "$(grep -Fxc 'build .#forge-mirror -L' calls)" == 1 ]]
 
 for marker in docker podman; do
   new_case "cleanup-permitted-retry-${marker}"
@@ -189,11 +189,11 @@ for marker in docker podman; do
     touch "$test_root/.containerenv"
   fi
   export NIX_CI_EPHEMERAL_CONTAINER=1
-  export MOCK_RECREATE_HOME_ONCE='build .#agent-sync-check -L'
+  export MOCK_RECREATE_HOME_ONCE='build .#forge-mirror -L'
   export PACKAGE_BUILD_MODE=baseline
   run_case 0
   assert_cleanup_called
-  [[ "$(grep -Fxc 'build .#agent-sync-check -L' calls)" == 2 ]]
+  [[ "$(grep -Fxc 'build .#forge-mirror -L' calls)" == 2 ]]
   [[ ! -e "$test_root/homeless-shelter" ]]
   [[ -f "$test_root/outside/sentinel" ]]
 done
@@ -236,7 +236,7 @@ run_case 42
 new_case targeted-change
 change_file pkgs/widget/default.nix
 run_case 0
-for baseline in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
+for baseline in forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
   assert_not_called "build .#${baseline} -L"
 done
 assert_called 'build .#packages.x86_64-linux.widget -L'
@@ -343,8 +343,8 @@ new_case baseline-only
 export PACKAGE_BUILD_MODE=baseline
 run_case 0
 assert_not_called 'eval .#packages'
-if [[ "$(grep -c '^build \.#' calls)" != 6 ]]; then
-  echo 'Baseline mode did not build exactly the six baseline packages.' >&2
+if [[ "$(grep -c '^build \.#' calls)" != 5 ]]; then
+  echo 'Baseline mode did not build exactly the five baseline packages.' >&2
   cat calls >&2
   exit 1
 fi
@@ -353,7 +353,7 @@ new_case all-mode
 change_file pkgs/widget/default.nix
 export PACKAGE_BUILD_MODE=all
 run_case 0
-for baseline in agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
+for baseline in forge-mirror nix-deploy zfs-auto-unlock devlog wcap; do
   assert_called "build .#${baseline} -L"
 done
 assert_called 'build .#packages.x86_64-linux.widget -L'
@@ -387,7 +387,7 @@ assert_not_called 'build '
 new_case plan-baseline
 export PACKAGE_BUILD_MODE=baseline PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
 run_case 0
-printf '%s\n' agent-sync-check forge-mirror nix-deploy zfs-auto-unlock devlog wcap >expected-plan
+printf '%s\n' forge-mirror nix-deploy zfs-auto-unlock devlog wcap >expected-plan
 diff -u expected-plan plan
 assert_not_called 'eval .#packages'
 assert_not_called 'build '
@@ -412,7 +412,7 @@ for shard in 0 1 2 3; do
   export PACKAGE_BUILD_SHARD_INDEX="$shard"
   export PACKAGE_BUILD_SELECTED_FILE=selected
   run_case 0
-  assert_not_called 'build .#agent-sync-check'
+  assert_not_called 'build .#forge-mirror'
   grep -E '^(eval|build) \.#packages\.' calls >>"$partition_root/sharded-calls"
   sed -n 's/^::group::changed package /'"$shard"' /p' output >>"$partition_root/assignments"
   sed -n 's/^::group::changed package //p' output >"$partition_root/shard-${shard}"
