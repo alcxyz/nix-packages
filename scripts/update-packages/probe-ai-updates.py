@@ -37,6 +37,11 @@ def pin_version(content, name):
     return matches[0]
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "release probe refuses redirects", headers, fp)
+
+
 def fetch_json(url):
     headers = {"Accept": "application/json", "User-Agent": "nix-packages-ai-update-probe"}
     if url.startswith("https://api.github.com/") and os.environ.get("GITHUB_TOKEN"):
@@ -46,7 +51,8 @@ def fetch_json(url):
         if not token:
             raise ValueError("FORGEJO_TOKEN is required for the update PR lookup")
         headers["Authorization"] = "token " + token
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=10) as response:
+    opener = urllib.request.build_opener(NoRedirect())
+    with opener.open(urllib.request.Request(url, headers=headers), timeout=10) as response:
         return json.load(response)
 
 

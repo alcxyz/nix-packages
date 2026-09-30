@@ -119,10 +119,21 @@ class ProbeTests(unittest.TestCase):
             raise urllib.error.URLError("network down")
         with self.assertRaises(urllib.error.URLError):
             probe.release_versions(fail)
-        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timeout")) as urlopen:
+        with mock.patch("urllib.request.OpenerDirector.open", side_effect=urllib.error.URLError("timeout")) as urlopen:
             with self.assertRaises(urllib.error.URLError):
                 probe.fetch_json("https://registry.npmjs.org/@openai/codex/latest")
             self.assertEqual(urlopen.call_args.kwargs["timeout"], 10)
+
+    def test_redirects_cannot_forward_authorization(self):
+        request = probe.urllib.request.Request(
+            "https://forge.example/api/v1/repos/owner/packages/pulls",
+            headers={"Authorization": "token synthetic-test-token"},
+        )
+        handler = probe.NoRedirect()
+        for target in ("https://other.example/", "http://forge.example/", "https://forge.example/moved"):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(urllib.error.HTTPError, "refuses redirects"):
+                    handler.redirect_request(request, None, 302, "Found", {}, target)
 
     def test_local_pins(self):
         with tempfile.TemporaryDirectory() as directory:
