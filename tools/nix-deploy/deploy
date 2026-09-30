@@ -116,6 +116,11 @@ SSH_ARGS=(${NIX_SSHOPTS})
 PREFLIGHT_AVAILABLE_HOSTS=()
 PREFLIGHT_SKIPPED_HOSTS=()
 SSH_PREFLIGHT_ERROR=""
+# Fleet phase jobs and per-host results, keyed by "<phase>:<host>".
+JOB_HOSTS=()
+JOB_CMDS=()
+declare -A FLEET_RESULTS=()
+FLEET_FAILED=false
 
 if ! [[ "$DEPLOY_REMOTE_MIN_FREE_KIB" =~ ^[0-9]+$ ]]; then
   echo "deploy: DEPLOY_REMOTE_MIN_FREE_KIB must be an integer number of KiB" >&2
@@ -240,9 +245,76 @@ section() {
   printf '\n%s %s\n' "$(color "180;190;254" "==>")" "$(color "205;214;244" "$title")"
 }
 
-run_parallel_jobs() {
-  local jobs=("$@")
-  parallel --colsep '\t' --tagstring '{1} {2}' --line-buffer '{3}' ::: "${jobs[@]}"
+record_result() {
+  local phase="$1" host="$2" status="$3"
+  FLEET_RESULTS["${phase}:${host}"]="$status"
+  if [[ "$status" == failed ]]; then
+    FLEET_FAILED=true
+  fi
+}
+
+# Runs the jobs in JOB_HOSTS/JOB_CMDS for one phase and records each host's
+# result. GNU parallel runs every job even when some fail, so one failed host
+# never hides the outcome of the others or stops later phases.
+run_phase_jobs() {
+  local phase="$1"
+  local joblog index seq exitval signal
+  local jobs=()
+  local -A reported=()
+
+  for index in "${!JOB_HOSTS[@]}"; do
+    jobs+=("$(phase_label "$phase")"$'\t'"$(host_label "${JOB_HOSTS[index]}")"$'\t'"${JOB_CMDS[index]}")
+  done
+
+  joblog="$(mktemp)"
+  parallel --joblog "$joblog" --colsep '\t' --tagstring '{1} {2}' --line-buffer '{3}' ::: "${jobs[@]}" || true
+
+  while IFS=$'\t' read -r seq _ _ _ _ _ exitval signal _; do
+    [[ "$seq" =~ ^[0-9]+$ ]] || continue
+    index=$((seq - 1))
+    if [[ "$exitval" == 0 && "$signal" == 0 ]]; then
+      record_result "$phase" "${JOB_HOSTS[index]}" ok
+    else
+      record_result "$phase" "${JOB_HOSTS[index]}" failed
+    fi
+    reported["$index"]=1
+  done <"$joblog"
+  rm -f "$joblog"
+
+  # A job parallel never logged did not complete.
+  for index in "${!JOB_HOSTS[@]}"; do
+    if [[ -z "${reported[$index]:-}" ]]; then
+      record_result "$phase" "${JOB_HOSTS[index]}" failed
+    fi
+  done
+}
+
+print_fleet_summary() {
+  local hosts=("$@")
+  local host known selected
+  local excluded=()
+
+  section "summary"
+  printf '%-12s %-10s %s\n' "host" "system" "home-manager"
+  for host in "${hosts[@]}"; do
+    printf '%-12s %-10s %s\n' "$host" "${FLEET_RESULTS["system:${host}"]:--}" "${FLEET_RESULTS["hm:${host}"]:--}"
+  done
+
+  for known in "${KNOWN_HOSTS[@]}"; do
+    selected=false
+    for host in "${hosts[@]}"; do
+      if [[ "$host" == "$known" ]]; then
+        selected=true
+        break
+      fi
+    done
+    if [[ "$selected" == false ]]; then
+      excluded+=("$known")
+    fi
+  done
+  if [[ ${#excluded[@]} -gt 0 ]]; then
+    echo "not selected by --all: ${excluded[*]}"
+  fi
 }
 
 start_sudo_keepalive() {
@@ -609,14 +681,22 @@ do_deploy_all() {
   done
 
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
-    local system_jobs=()
-    local interactive_system_jobs=()
+    local interactive_system_hosts=()
+    local interactive_system_cmds=()
     local system_hosts=()
-    local cmd
+    local cmd index
     local has_local_system_job=false
 
-    filter_reachable_hosts "nixos" "${system_candidates[@]}"
+    if ! filter_reachable_hosts "nixos" "${system_candidates[@]}"; then
+      if [[ "$FAIL_UNREACHABLE" == true ]]; then
+        exit 1
+      fi
+      FLEET_FAILED=true
+    fi
     system_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
+    for host in "${PREFLIGHT_SKIPPED_HOSTS[@]}"; do
+      record_result system "$host" skipped
+    done
 
     for host in "${system_hosts[@]}"; do
       if [[ "$host" == "$SELF" ]]; then
@@ -630,6 +710,8 @@ do_deploy_all() {
     fi
     section "system rebuilds"
 
+    JOB_HOSTS=()
+    JOB_CMDS=()
     for host in "${system_hosts[@]}"; do
       if [[ "$host" == "$SELF" ]]; then
         if is_darwin; then
@@ -641,51 +723,74 @@ do_deploy_all() {
         cmd="$(nixos_rebuild_command) $(system_activation_mode "$host") --flake .#${host} --target-host $(system_ssh_user "$host")@$(ssh_host "$host") --use-substitutes"
         if uses_remote_sudo "$host"; then
           cmd="${cmd} --ask-sudo-password"
-          interactive_system_jobs+=("$(phase_label system)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
+          interactive_system_hosts+=("$host")
+          interactive_system_cmds+=("$cmd")
           continue
         fi
       fi
 
-      system_jobs+=("$(phase_label system)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
+      JOB_HOSTS+=("$host")
+      JOB_CMDS+=("$cmd")
     done
 
-    if [[ ${#system_jobs[@]} -gt 0 ]]; then
-      run_parallel_jobs "${system_jobs[@]}"
+    if [[ ${#JOB_HOSTS[@]} -gt 0 ]]; then
+      run_phase_jobs system
     fi
 
-    for job in "${interactive_system_jobs[@]}"; do
-      IFS=$'\t' read -r phase host_label_text cmd <<<"$job"
-      printf '%s %s %s\n' "$phase" "$host_label_text" "$cmd"
-      eval "$cmd"
+    for index in "${!interactive_system_hosts[@]}"; do
+      host="${interactive_system_hosts[index]}"
+      cmd="${interactive_system_cmds[index]}"
+      printf '%s %s %s\n' "$(phase_label system)" "$(host_label "$host")" "$cmd"
+      if eval "$cmd"; then
+        record_result system "$host" ok
+      else
+        record_result system "$host" failed
+      fi
     done
   fi
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
-    local hm_jobs=()
     local hm_hosts=()
     local cmd
 
     if [[ ${#hm_candidates[@]} -eq 0 ]]; then
       echo "deploy: no Home Manager-eligible hosts in selected fleet"
-      return 0
-    fi
-
-    filter_reachable_hosts "hm" "${hm_candidates[@]}"
-    hm_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
-
-    section "home-manager switches"
-
-    for host in "${hm_hosts[@]}"; do
-      if [[ "$host" == "$SELF" ]]; then
-        cmd="home-manager switch --flake .#${HOME_OUTPUT_PREFIX}${host}"
-      else
-        printf -v cmd '%q --config %q --no-preflight --hm %q' "$0" "$CONFIG_FILE" "$host"
+    else
+      if ! filter_reachable_hosts "hm" "${hm_candidates[@]}"; then
+        if [[ "$FAIL_UNREACHABLE" == true ]]; then
+          exit 1
+        fi
+        FLEET_FAILED=true
       fi
+      hm_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
+      for host in "${PREFLIGHT_SKIPPED_HOSTS[@]}"; do
+        record_result hm "$host" skipped
+      done
 
-      hm_jobs+=("$(phase_label hm)"$'\t'"$(host_label "$host")"$'\t'"$cmd")
-    done
+      section "home-manager switches"
 
-    run_parallel_jobs "${hm_jobs[@]}"
+      JOB_HOSTS=()
+      JOB_CMDS=()
+      for host in "${hm_hosts[@]}"; do
+        if [[ "$host" == "$SELF" ]]; then
+          cmd="home-manager switch --flake .#${HOME_OUTPUT_PREFIX}${host}"
+        else
+          printf -v cmd '%q --config %q --no-preflight --hm %q' "$0" "$CONFIG_FILE" "$host"
+        fi
+        JOB_HOSTS+=("$host")
+        JOB_CMDS+=("$cmd")
+      done
+
+      if [[ ${#JOB_HOSTS[@]} -gt 0 ]]; then
+        run_phase_jobs hm
+      fi
+    fi
+  fi
+
+  print_fleet_summary "${selected_hosts[@]}"
+  if [[ "$FLEET_FAILED" == true ]]; then
+    echo "deploy: one or more fleet jobs failed; see the summary above" >&2
+    exit 1
   fi
 }
 

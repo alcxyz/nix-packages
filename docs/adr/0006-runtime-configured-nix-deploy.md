@@ -79,6 +79,10 @@ interface; whitespace and shell metacharacters are rejected before planning.
   suppress a separately reachable Home Manager endpoint. `--fail-unreachable`
   still makes an unreachable candidate fail its phase instead of being
   skipped.
+- A failed job does not stop other hosts or later phases. Fleet mode records
+  each host's result per phase, prints a summary that also names known hosts
+  outside the selected fleet, and exits non-zero if any job failed.
+  Preflight-skipped hosts are reported as skipped.
 - Fleet mode starts the local sudo keepalive only when the reachable system
   phase contains a local rebuild job. Remote-only orchestration does not prompt
   for or refresh local sudo credentials.

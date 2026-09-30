@@ -56,10 +56,19 @@ elif name == "nixos-rebuild":
         print("Pre-switch check 'switchInhibitors' failed" if failure == "inhibited" else "fixture rebuild failure")
         sys.exit(7)
 elif name == "parallel":
-    for job in args[args.index(":::") + 1:]:
-        result = subprocess.run([os.environ["MOCK_BASH"], "-c", job.split("\t", 2)[2]])
-        if result.returncode:
-            sys.exit(result.returncode)
+    # Like GNU parallel: run every job, log each exit value, and exit with the
+    # number of failed jobs.
+    joblog = args[args.index("--joblog") + 1] if "--joblog" in args else None
+    rows = ["Seq\tHost\tStarttime\tJobRuntime\tSend\tReceive\tExitval\tSignal\tCommand"]
+    failed = 0
+    for seq, job in enumerate(args[args.index(":::") + 1:], start=1):
+        command = job.split("\t", 2)[2]
+        result = subprocess.run([os.environ["MOCK_BASH"], "-c", command])
+        failed += result.returncode != 0
+        rows.append(f"{seq}\t:\t0\t0\t0\t0\t{result.returncode}\t0\t{command}")
+    if joblog:
+        pathlib.Path(joblog).write_text("\n".join(rows) + "\n")
+    sys.exit(min(failed, 101))
 '''
 
 
@@ -77,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     deploy.chmod(0o755)
     # Keep the command search path closed; new operational commands cannot fall
     # through to an installed host tool. Mocks use an absolute Python shebang.
-    for name in ["bash", "cat", "jq", "tr", "sed", "tail", "grep"]:
+    for name in ["bash", "cat", "jq", "tr", "sed", "tail", "grep", "mktemp", "rm"]:
         target = shutil.which(name)
         assert target, name
         (commands / name).symlink_to(target)
@@ -149,6 +158,21 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, _ = run("--all", "--fail-unreachable", status=1, MOCK_UNREACHABLE="alc@node.invalid")
     assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
     assert not any(c[0] == "nix" and "alc-node.activationPackage" in c[-1] for c in calls)
+    # A failed system rebuild must not skip Home Manager for the fleet, and the
+    # run still fails with a per-host summary.
+    calls, result = run("--all", "--no-preflight", status=1, MOCK_SWITCH_FAILURE="other")
+    assert any(c[0] == "nixos-rebuild" and c[1] == "switch" and ".#node" in c for c in calls)
+    assert ["home-manager", "switch", "--flake", ".#alc-xyz"] in calls
+    assert ["nix", "build", "--no-link", "--print-out-paths", ".#homeConfigurations.alc-node.activationPackage"] in calls
+    summary = result.stdout.split("summary", 1)[1].splitlines()
+    assert ["node", "failed", "ok"] in [line.split() for line in summary]
+    assert ["xyz", "ok", "ok"] in [line.split() for line in summary]
+    assert ["solo", "ok", "-"] in [line.split() for line in summary]
+    assert "not selected by --all: mac" in result.stdout
+    assert "one or more fleet jobs failed" in result.stderr
+    # Preflight-skipped hosts are reported as skipped and do not fail the run.
+    calls, result = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
+    assert ["node", "skipped", "-"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
     calls, _ = run("--all", "--hm", "--no-preflight")
     parallel = next(c for c in calls if c[0] == "parallel")
     recursive_jobs = [job for job in parallel[parallel.index(":::") + 1:] if "deploy --config" in job]
@@ -204,4 +228,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     reject_inventory({**HOST_DATA, "aliases": {"node": "solo"}}, "does not satisfy schemaVersion 1")
     reject_inventory({**HOST_DATA, "remoteHosts": ["missing"]}, "does not satisfy schemaVersion 1")
 
-print("Deployment contract: 23 mocked CLI cases and 7 invalid inventories passed; no deployment commands executed")
+print("Deployment contract: 25 mocked CLI cases and 7 invalid inventories passed; no deployment commands executed")
