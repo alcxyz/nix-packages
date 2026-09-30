@@ -11,17 +11,19 @@
   rustPlatform,
   stdenv,
   t3code,
-  withPatch ? false,
+  forkChannel ? null,
 }:
 
 let
   source = builtins.fromJSON (builtins.readFile ./source.json);
+  withPatch = forkChannel != null;
+  fork = if !withPatch then null else source.forks.${forkChannel};
   quotaPatch = ./patches/claude-quota-recovery.patch;
   patchHash = builtins.hashFile "sha256" quotaPatch;
   patchId = builtins.substring 0 10 patchHash;
   version =
     if withPatch then
-      "${source.forkVersion}-fork.${toString source.forkPatchRevision}+p${patchId}"
+      "${fork.version}-fork.${toString fork.patchRevision}+p${patchId}"
     else
       source.version;
   upstreamSrc = fetchFromGitHub {
@@ -33,8 +35,8 @@ let
   forkSrc = fetchFromGitHub {
     owner = "alcxyz";
     repo = "t3code";
-    rev = source.forkRevision;
-    hash = source.forkHash;
+    rev = fork.revision;
+    hash = fork.hash;
   };
   src =
     if withPatch then
@@ -64,16 +66,16 @@ import ./build.nix {
     t3code
     version
     ;
-  cargoHash = if withPatch then source.forkCargoHash else source.cargoHash;
-  pnpmDepsHash = if withPatch then source.forkPnpmDepsHash else source.pnpmDepsHash;
+  cargoHash = if withPatch then fork.cargoHash else source.cargoHash;
+  pnpmDepsHash = if withPatch then fork.pnpmDepsHash else source.pnpmDepsHash;
   changelog =
     if withPatch then
-      "https://github.com/alcxyz/t3code/commit/${source.forkRevision}"
+      "https://github.com/alcxyz/t3code/commit/${fork.revision}"
     else
       "https://github.com/pingdotgg/t3code/releases/tag/v${source.version}";
-  sourceRevision = if withPatch then source.forkRevision else source.revision;
-  upstreamRevision = if withPatch then source.forkUpstreamRevision else source.revision;
-  variant = if withPatch then "fork" else "upstream";
+  sourceRevision = if withPatch then fork.revision else source.revision;
+  upstreamRevision = if withPatch then fork.upstreamRevision else source.revision;
+  variant = if withPatch then "fork-${forkChannel}" else "upstream";
   patchHash = if withPatch then patchHash else null;
-  patchRevision = if withPatch then source.forkPatchRevision else null;
+  patchRevision = if withPatch then fork.patchRevision else null;
 }

@@ -1,0 +1,143 @@
+name: Scan T3 Code updates
+run-name: "T3 Code update scan (${{ forgejo.event_name }})"
+
+on:
+  schedule:
+    - cron: "TZ=Europe/Oslo 47 * * * *"
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Check published T3 releases and promoted fork channels
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
+    concurrency:
+      group: package-update-t3code
+      cancel-in-progress: false
+    env:
+      BASE_BRANCH: dev
+      FORGEJO_URL: https://git.alc.xyz
+      FORGEJO_OWNER: alcxyz
+      FORGEJO_REPO: nix-packages
+      UPDATE_BRANCH: update/t3code
+    steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          github-server-url: https://git.alc.xyz
+          ref: dev
+
+      - name: Check out update base
+        run: |
+          git fetch origin "${BASE_BRANCH}"
+          git switch -C "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
+
+      - name: Probe T3 releases before Nix setup
+        id: probe
+        env:
+          FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
+        run: python3 scripts/update-packages/probe-t3code-updates.py
+
+      - name: Install runner prerequisites
+        if: steps.probe.outputs.should_run == 'true'
+        run: |
+          apt-get update
+          apt-get install -y sudo xxd jq zstd
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        if: steps.probe.outputs.should_run == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Restore T3 dependency cache
+        if: steps.probe.outputs.should_run == 'true'
+        continue-on-error: true
+        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
+          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
+
+      - name: Enable T3 dependency cache
+        if: steps.probe.outputs.should_run == 'true'
+        continue-on-error: true
+        run: scripts/ci/nix-build-cache.sh prepare
+
+      - name: Check and update t3code
+        if: steps.probe.outputs.should_run == 'true'
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
+          T3CODE_CI_CLEAN_HOME: "true"
+        run: |
+          source scripts/ci/ephemeral-nix-home.sh
+          clean_ephemeral_nix_home
+          bash scripts/update-packages/update-t3code.sh
+
+      - name: Report T3 Code quota patch preflight
+        if: always()
+        run: |
+          report="${RUNNER_TEMP}/t3code-patch-preflight.json"
+          if [[ -f "$report" ]]; then
+            echo "T3 Code quota patch preflight report:"
+            python3 -m json.tool "$report" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          else
+            echo "No T3 Code quota patch preflight report was produced; no candidate update reached patch validation." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+
+      - name: Export validated T3 dependencies
+        if: steps.update.outputs.updated == 'true'
+        continue-on-error: true
+        id: export-cache
+        run: scripts/ci/nix-build-cache.sh save
+
+      - name: Save updated T3 dependency cache
+        if: steps.export-cache.outputs.save == 'true'
+        continue-on-error: true
+        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/nix-packages-cache
+          # Recompute after the updater changes package inputs.
+          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
+
+      - name: Open or refresh Forgejo PR
+        if: steps.update.outputs.updated == 'true'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
+          FORGEJO_URL: https://git.alc.xyz
+          FORGEJO_OWNER: alcxyz
+          FORGEJO_REPO: nix-packages
+          UPDATE_BRANCH: update/t3code
+          COMMIT_MESSAGE: |
+            chore(t3code): refresh published source pins
+
+            Refresh upstream and promoted fork channels after full build and runtime checks.
+          PR_TITLE: "chore(t3code): refresh published source pins"
+          BODY_NAME: T3 Code
+          VERSION: ${{ steps.update.outputs.version }}
+          UPSTREAM_URL: "https://github.com/pingdotgg/t3code/releases/tag/v${{ steps.update.outputs.version }}"
+          UPDATE_UPSTREAM_URL: ${{ steps.update.outputs.upstream_url }}
+          EXISTING_UPDATE_PR: ${{ steps.probe.outputs.existing_update_pr }}
+        run: |
+          if [[ -n "${UPDATE_UPSTREAM_URL:-}" ]]; then
+            export UPSTREAM_URL="$UPDATE_UPSTREAM_URL"
+          fi
+          scripts/forgejo/upsert-update-pr.sh

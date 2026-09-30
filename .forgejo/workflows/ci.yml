@@ -158,7 +158,7 @@ jobs:
             build=true
             cat /tmp/package-plan
             while IFS= read -r attr; do
-              case "$attr" in t3code|t3code-fork) cache=true ;; esac
+              case "$attr" in t3code|t3code-fork|t3code-fork-nightly|t3code-fork-stable) cache=true ;; esac
             done < /tmp/package-plan
           else
             echo 'No package builds needed; validation prerequisites still run.'

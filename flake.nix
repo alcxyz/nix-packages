@@ -86,8 +86,13 @@
           t3code = unstablePkgs.callPackage ./pkgs/t3code {
             inherit (allPackages) claude-code codex-cli;
           };
-          t3code-fork = unstablePkgs.callPackage ./pkgs/t3code/fork.nix {
+          t3code-fork-nightly = unstablePkgs.callPackage ./pkgs/t3code/fork.nix {
             inherit (allPackages) claude-code codex-cli;
+          };
+          t3code-fork = allPackages.t3code-fork-nightly;
+          t3code-fork-stable = unstablePkgs.callPackage ./pkgs/t3code/fork.nix {
+            inherit (allPackages) claude-code codex-cli;
+            forkChannel = "stable";
           };
         }
         // lib.optionalAttrs (system == "aarch64-darwin") {

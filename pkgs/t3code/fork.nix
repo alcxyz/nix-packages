@@ -11,5 +11,6 @@
   rustPlatform,
   stdenv,
   t3code,
+  forkChannel ? "nightly",
 }@args:
-import ./default.nix (args // { withPatch = true; })
+import ./default.nix (args // { inherit forkChannel; })

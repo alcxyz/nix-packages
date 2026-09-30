@@ -52,11 +52,6 @@ jobs:
             title_prefix: "chore(ledger-live): update to"
             body_name: Ledger Live
             upstream: "https://github.com/LedgerHQ/ledger-live/releases/tag/%40ledgerhq/live-desktop%40"
-          - package: t3code
-            branch: update/t3code
-            title_prefix: "chore(t3code): update to"
-            body_name: T3 Code
-            upstream: "https://github.com/pingdotgg/t3code/releases/tag/v"
           - package: zen-browser
             branch: update/zen-browser
             title_prefix: "chore(zen-browser): update to"

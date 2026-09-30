@@ -5,7 +5,9 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_root=$(mktemp -d)
 real_rm=$(command -v rm)
 trap '"$real_rm" -rf "$test_root"' EXIT
-mkdir -p "$test_root/bin" "$test_root/out-t3code/bin" "$test_root/out-t3code-fork/bin"
+mkdir -p "$test_root/bin" "$test_root/out-t3code/bin" "$test_root/out-t3code-fork/bin" \
+  "$test_root/out-t3code-fork-nightly/bin" "$test_root/out-t3code-fork-stable/bin" \
+  "$test_root/pkgs/t3code"
 
 cat >"$test_root/bin/git" <<'MOCK'
 #!/usr/bin/env bash
@@ -30,12 +32,14 @@ case "$*" in
   'eval --raw .#claude-code.version') printf '1.2.3\n' ;;
   'eval --raw .#codex-cli.version') printf '4.5.6\n' ;;
   'eval --raw .#codex-app-server.version') printf '7.8.9\n' ;;
-  'eval --raw .#t3code.embeddedProviderVersions.claudeCode'|'eval --raw .#t3code-fork.embeddedProviderVersions.claudeCode') printf '1.2.3\n' ;;
-  'eval --raw .#t3code.embeddedProviderVersions.codexCli'|'eval --raw .#t3code-fork.embeddedProviderVersions.codexCli') printf '4.5.6\n' ;;
+  'eval --raw .#t3code.embeddedProviderVersions.claudeCode'|'eval --raw .#t3code-fork.embeddedProviderVersions.claudeCode'|'eval --raw .#t3code-fork-nightly.embeddedProviderVersions.claudeCode'|'eval --raw .#t3code-fork-stable.embeddedProviderVersions.claudeCode') printf '1.2.3\n' ;;
+  'eval --raw .#t3code.embeddedProviderVersions.codexCli'|'eval --raw .#t3code-fork.embeddedProviderVersions.codexCli'|'eval --raw .#t3code-fork-nightly.embeddedProviderVersions.codexCli'|'eval --raw .#t3code-fork-stable.embeddedProviderVersions.codexCli') printf '4.5.6\n' ;;
   'eval --raw .#t3code.version') printf '0.1.0\n' ;;
-  'eval --raw .#t3code-fork.version') printf '0.1.0-fork\n' ;;
+  'eval --raw .#t3code-fork.version'|'eval --raw .#t3code-fork-nightly.version'|'eval --raw .#t3code-fork-stable.version') printf '0.1.0-fork\n' ;;
   'build -L .#t3code --no-link --print-out-paths') printf '%s/out-t3code\n' "$MOCK_STATE" ;;
   'build -L .#t3code-fork --no-link --print-out-paths') printf '%s/out-t3code-fork\n' "$MOCK_STATE" ;;
+  'build -L .#t3code-fork-nightly --no-link --print-out-paths') printf '%s/out-t3code-fork-nightly\n' "$MOCK_STATE" ;;
+  'build -L .#t3code-fork-stable --no-link --print-out-paths') printf '%s/out-t3code-fork-stable\n' "$MOCK_STATE" ;;
   'build -L '*) ;;
   *) echo "Unexpected nix invocation: $*" >&2; exit 92 ;;
 esac
@@ -60,6 +64,8 @@ cat >"$test_root/out-t3code-fork/bin/t3" <<'MOCK'
 printf 't3 v0.1.0-fork\n'
 MOCK
 chmod +x "$test_root/bin/"* "$test_root/out-t3code/bin/t3" "$test_root/out-t3code-fork/bin/t3"
+cp "$test_root/out-t3code-fork/bin/t3" "$test_root/out-t3code-fork-nightly/bin/t3"
+cp "$test_root/out-t3code-fork/bin/t3" "$test_root/out-t3code-fork-stable/bin/t3"
 
 new_case() {
   : >"$test_root/calls"
@@ -67,15 +73,16 @@ new_case() {
   export MOCK_STATE="$test_root"
   export MOCK_CHANGED="$1"
   export CASE_BASE_REF=dev
+  export CASE_CWD="$repo_root"
   unset MOCK_FAIL_NIX T3CODE_VERIFY_ALWAYS PACKAGE_BUILD_SELECTED_FILE
 }
 
 run_case() {
   local expected=$1 status=0
-  PATH="$test_root/bin:$PATH" \
+  (cd "$CASE_CWD" && PATH="$test_root/bin:$PATH" \
     GITHUB_BASE_REF="$CASE_BASE_REF" GITEA_BASE_REF='' FORGEJO_BASE_REF='' \
     GITHUB_REF_NAME=feature GITEA_REF_NAME='' FORGEJO_REF_NAME='' \
-    bash "$repo_root/scripts/ci/verify-t3code-providers.sh" >"$test_root/output" 2>&1 || status=$?
+    bash "$repo_root/scripts/ci/verify-t3code-providers.sh") >"$test_root/output" 2>&1 || status=$?
   if [[ "$status" != "$expected" ]]; then
     cat "$test_root/output" >&2
     echo "Expected status $expected, got $status" >&2
@@ -105,6 +112,15 @@ run_case 0
 assert_called 'nix build -L .#t3code-fork --no-link --print-out-paths'
 assert_not_called 'nix build -L .#t3code.pnpmDeps'
 assert_not_called 'nix build -L .#t3code --no-link --print-out-paths'
+
+# A migrated pin verifies both explicit channels and the compatibility alias.
+new_case 'docs/guide.md'
+printf '{"forks":{"nightly":{},"stable":{}}}\n' >"$test_root/pkgs/t3code/source.json"
+export CASE_CWD="$test_root" T3CODE_VERIFY_ALWAYS=true
+run_case 0
+assert_called 'nix build -L .#t3code-fork-nightly --no-link --print-out-paths'
+assert_called 'nix build -L .#t3code-fork-stable --no-link --print-out-paths'
+assert_called 'nix build -L .#t3code-fork --no-link --print-out-paths'
 
 # A packaged provider feeds both wrappers, so both closures remain required.
 new_case 'pkgs/claude-code/default.nix'

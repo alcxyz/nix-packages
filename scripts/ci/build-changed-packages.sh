@@ -125,16 +125,16 @@ full_matrix=false
 while IFS= read -r path; do
   case "$path" in
     scripts/ci/verify-t3code-providers.sh | scripts/ci/t3code-nix-home.sh | scripts/ci/ephemeral-nix-home.sh)
-      changed_attrs+=(t3code t3code-fork)
+      changed_attrs+=(t3code t3code-fork t3code-fork-nightly t3code-fork-stable)
       ;;
     "" | docs/* | README.md | AGENTS.md | LICENSE* | .forgejo/* | scripts/ci/* | scripts/forgejo/* | scripts/update-packages/*) ;;
     # Keep these reverse dependencies aligned with the explicit package inputs
     # in flake.nix. A wrapper must be validated when its packaged input changes.
     pkgs/claude-code/*)
-      changed_attrs+=(claude-code t3code t3code-fork)
+      changed_attrs+=(claude-code t3code t3code-fork t3code-fork-nightly t3code-fork-stable)
       ;;
     pkgs/codex-cli/*)
-      changed_attrs+=(codex-cli t3code t3code-fork)
+      changed_attrs+=(codex-cli t3code t3code-fork t3code-fork-nightly t3code-fork-stable)
       ;;
     pkgs/xonsh-direnv/*)
       changed_attrs+=(xonsh-direnv xonsh-with-direnv)
@@ -148,11 +148,11 @@ while IFS= read -r path; do
       # standalone package export from this repository's nixpkgs lock.
       ;;
     pkgs/t3code/fork.nix | pkgs/t3code/patches/*)
-      changed_attrs+=(t3code-fork)
+      changed_attrs+=(t3code-fork t3code-fork-nightly t3code-fork-stable)
       ;;
     pkgs/t3code/*)
       # Both exports share this source pin and recipe; the fork adds a patch.
-      changed_attrs+=(t3code t3code-fork)
+      changed_attrs+=(t3code t3code-fork t3code-fork-nightly t3code-fork-stable)
       ;;
     pkgs/*/* | tools/*/*)
       attr=${path#*/}
@@ -224,7 +224,7 @@ while IFS= read -r attr; do
     echo "Evaluating ${package}.drvPath"
     nix eval "${package}.drvPath" >/dev/null
     if [[ "$system" == x86_64-linux ]]; then
-      if [[ "$attr" == t3code || "$attr" == t3code-fork ]]; then
+      if [[ "$attr" == t3code || "$attr" == t3code-fork || "$attr" == t3code-fork-nightly || "$attr" == t3code-fork-stable ]]; then
         # These dependency builds may create Nix's dummy home on unsandboxed
         # runners. Finish them separately so nix_build cleans between phases.
         nix_build "${package}.pnpmDeps" --no-link

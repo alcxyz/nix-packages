@@ -7,6 +7,7 @@
 **Amended:** 2026-09-12
 **Amended:** 2026-09-16
 **Amended:** 2026-09-21
+**Amended:** 2026-09-30
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
@@ -37,13 +38,13 @@ constraints:
 
 ## Decision
 
-Expose two source-built variants on `x86_64-linux`. `t3code` tracks a
-pinned published upstream nightly. `t3code-fork` tracks the tested
-`alcxyz/t3code` feature branch and applies a separate, narrowly scoped quota
-recovery patch. A shared `source.json` records each flavor's exact commit,
-source hash, and dependency hashes, together with the fork's tested upstream
-baseline. Both variants use one shared build recipe so their provider wiring
-and platform-specific installation stay identical.
+Expose upstream `t3code` and two promoted fork channels on `x86_64-linux`.
+`t3code` tracks a pinned published upstream nightly. `t3code-fork-nightly`
+tracks `fork/nightly`, and `t3code-fork-stable` tracks `fork/stable`.
+`t3code-fork` remains an alias for nightly. Both fork packages apply the
+separate, narrowly scoped quota recovery patch. A shared `source.json` records
+each flavor's exact commit, source hash, dependency hashes, and declared
+upstream release baseline. All variants use one build recipe and provider wiring.
 
 On macOS, use the upstream developer-signed nightly app through the
 `t3-code@nightly` Homebrew cask, declared by nix-darwin, with existing profile
@@ -52,13 +53,13 @@ no longer consume them, and CI should not evaluate unused Darwin variants.
 The native desktop uses its matching upstream server; it is not a client for a
 locally patched server. This platform exception follows nix-config ADR-0073.
 
-The fork's `feat/automatic-thread-titles` branch is a promotion ref rather than
-an untested development head. Its sync workflow merges a candidate upstream
-main revision, records that revision and the source version in
-`.github/fork-source.json`, validates the candidate, and only then advances the
-branch. Package automation resolves the branch once and reads its metadata and
-archive by that immutable commit. It verifies that the declared baseline is an
-official upstream commit and an ancestor of the promoted fork commit.
+The fork's `fork/nightly` and `fork/stable` branches are promotion refs. Their
+metadata records the channel, exact published release tag and version, upstream
+tag commit, and feature patch source commit. Package automation resolves each
+branch once and reads its metadata and archive by that immutable commit. It
+checks that the declared baseline is the exact published upstream tag commit
+and an ancestor of the promoted fork commit. The fork workflow owns validation
+of the applied feature content and advances a promotion ref only after testing.
 
 Consumers select the variant explicitly while retaining the same service,
 application data, port, and user-facing endpoint. Switching variants must not
@@ -81,7 +82,7 @@ An unmerged schema prerequisite must not consume a numbered upstream migration
 identifier. Bootstrap its schema idempotently outside the numbered ledger, then
 explicitly reconcile that bootstrap when the upstream migration lands.
 
-The overnight updater must build the fork source with its separate quota patch
+The hourly updater must build each fork source with its separate quota patch
 immediately after pinning a candidate source and before computing generated
 dependency hashes. It records that narrow quota-patch preflight separately from
 the later full build and provider validation, so a passing patch check is not
@@ -108,6 +109,10 @@ not a successful GUI launch and must fail runtime verification.
 
 ## Alternatives Considered
 
+- **Track raw upstream `main` or a continuously rebased feature head** —
+  Rejected because those commits are not published releases and can change
+  product behavior between scans. Promoted stable and nightly refs tie each
+  build to an exact release tag while preserving the fork patch set.
 - **Use official artifacts for the upstream channel on Linux** — Rejected
   because source builds keep the two selectable variants structurally identical.
   macOS uses official artifacts to retain upstream application identity.
@@ -140,18 +145,18 @@ not a successful GUI launch and must fail runtime verification.
   because the desktop launcher prepends its build-time runtime package set.
 - Switching desktop distribution identities can require one-time regeneration
   of encrypted connection metadata, while project data remains independent.
-- The overnight updater selects the latest published nightly and the latest
-  tested fork promotion independently. A change to either source triggers both
-  builds and embedded-provider validation before opening an update PR. A quota
-  patch conflict or failed build leaves the last package pin in place. Runtime
-  activation retains its idle-turn guard.
-- Fork package versions use the tested source version and a monotonically
-  increasing fork revision. This makes a new fork commit visible even when its
-  source version and the selected upstream nightly have not changed.
-- Nightly builds are intentionally newer than stable releases. Pinning one
-  validated nightly per daily scan limits upstream churn, while the fork sync
-  workflow qualifies changes from upstream main before package automation can
-  select them.
+- The hourly updater selects the latest published upstream nightly and both
+  tested fork promotions independently. A lightweight check compares their
+  identities with `dev` and any open update PR before Nix setup. A changed
+  candidate triggers source, dependency, full-build, and embedded-provider
+  validation before opening an update PR. A quota patch conflict or failed
+  build leaves the last package pin in place.
+- Fork package versions use each channel's published release version and an
+  independently increasing fork revision. A new fork commit remains visible
+  even when its release version has not changed.
+- Both fork channels derive their version from the published tag; upstream
+  source files can lag release version stamping. The fork workflow qualifies
+  its channel commits before package automation can select them.
 - Nightly selection applies to T3 Code only. It does not opt Codex into a
   prerelease channel. Linux retains source builds; macOS app versions follow
   the cask or upstream updater rather than the Nix lock file.

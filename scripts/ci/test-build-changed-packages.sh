@@ -370,7 +370,7 @@ new_case plan-reverse-dependencies
 change_file pkgs/claude-code/default.nix
 export PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
 run_case 0
-printf '%s\n' claude-code t3code t3code-fork >expected-plan
+printf '%s\n' claude-code t3code t3code-fork t3code-fork-nightly t3code-fork-stable >expected-plan
 diff -u expected-plan plan
 assert_not_called 'eval .#packages'
 assert_not_called 'build '
@@ -532,14 +532,14 @@ touch "$test_root/.dockerenv"
 export NIX_CI_EPHEMERAL_CONTAINER=1
 export MOCK_RECREATE_HOME_AFTER_BUILD=true
 change_file pkgs/t3code/source.json
-printf '{"x86_64-linux":["t3code","t3code-fork"]}\n' >exports
+printf '{"x86_64-linux":["t3code","t3code-fork","t3code-fork-nightly","t3code-fork-stable"]}\n' >exports
 run_case 0
 python3 - <<'PYTEST'
 from pathlib import Path
 calls = Path("calls").read_text().splitlines()
 expected = [
     f"build .#packages.x86_64-linux.{flavor}{suffix} -L"
-    for flavor in ("t3code", "t3code-fork")
+    for flavor in ("t3code", "t3code-fork", "t3code-fork-nightly", "t3code-fork-stable")
     for suffix in (".pnpmDeps --no-link", ".resourceMonitor --no-link", "")
 ]
 actual = [call for call in calls if call.startswith("build .#packages.x86_64-linux.t3code")]

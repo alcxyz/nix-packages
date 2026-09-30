@@ -3,14 +3,15 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
-flavors=(t3code t3code-fork)
+fork_flavors=(t3code-fork-nightly t3code-fork-stable)
+flavors=(t3code t3code-fork "${fork_flavors[@]}")
 if [[ -n "${PACKAGE_BUILD_SELECTED_FILE:-}" ]]; then
   [[ -f "$PACKAGE_BUILD_SELECTED_FILE" ]] || {
     echo "Selected package list is missing: $PACKAGE_BUILD_SELECTED_FILE" >&2
     exit 2
   }
   flavors=()
-  for flavor in t3code t3code-fork; do
+  for flavor in t3code t3code-fork "${fork_flavors[@]}"; do
     if grep -Fqx "$flavor" "$PACKAGE_BUILD_SELECTED_FILE"; then
       flavors+=("$flavor")
     fi
@@ -27,10 +28,14 @@ elif [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
 
   flavors=()
   if grep -Fqx '*' "$plan_file"; then
-    flavors=(t3code t3code-fork)
+    flavors=(t3code t3code-fork "${fork_flavors[@]}")
   else
     grep -Fqx t3code "$plan_file" && flavors+=(t3code)
-    grep -Fqx t3code-fork "$plan_file" && flavors+=(t3code-fork)
+    for flavor in t3code-fork "${fork_flavors[@]}"; do
+      if grep -Fqx "$flavor" "$plan_file"; then
+        flavors+=("$flavor")
+      fi
+    done
   fi
 
 fi
