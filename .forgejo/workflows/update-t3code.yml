@@ -67,6 +67,8 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+            # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
+            sandbox = false
 
       - name: Restore T3 dependency cache
         if: steps.probe.outputs.should_run == 'true'
