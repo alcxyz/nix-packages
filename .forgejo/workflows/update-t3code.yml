@@ -3,7 +3,9 @@ run-name: "T3 Code update scan (${{ forgejo.event_name }})"
 
 on:
   schedule:
-    - cron: "TZ=Europe/Oslo 47 * * * *"
+    # Every 6 hours: without UPSTREAM_GITHUB_TOKEN, hourly scans exhaust GitHub's
+    # anonymous API limit. Revisit the interval (ADR-0007) once the token exists.
+    - cron: "TZ=Europe/Oslo 47 */6 * * *"
   workflow_dispatch:
 
 jobs:

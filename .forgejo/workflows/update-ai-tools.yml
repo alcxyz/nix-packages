@@ -3,7 +3,9 @@ run-name: "AI provider scan (${{ forgejo.event_name }})"
 
 on:
   schedule:
-    - cron: "TZ=Europe/Oslo 0 * * * *"
+    # Every 6 hours: without UPSTREAM_GITHUB_TOKEN, hourly scans exhaust GitHub's
+    # anonymous API limit. Revisit the interval (ADR-0007) once the token exists.
+    - cron: "TZ=Europe/Oslo 0 */6 * * *"
   workflow_dispatch:
 
 jobs:
