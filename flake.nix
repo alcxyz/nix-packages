@@ -95,6 +95,30 @@
             forkChannel = "stable";
           };
         }
+        # One profile-installable AI stack per T3 channel, so consumers can
+        # update T3 and its providers without rebuilding anything else.
+        // lib.optionalAttrs (system == "x86_64-linux") (
+          lib.mapAttrs'
+            (
+              channel: t3:
+              lib.nameValuePair "ai-stack-${channel}" (
+                pkgs.buildEnv {
+                  name = "ai-stack-${channel}";
+                  paths = [
+                    t3
+                    allPackages.claude-code
+                    allPackages.codex-cli
+                    allPackages.codex-app-server
+                  ];
+                }
+              )
+            )
+            {
+              upstream = allPackages.t3code;
+              fork-nightly = allPackages.t3code-fork-nightly;
+              fork-stable = allPackages.t3code-fork-stable;
+            }
+        )
         // lib.optionalAttrs (system == "aarch64-darwin") {
           omniwm = pkgs.callPackage ./pkgs/omniwm { };
         }

@@ -22,6 +22,7 @@ Then reference packages as `inputs.nix-packages.packages.${system}.<name>`.
 | [t3code](https://github.com/pingdotgg/t3code) | T3 Code upstream published nightly | `x86_64-linux` |
 | `t3code-fork-nightly` (`t3code-fork`) | Promoted nightly fork with quota recovery patch | `x86_64-linux` |
 | `t3code-fork-stable` | Promoted stable fork with quota recovery patch | `x86_64-linux` |
+| `ai-stack-{upstream,fork-nightly,fork-stable}` | Profile bundle of one T3 channel with `claude-code`, `codex-cli` and `codex-app-server` | `x86_64-linux` |
 | [claude-code](https://github.com/anthropics/claude-code) | Agentic coding tool that lives in your terminal | all |
 | [codex-cli](https://github.com/openai/codex) | Lightweight coding agent that runs in your terminal | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [codex-app-server](https://github.com/openai/codex) | Codex app server for GUI integrations | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
