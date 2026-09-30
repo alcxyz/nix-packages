@@ -2,7 +2,7 @@
 set -euo pipefail
 
 KEEP_GENERATIONS=10
-HIGH_GENERATIONS=20
+HIGH_GENERATIONS=
 MIN_FREE_PERCENT=15
 MAX_FREED_BYTES=10737418240
 PROFILE_ROOT="${NIX_GC_PROFILE_ROOT:-}"
@@ -24,17 +24,19 @@ MANAGED_HOME=""
 usage() {
   cat <<'EOF'
 Usage: nix-gc-maintenance [host]
-       nix-gc-maintenance --automatic-retention --user <user> --home <path> [--check-only]
+       nix-gc-maintenance [--keep <n>]
+       nix-gc-maintenance --automatic-retention --user <user> --home <path> [--keep <n>] [--check-only]
 
-Manual mode retains 10 generations in the current user's Home Manager/user
-profiles and the system profile, then garbage-collects up to 10 GiB.
+Manual mode retains 10 generations (or --keep) in the current user's Home
+Manager/user profiles and the system profile, then garbage-collects up to 10 GiB.
 
 With a host argument, the manual command is streamed to that host over SSH.
 The managed SSH host must log in as a non-root user with sudo access.
 
 Automatic retention mode is intended for the root-owned NixOS and Darwin
-maintenance services. It prunes profiles from more than 20 generations to 10,
-or prunes back to 10 when the Nix filesystem has less than 15% free. It validates
+maintenance services. It prunes profiles from more than twice the retained
+count (20 by default) back to the retained count, or prunes back when the Nix
+filesystem has less than 15% free. It validates
 every current profile closure before changing any generation roots. --check-only
 reports the decision without deleting generations.
 EOF
@@ -279,6 +281,12 @@ parse_args() {
         CHECK_ONLY=true
         shift
         ;;
+      --keep)
+        [[ $# -ge 2 ]] || die "--keep requires a value"
+        [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "--keep must be a positive integer"
+        KEEP_GENERATIONS="$2"
+        shift 2
+        ;;
       --user)
         [[ $# -ge 2 ]] || die "--user requires a value"
         MANAGED_USER="$2"
@@ -303,6 +311,7 @@ parse_args() {
 
 main() {
   parse_args "$@"
+  HIGH_GENERATIONS=$((KEEP_GENERATIONS * 2))
   resolve_common_commands
 
   if [[ "$AUTOMATIC_RETENTION" == true ]]; then

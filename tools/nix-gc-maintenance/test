@@ -209,6 +209,32 @@ if [[ "$actual" != "$expected" ]]; then
   exit 1
 fi
 
+: >"$CALL_LOG"
+keep_output=$(
+  NIX_GC_PROFILE_ROOT="$PROFILE_ROOT" \
+    NIX_GC_SYSTEM_PROFILE="$SYSTEM_PROFILE" \
+    NIX_ENV_BIN="$BIN_DIR/nix-env" \
+    NIX_STORE_BIN="$BIN_DIR/nix-store" \
+    SUDO_BIN="$BIN_DIR/sudo" \
+    DF_BIN="$BIN_DIR/df" \
+    ID_BIN="$BIN_DIR/id-root" \
+    "$BASH" "$MAINTENANCE" --automatic-retention --user alc \
+    --home "$TEST_ROOT/home" --keep 3
+)
+grep -Fq "retention trigger: $PROFILE_ROOT/home-manager exceeds 6 generations" \
+  <<<"$keep_output"
+grep -Fq \
+  "sudo <-H> <-u> <alc> <$BIN_DIR/nix-env> <--profile> <$PROFILE_ROOT/home-manager> <--delete-generations> <+3>" \
+  "$CALL_LOG"
+grep -Fq \
+  "nix-env <--profile> <$SYSTEM_PROFILE> <--delete-generations> <+3>" \
+  "$CALL_LOG"
+
+if "$BASH" "$MAINTENANCE" --keep 0 >/dev/null 2>&1; then
+  printf -- '--keep 0 was accepted\n' >&2
+  exit 1
+fi
+
 bash -s -- --help <"$MAINTENANCE" >/dev/null
 
 printf 'nix GC maintenance contract: PASS\n'
