@@ -1,0 +1,91 @@
+name: Scan AI provider updates
+run-name: "AI provider scan (${{ forgejo.event_name }})"
+
+on:
+  schedule:
+    - cron: "TZ=Europe/Oslo 0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Check stable AI provider releases
+    runs-on: forgejo-podman-canary
+    container:
+      image: docker.io/library/node:20-bookworm
+    concurrency:
+      group: package-update-ai-tools
+      cancel-in-progress: false
+    env:
+      BASE_BRANCH: dev
+      FORGEJO_URL: https://git.alc.xyz
+      FORGEJO_OWNER: alcxyz
+      FORGEJO_REPO: nix-packages
+      UPDATE_BRANCH: update/ai-tools
+    steps:
+      - name: Prepare action copy paths
+        run: |
+          # Podman's archive API rejects action paths through this absolute symlink.
+          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
+            rm /var/run
+            mkdir -m 0755 /var/run
+            if [ -d /run/act ]; then
+              cp -a /run/act /var/run/act
+            fi
+            if [ -S /run/docker.sock ]; then
+              ln -s /run/docker.sock /var/run/docker.sock
+            fi
+          fi
+
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          github-server-url: https://git.alc.xyz
+          ref: dev
+
+      - name: Check out update base
+        run: |
+          git fetch origin "${BASE_BRANCH}"
+          git switch -C "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
+
+
+      - name: Probe releases before Nix setup
+        id: probe
+        env:
+          FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
+        run: python3 scripts/update-packages/probe-ai-updates.py
+
+      - name: Install runner prerequisites
+        if: steps.probe.outputs.should_run == 'true'
+        run: |
+          apt-get update
+          apt-get install -y sudo xxd jq
+
+      - uses: https://github.com/cachix/install-nix-action@v30
+        if: steps.probe.outputs.should_run == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Update and build providers together
+        if: steps.probe.outputs.should_run == 'true'
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ secrets.UPSTREAM_GITHUB_TOKEN }}
+          NIX_CI_EPHEMERAL_CONTAINER: "1"
+        run: bash scripts/update-packages/update-ai-tools.sh
+
+      - name: Open or refresh provider update PR
+        if: steps.update.outputs.updated == 'true'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.PACKAGE_UPDATE_TOKEN }}
+          COMMIT_MESSAGE: |
+            chore(ai-tools): update stable providers
+
+            Refresh the provider packages together so T3 validates their combined versions.
+          PR_TITLE: "chore(ai-tools): ${{ steps.update.outputs.version }}"
+          BODY_NAME: AI providers
+          VERSION: ${{ steps.update.outputs.version }}
+          UPSTREAM_URL: https://github.com/openai/codex/releases
+          EXISTING_UPDATE_PR: ${{ steps.probe.outputs.existing_update_pr }}
+        run: scripts/forgejo/upsert-update-pr.sh

@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-09-24
+**Updated:** 2026-09-30
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -80,7 +80,9 @@ Runner usage must:
 
 - keep package automation scoped to `dev`; promotion from `dev` to `main` remains manual
 - keep `dev` as a long-lived integration branch; manual promotion PRs must not delete it after merge
-- use one stable `update/<package>` branch per package and refresh the existing open PR when a newer upstream version supersedes a stuck update
+- use one stable `update/<package>` branch per package, except the grouped
+  AI providers on `update/ai-tools` (ADR-0007), and refresh the existing open PR
+  when a newer upstream version supersedes a stuck update
 - treat closed `update/<package>` branches as disposable; stale remote update branches should be deleted because the updater can recreate them from current `dev`
 - leave repository-level default branch deletion disabled so manual promotions do not delete `dev`
 - cap scheduled package-update matrix parallelism so routine update checks do not saturate all shared runners at once

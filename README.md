@@ -44,19 +44,25 @@ Internal tools built from source, tracked in this repo.
 
 ## Automated updates
 
-Packages are kept up to date by a daily Forgejo Actions workflow
-(`.forgejo/workflows/update-packages.yml`). When a new upstream release is
-detected the workflow computes fresh Nix SRI hashes and opens a Forgejo pull
-request against `dev`.
+Stable Claude Code, Codex CLI, and Codex app-server releases are checked every
+hour by `.forgejo/workflows/update-ai-tools.yml`. A lightweight probe
+compares upstream releases with `dev` and any pending `update/ai-tools` PR before
+installing Nix. Unchanged candidates skip builds; new provider releases update
+one combined PR so T3 validates their versions together. Failed unchanged
+candidates remain visible for diagnosis or explicit CI retry.
 
-Each package uses one stable `update/<package>` branch. If an update PR is
-already open, the next updater run refreshes that same branch and PR so a newer
-upstream release supersedes the stuck update instead of creating more PR noise.
+Other packages, including T3 nightlies and tested fork promotions, retain the
+daily `.forgejo/workflows/update-packages.yml` scan and one stable
+`update/<package>` branch. New releases refresh the existing PR. The daily
+matrix is capped at two concurrent package jobs; provider scans are serialized.
 
-The update matrix is capped at two concurrent package jobs to avoid flooding
-the shared runners. Green `update/*` pull requests are rebased onto `dev` when
-needed and squash-merged by `.forgejo/workflows/auto-merge-updates.yml`; PR
-events trigger the normal path, with a nightly scheduled run as a fallback.
+The merge queue checks hourly at half past, following provider scans at the
+top of each hour. Green `update/*` pull requests are
+rebased onto `dev` when needed and squash-merged by
+`.forgejo/workflows/auto-merge-updates.yml`; ordinary PR events trigger validation.
+Consumer promotion and idle-session activation gates remain in place, so scan
+cadence is not a deployment-time guarantee. See
+[ADR-0007](docs/adr/0007-continuous-provider-updates.md).
 Successful update PRs are validated before merge, not again on the resulting
 `dev` push; `main` is still validated when changes are promoted manually.
 Promotion from `dev` to `main` is manual. `dev` is a long-lived integration

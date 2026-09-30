@@ -52,21 +52,6 @@ jobs:
             title_prefix: "chore(ledger-live): update to"
             body_name: Ledger Live
             upstream: "https://github.com/LedgerHQ/ledger-live/releases/tag/%40ledgerhq/live-desktop%40"
-          - package: claude-code
-            branch: update/claude-code
-            title_prefix: "chore(claude-code): update to"
-            body_name: claude-code
-            upstream: "https://www.npmjs.com/package/@anthropic-ai/claude-code/v/"
-          - package: codex-cli
-            branch: update/codex-cli
-            title_prefix: "chore(codex-cli): update to"
-            body_name: codex-cli
-            upstream: "https://www.npmjs.com/package/@openai/codex/v/"
-          - package: codex-app-server
-            branch: update/codex-app-server
-            title_prefix: "chore(codex-app-server): update to"
-            body_name: codex-app-server
-            upstream: "https://github.com/openai/codex/releases/tag/rust-v"
           - package: t3code
             branch: update/t3code
             title_prefix: "chore(t3code): update to"
