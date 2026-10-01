@@ -83,7 +83,7 @@ An unmerged schema prerequisite must not consume a numbered upstream migration
 identifier. Bootstrap its schema idempotently outside the numbered ledger, then
 explicitly reconcile that bootstrap when the upstream migration lands.
 
-The hourly updater must build each fork source with its separate quota patch
+The six-hourly updater must build each fork source with its separate quota patch
 immediately after pinning a candidate source and before computing generated
 dependency hashes. It records that narrow quota-patch preflight separately from
 the later full build and provider validation, so a passing patch check is not
@@ -146,7 +146,7 @@ not a successful GUI launch and must fail runtime verification.
   because the desktop launcher prepends its build-time runtime package set.
 - Switching desktop distribution identities can require one-time regeneration
   of encrypted connection metadata, while project data remains independent.
-- The hourly updater selects the latest published upstream nightly and both
+- The six-hourly updater selects the latest published upstream nightly and both
   tested fork promotions independently. A lightweight check compares their
   identities with `dev` and any open update PR before Nix setup. A changed
   candidate triggers source, dependency, full-build, and embedded-provider
@@ -158,11 +158,12 @@ not a successful GUI launch and must fail runtime verification.
 - Both fork channels derive their version from the published tag; upstream
   source files can lag release version stamping. The fork workflow qualifies
   its channel commits before package automation can select them.
-- The fork's hourly GitHub schedule is best effort: GitHub has created only
-  some scheduled runs, several hours apart. Package automation does not
+- The fork syncs its channels on a GitHub schedule four times a day, ahead of
+  the package scan. GitHub's schedule is best effort: it skipped most hourly
+  slots and has started runs over five hours late. Package automation does not
   dispatch the fork workflow, which would need new write access to it. Instead,
   the package scan fails when a channel has not promoted a published upstream
-  release within 12 hours, so a stalled or failing producer cannot hide
+  release within 18 hours, so a stalled or failing producer cannot hide
   behind successful downstream scans.
 - Nightly selection applies to T3 Code only. It does not opt Codex into a
   prerelease channel. Linux retains source builds; macOS app versions follow

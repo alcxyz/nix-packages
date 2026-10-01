@@ -18,9 +18,9 @@ source = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source)
 BRANCH = "update/t3code"
 PIN_PATH = "pkgs/t3code/source.json"
-# GitHub's best-effort schedule has left the fork producer up to about eight
-# hours between runs; allow that without hiding a stalled or failing fork.
-FORK_MAX_LAG = datetime.timedelta(hours=12)
+# The fork syncs every six hours, and GitHub has started scheduled runs over
+# five hours late; allow one late slot without hiding a stalled or failing fork.
+FORK_MAX_LAG = datetime.timedelta(hours=18)
 
 
 def forgejo_api(path):

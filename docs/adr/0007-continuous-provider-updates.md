@@ -35,7 +35,7 @@ not promises of deployment latency when runners, builds, or active sessions dela
 progress. Failed or stale-base publication is retried from a fresh integration
 branch on the next scan.
 
-Keep other package scans daily. T3 has a separate hourly source scan under
+Keep other package scans daily. T3 has a separate six-hourly source scan under
 ADR-0005, with a lightweight probe before Nix setup. Provider releases do not
 require discovering a new T3 source revision, although their PR checks still
 build and verify the pinned T3 wrappers.
