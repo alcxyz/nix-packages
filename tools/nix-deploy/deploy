@@ -75,6 +75,9 @@ if ! inventory_query -e '
   (.systemRemoteSudoHosts | unique_strings and member_of($known)) and
   (.systemActivationModes | string_map and keys_in($known) and all(.[]; . == "switch" or . == "boot")) and
   ((.hostColors // {}) | string_map and keys_in($known) and all(.[]; valid_color)) and
+  (if has("serialSystemHosts") then .serialSystemHosts | unique_strings and member_of($known) else true end) and
+  (if has("serialReadyCommand") then .serialReadyCommand | type == "string" else true end) and
+  (if has("serialReadyTimeoutSeconds") then .serialReadyTimeoutSeconds | type == "number" and . == floor and . > 0 else true end) and
   (.operatorHost as $operator | .knownHosts | index($operator) != null)
 ' >/dev/null 2>&1; then
   echo "deploy: inventory does not satisfy schemaVersion 1" >&2
@@ -89,6 +92,9 @@ mapfile -t HOME_MANAGER_HOSTS < <(inventory_query -r '.homeManagerHosts[]')
 mapfile -t REMOTE_HOSTS < <(inventory_query -r '.remoteHosts[]')
 mapfile -t DEPLOY_ALL_HOSTS < <(inventory_query -r '.deployAllHosts[]')
 mapfile -t SYSTEM_REMOTE_SUDO_HOSTS < <(inventory_query -r '.systemRemoteSudoHosts[]')
+mapfile -t SERIAL_SYSTEM_HOSTS < <(inventory_query -r '(.serialSystemHosts // [])[]')
+SERIAL_READY_COMMAND="$(inventory_query -r '.serialReadyCommand // ""')"
+SERIAL_READY_TIMEOUT_SECONDS="$(inventory_query -r '.serialReadyTimeoutSeconds // 600')"
 declare -A HOST_ALIASES=()
 declare -A SSH_HOSTS=()
 declare -A SYSTEM_SSH_USERS=()
@@ -110,6 +116,7 @@ SELF=""
 NIX_SSHOPTS="${NIX_SSHOPTS:--o ServerAliveInterval=10 -o ServerAliveCountMax=30 -o TCPKeepAlive=yes -o ConnectTimeout=30}"
 DEPLOY_SSH_CHECK_TIMEOUT="${DEPLOY_SSH_CHECK_TIMEOUT:-5}"
 DEPLOY_REMOTE_MIN_FREE_KIB="${DEPLOY_REMOTE_MIN_FREE_KIB:-4194304}"
+DEPLOY_SERIAL_READY_INTERVAL="${DEPLOY_SERIAL_READY_INTERVAL:-10}"
 export NIX_SSHOPTS
 # shellcheck disable=SC2206
 SSH_ARGS=(${NIX_SSHOPTS})
@@ -124,6 +131,10 @@ FLEET_FAILED=false
 
 if ! [[ "$DEPLOY_REMOTE_MIN_FREE_KIB" =~ ^[0-9]+$ ]]; then
   echo "deploy: DEPLOY_REMOTE_MIN_FREE_KIB must be an integer number of KiB" >&2
+  exit 1
+fi
+if ! [[ "$DEPLOY_SERIAL_READY_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
+  echo "deploy: DEPLOY_SERIAL_READY_INTERVAL must be a positive integer number of seconds" >&2
   exit 1
 fi
 
@@ -154,6 +165,26 @@ By default, --all runs from ${OPERATOR_HOST} for the canonical fleet workflow.
 Use --here to run --all from the current machine and build locally before
 copying closures to the target hosts. On Darwin this requires a working Linux
 builder for Linux targets.
+
+Inventory hosts listed in serialSystemHosts (for example members of a quorum
+cluster) are not rebuilt in the parallel system batch. They switch one at a
+time, in inventory order, after it. When serialReadyCommand is set, it runs on
+this machine after each serial host's system switch, with {host} replaced by
+the host name, and is retried every DEPLOY_SERIAL_READY_INTERVAL seconds
+(default 10) until it succeeds within serialReadyTimeoutSeconds (default 600);
+each attempt is killed at that deadline. A failed switch or ready gate stops
+the serial rollout and reports the remaining serial hosts as skipped.
+
+Before the first serial switch, every selected serial host must pass preflight,
+and every serial host, selected or not, must pass one ready-command attempt
+(bounded by min(60, serialReadyTimeoutSeconds)). Otherwise no serial host is
+switched in that run (switching the others could break quorum) and the run
+fails; other hosts proceed. Before each later serial switch, the other serial
+hosts are checked again the same way. serialReadyCommand must be
+non-interactive (for example, use ssh -o BatchMode=yes); it runs in the
+foreground so Ctrl-C reaches it. A single-host system
+deploy of a serial host first checks the other serial hosts the same way, and
+runs the ready gate after its switch.
 EOF
   exit 1
 }
@@ -199,6 +230,89 @@ uses_remote_sudo() {
 system_activation_mode() {
   local h="$1"
   printf '%s\n' "${SYSTEM_ACTIVATION_MODES[$h]:-switch}"
+}
+
+is_serial_system_host() {
+  local h="$1" k
+  for k in "${SERIAL_SYSTEM_HOSTS[@]}"; do [[ "$k" == "$h" ]] && return 0; done
+  return 1
+}
+
+# Host names are validated as plain identifiers, so substitution cannot add
+# shell syntax to the consumer-authored command.
+serial_ready_command() {
+  local host="$1"
+  printf '%s\n' "${SERIAL_READY_COMMAND//\{host\}/$host}"
+}
+
+# Runs the inventory's serial ready gate for one host on this machine until it
+# passes or serialReadyTimeoutSeconds elapse. Each attempt is killed at the
+# remaining deadline (never "timeout 0", which would disable the limit), a
+# success reported after the deadline is rejected, and the gate gives up
+# instead of pausing when the pause would leave no budget for another attempt.
+# Elapsed time is the larger of wall-clock time and the requested pauses.
+wait_serial_ready() {
+  local host="$1"
+  local cmd start clock=0 remaining attempt=0 status
+
+  if [[ -z "$SERIAL_READY_COMMAND" ]]; then
+    return 0
+  fi
+
+  cmd="$(serial_ready_command "$host")"
+  start=$SECONDS
+  printf '%s %s ready gate: %s\n' "$(phase_label system)" "$(host_label "$host")" "$cmd"
+  while true; do
+    if ((SECONDS - start > clock)); then
+      clock=$((SECONDS - start))
+    fi
+    remaining=$((SERIAL_READY_TIMEOUT_SECONDS - clock))
+    if ((remaining <= 0)); then
+      break
+    fi
+    attempt=$((attempt + 1))
+    status=0
+    timeout --foreground --kill-after=5 "$remaining" bash -c "$cmd" || status=$?
+    if ((SECONDS - start > clock)); then
+      clock=$((SECONDS - start))
+    fi
+    if ((status == 0 && clock <= SERIAL_READY_TIMEOUT_SECONDS)); then
+      printf '%s %s ready gate passed after %d attempt(s)\n' "$(phase_label system)" "$(host_label "$host")" "$attempt"
+      return 0
+    fi
+    if ((SERIAL_READY_TIMEOUT_SECONDS - clock <= DEPLOY_SERIAL_READY_INTERVAL)); then
+      break
+    fi
+    sleep "$DEPLOY_SERIAL_READY_INTERVAL"
+    clock=$((clock + DEPLOY_SERIAL_READY_INTERVAL))
+  done
+  printf '%s %s ready gate did not pass within %ss (%d attempt(s)): %s\n' \
+    "$(phase_label system)" "$(host_label "$host")" "$SERIAL_READY_TIMEOUT_SECONDS" "$attempt" "$cmd" >&2
+  return 1
+}
+
+# Checks each named serial host once with the ready command before any serial
+# switch. Sets SERIAL_NOT_READY_HOST to the first host that fails.
+SERIAL_NOT_READY_HOST=""
+precheck_serial_group() {
+  local host cmd budget=60
+
+  SERIAL_NOT_READY_HOST=""
+  if [[ -z "$SERIAL_READY_COMMAND" ]]; then
+    return 0
+  fi
+  if ((SERIAL_READY_TIMEOUT_SECONDS < budget)); then
+    budget=$SERIAL_READY_TIMEOUT_SECONDS
+  fi
+
+  for host in "$@"; do
+    cmd="$(serial_ready_command "$host")"
+    printf '%s %s ready pre-check: %s\n' "$(phase_label check)" "$(host_label "$host")" "$cmd"
+    if ! timeout --foreground --kill-after=5 "$budget" bash -c "$cmd"; then
+      SERIAL_NOT_READY_HOST="$host"
+      return 1
+    fi
+  done
 }
 
 is_darwin() {
@@ -645,12 +759,33 @@ do_deploy() {
     fi
   fi
 
+  if [[ "$mode" == "nixos" || "$mode" == "full" ]] && is_serial_system_host "$host" && [[ -n "$SERIAL_READY_COMMAND" ]]; then
+    local serial_others=() serial_host
+    for serial_host in "${SERIAL_SYSTEM_HOSTS[@]}"; do
+      [[ "$serial_host" == "$host" ]] || serial_others+=("$serial_host")
+    done
+    if [[ ${#serial_others[@]} -gt 0 ]]; then
+      section "serial group pre-check"
+      if ! precheck_serial_group "${serial_others[@]}"; then
+        echo "deploy: serial group blocked: ${SERIAL_NOT_READY_HOST} not ready before rollout; switching ${host} could break quorum" >&2
+        exit 1
+      fi
+    fi
+  fi
+
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
     section "$(phase_label system) $(host_label "$host") rebuild"
     if $is_local; then
       nixos_local "$host"
     else
       nixos_remote "$host"
+    fi
+    if is_serial_system_host "$host" && ! wait_serial_ready "$host"; then
+      echo "deploy: ${host} switched but failed the serial ready gate (serialReadyCommand)" >&2
+      if [[ "$mode" == "full" ]]; then
+        warn_partial_deploy "$host"
+      fi
+      exit 1
     fi
   fi
 
@@ -708,6 +843,9 @@ do_deploy_all() {
   if [[ "$mode" == "nixos" || "$mode" == "full" ]]; then
     local interactive_system_hosts=()
     local interactive_system_cmds=()
+    local -A serial_selected=()
+    local serial_failed=""
+    local serial_skipped=()
     local system_hosts=()
     local cmd index
     local has_local_system_job=false
@@ -721,6 +859,12 @@ do_deploy_all() {
     system_hosts=("${PREFLIGHT_AVAILABLE_HOSTS[@]}")
     for host in "${PREFLIGHT_SKIPPED_HOSTS[@]}"; do
       record_result system "$host" skipped
+      # One unreachable member already reduces a quorum group; switching
+      # another could leave too few members, so the whole group waits.
+      if [[ -z "$serial_failed" ]] && is_serial_system_host "$host"; then
+        serial_failed="serial group blocked: ${host} failed preflight; switching the others could break quorum"
+        FLEET_FAILED=true
+      fi
     done
 
     for host in "${system_hosts[@]}"; do
@@ -748,10 +892,17 @@ do_deploy_all() {
         cmd="$(nixos_rebuild_command) $(system_activation_mode "$host") --flake .#${host} --target-host $(system_ssh_user "$host")@$(ssh_host "$host") --use-substitutes"
         if uses_remote_sudo "$host"; then
           cmd="${cmd} --ask-sudo-password"
-          interactive_system_hosts+=("$host")
-          interactive_system_cmds+=("$cmd")
-          continue
         fi
+      fi
+
+      if is_serial_system_host "$host"; then
+        serial_selected["$host"]="$cmd"
+        continue
+      fi
+      if [[ "$host" != "$SELF" ]] && uses_remote_sudo "$host"; then
+        interactive_system_hosts+=("$host")
+        interactive_system_cmds+=("$cmd")
+        continue
       fi
 
       JOB_HOSTS+=("$host")
@@ -772,6 +923,61 @@ do_deploy_all() {
         record_result system "$host" failed
       fi
     done
+
+    # Every serial host, including members not selected for this run, must be
+    # ready before any selected member switches.
+    if [[ -z "$serial_failed" && ${#serial_selected[@]} -gt 0 && -n "$SERIAL_READY_COMMAND" ]]; then
+      section "serial group pre-check"
+      if ! precheck_serial_group "${SERIAL_SYSTEM_HOSTS[@]}"; then
+        serial_failed="serial group blocked: ${SERIAL_NOT_READY_HOST} not ready before rollout; switching the others could break quorum"
+        FLEET_FAILED=true
+      fi
+    fi
+
+    # Serial hosts switch one at a time after the parallel batch, in inventory
+    # order. Before each later switch the other members are checked again.
+    # The first switch, gate, or check failure stops the rollout so the
+    # remaining members of the group are left untouched.
+    local serial_switched=false serial_host
+    local serial_others=()
+    for host in "${SERIAL_SYSTEM_HOSTS[@]}"; do
+      [[ -n "${serial_selected[$host]+set}" ]] || continue
+      if [[ -z "$serial_failed" && "$serial_switched" == true && -n "$SERIAL_READY_COMMAND" ]]; then
+        serial_others=()
+        for serial_host in "${SERIAL_SYSTEM_HOSTS[@]}"; do
+          if [[ "$serial_host" != "$host" ]]; then serial_others+=("$serial_host"); fi
+        done
+        section "serial group check before ${host}"
+        if ! precheck_serial_group "${serial_others[@]}"; then
+          serial_failed="serial rollout stopped: ${SERIAL_NOT_READY_HOST} not ready before switching ${host}; switching it could break quorum"
+        fi
+      fi
+      if [[ -n "$serial_failed" ]]; then
+        record_result system "$host" skipped
+        serial_skipped+=("$host")
+        continue
+      fi
+      serial_switched=true
+      cmd="${serial_selected[$host]}"
+      section "$(phase_label system) $(host_label "$host") serial rebuild"
+      printf '%s %s %s\n' "$(phase_label system)" "$(host_label "$host")" "$cmd"
+      if ! eval "$cmd"; then
+        record_result system "$host" failed
+        serial_failed="serial rollout stopped: ${host} failed its system switch"
+      elif ! wait_serial_ready "$host"; then
+        record_result system "$host" failed
+        serial_failed="serial rollout stopped: ${host} failed the serial ready gate (serialReadyCommand)"
+      else
+        record_result system "$host" ok
+      fi
+    done
+    if [[ -n "$serial_failed" ]]; then
+      FLEET_FAILED=true
+      echo "deploy: ${serial_failed}" >&2
+      if [[ ${#serial_skipped[@]} -gt 0 ]]; then
+        echo "deploy: skipped serial hosts: ${serial_skipped[*]}" >&2
+      fi
+    fi
   fi
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then

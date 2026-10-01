@@ -50,6 +50,9 @@ The required fields are:
 | `systemRemoteSudoHosts` | unique string array | Hosts whose rebuild requires `--ask-sudo-password` |
 | `systemActivationModes` | string map | Canonical host to `switch` or `boot` |
 | `hostColors` | string map, optional | Canonical host to an `R;G;B` display color |
+| `serialSystemHosts` | unique string array, optional | Hosts whose system switch runs one at a time, in this order; default `[]` |
+| `serialReadyCommand` | string, optional | Operator-side shell command run after each serial host's switch; `{host}` is replaced by the host name; default empty (no gate) |
+| `serialReadyTimeoutSeconds` | positive integer, optional | Deadline for the post-switch ready gate, including attempts; default `600` |
 
 Every host reference must resolve through `knownHosts`; aliases must not shadow
 canonical names. Validation and loading use one in-memory snapshot of the file. Names, users, prefixes,
@@ -83,6 +86,34 @@ interface; whitespace and shell metacharacters are rejected before planning.
   each host's result per phase, prints a summary that also names known hosts
   outside the selected fleet, and exits non-zero if any job failed.
   Preflight-skipped hosts are reported as skipped.
+- Hosts that must not switch together, such as members of a quorum cluster,
+  are listed in `serialSystemHosts`. Fleet mode leaves them out of the
+  parallel system batch and switches the selected ones afterwards, one at a
+  time in inventory order. After each switch, `serialReadyCommand` (if set)
+  is retried every `DEPLOY_SERIAL_READY_INTERVAL` seconds (default 10) until
+  it succeeds within `serialReadyTimeoutSeconds`. Each attempt is killed at
+  the remaining deadline, and a success reported after it does not count; the
+  gate gives up rather than pause when no budget would remain for another
+  attempt. The
+  first failed switch or gate marks that host failed, records the remaining
+  serial hosts as skipped without touching them, and fails the run.
+- The serial group must be healthy before any member switches. If a selected
+  serial host fails preflight, or any serial host (selected for this run or
+  not) fails a single ready-command attempt (bounded by the smaller of 60
+  seconds and `serialReadyTimeoutSeconds`) run before the first serial
+  switch, no serial host is switched in that run: a member is already
+  degraded, so switching another could break quorum. All selected serial
+  hosts are recorded as skipped and the run fails, while non-serial hosts
+  proceed. Before each later serial switch the other serial hosts are checked
+  again; a failure there skips the remaining selected serial hosts and fails
+  the run. A single-host system deploy of a serial host first checks the
+  other serial hosts the same way and aborts before switching if one is not
+  ready; after the switch it runs the gate. The ready command is trusted,
+  consumer-authored, non-interactive shell (for example with
+  `ssh -o BatchMode=yes`) run in the foreground on the operator machine so
+  interrupts reach it; only validated host names are substituted into it.
+  Present serial keys must have the documented type; `null` is not treated as
+  absent. The Home Manager phase is unaffected.
 - Fleet mode starts the local sudo keepalive only when the reachable system
   phase contains a local rebuild job. Remote-only orchestration does not prompt
   for or refresh local sudo credentials.
