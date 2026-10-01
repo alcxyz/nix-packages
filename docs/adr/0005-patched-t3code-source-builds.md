@@ -8,6 +8,7 @@
 **Amended:** 2026-09-16
 **Amended:** 2026-09-21
 **Amended:** 2026-09-30
+**Amended:** 2026-10-01
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
@@ -157,6 +158,12 @@ not a successful GUI launch and must fail runtime verification.
 - Both fork channels derive their version from the published tag; upstream
   source files can lag release version stamping. The fork workflow qualifies
   its channel commits before package automation can select them.
+- The fork's hourly GitHub schedule is best effort: GitHub has created only
+  some scheduled runs, several hours apart. Package automation does not
+  dispatch the fork workflow, which would need new write access to it. Instead,
+  the package scan fails when a channel has not promoted a published upstream
+  release within 12 hours, so a stalled or failing producer cannot hide
+  behind successful downstream scans.
 - Nightly selection applies to T3 Code only. It does not opt Codex into a
   prerelease channel. Linux retains source builds; macOS app versions follow
   the cask or upstream updater rather than the Nix lock file.

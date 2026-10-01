@@ -145,3 +145,10 @@ jobs:
             export UPSTREAM_URL="$UPDATE_UPSTREAM_URL"
           fi
           scripts/forgejo/upsert-update-pr.sh
+
+      # Downstream scans can pass while the GitHub-scheduled fork producer stalls.
+      - name: Fail on stalled fork promotion
+        if: always() && steps.probe.outputs.fork_lagging == 'true'
+        run: |
+          echo "A T3 fork channel has not promoted an overdue upstream release; see the probe log." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          exit 1

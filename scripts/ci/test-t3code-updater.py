@@ -279,6 +279,69 @@ class T3SourceTests(unittest.TestCase):
         self.assertEqual(result["forks"]["stable"], installed["forks"]["stable"])
         self.assertEqual(result["forks"]["nightly"]["patchRevision"], 4)
 
+    def test_lagging_channels_report_only_overdue_unpromoted_releases(self):
+        installed = pin()
+        candidate = target(installed)
+        now = source.datetime.datetime(2026, 10, 1, 12, tzinfo=source.datetime.timezone.utc)
+        max_lag = source.datetime.timedelta(hours=12)
+
+        def release(version, published, **extra):
+            return {"tag_name": "v" + version, "published_at": published,
+                    "draft": False, "prerelease": "-" in version} | extra
+
+        current = [
+            release("0.0.44", "2026-09-29T20:00:00Z"),
+            release("0.0.44-nightly.20260929.2456", "2026-09-29T19:00:00Z"),
+            release("0.0.45-nightly.20261001.2539", "2026-10-01T06:00:00Z"),
+            release("0.0.45-preview.20261001.2518", "2026-09-30T00:00:00Z"),
+            release("0.0.46", "2026-09-30T00:00:00Z", draft=True),
+            release("0.0.47", "2026-09-30T00:00:00Z", prerelease=True),
+        ]
+        self.assertEqual(source.lagging_channels(current, candidate, now, max_lag), [])
+
+        overdue = current + [
+            release("0.0.45", "2026-09-30T23:00:00Z"),
+            release("0.0.45-nightly.20260930.2510", "2026-09-30T23:59:00Z"),
+        ]
+        lagging = source.lagging_channels(overdue, candidate, now, max_lag)
+        self.assertEqual(len(lagging), 2)
+        self.assertTrue(lagging[0].startswith("nightly fork is at 0.0.44-nightly.20260929.2456; "
+                                              "0.0.45-nightly.20260930.2510"))
+        self.assertTrue(lagging[1].startswith("stable fork is at 0.0.44; 0.0.45 "))
+
+        candidate["forks"]["stable"]["version"] = "0.0.45"
+        self.assertEqual(len(source.lagging_channels(overdue, candidate, now, max_lag)), 1)
+
+        boundary = [release("0.0.45", "2026-10-01T00:00:00Z")]
+        candidate = target(installed)
+        self.assertEqual(len(source.lagging_channels(boundary, candidate, now, max_lag)), 1)
+        self.assertEqual(source.lagging_channels(boundary, candidate, now, max_lag + max_lag / 720), [])
+
+    def test_probe_exports_fork_lag_from_the_fetched_release_list(self):
+        installed = pin()
+        releases = [{"tag_name": "v0.0.45", "published_at": "2026-09-01T00:00:00Z",
+                     "draft": False, "prerelease": False}]
+        for releases_seen, expected in ((releases, "true"), ([], "false")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
+                pin_path = Path(directory) / "source.json"
+                pin_path.write_text(json.dumps(installed))
+                output = Path(directory) / "output"
+                calls = []
+
+                def discover(releases=None):
+                    calls.append(releases)
+                    return target(installed)
+
+                with mock.patch.object(probe, "PIN_PATH", str(pin_path)), \
+                        mock.patch.object(probe, "open_update_pr", return_value=None), \
+                        mock.patch.object(probe.source, "upstream_releases", return_value=releases_seen), \
+                        mock.patch.object(probe.source, "discover_target", discover), \
+                        mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
+                        mock.patch("sys.stdout"):
+                    probe.main()
+                self.assertIs(calls[0], releases_seen)
+                self.assertIn(f"fork_lagging={expected}", output.read_text().splitlines())
+
     def test_probe_reads_immutable_pr_head_and_skips_identical_candidate(self):
         installed = pin()
         candidate = target(installed)

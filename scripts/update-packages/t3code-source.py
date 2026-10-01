@@ -222,22 +222,53 @@ def resolve_fork_promotion(channel, request=api):
     return metadata | {"revision": revision}
 
 
-def discover_target(request=api):
+def upstream_releases(request=api):
+    releases = []
+    page = 1
+    while True:
+        batch = request(UPSTREAM_OWNER, f"releases?per_page=100&page={page}")
+        releases.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return releases
+
+
+def discover_target(request=api, releases=None):
     version = os.environ.get("T3CODE_VERSION")
     if version is None:
-        releases = []
-        page = 1
-        while True:
-            batch = request(UPSTREAM_OWNER, f"releases?per_page=100&page={page}")
-            releases.extend(batch)
-            if len(batch) < 100:
-                break
-            page += 1
-        version = select_nightly(releases)
+        version = select_nightly(upstream_releases(request) if releases is None else releases)
     validate_version(version)
     revision = resolve_tag(version, request)
     return {"version": version, "revision": revision,
             "forks": {channel: resolve_fork_promotion(channel, request) for channel in CHANNELS}}
+
+
+def lagging_channels(releases, target, now, max_lag):
+    """Report fork channels behind a release published longer than max_lag ago."""
+    lagging = []
+    for channel in CHANNELS:
+        promoted = target["forks"][channel]["version"]
+        newest = None
+        for release in releases:
+            tag = release.get("tag_name", "")
+            if release.get("draft") or not isinstance(tag, str) or not tag.startswith("v"):
+                continue
+            if channel == "stable" and release.get("prerelease") is not False:
+                continue
+            try:
+                candidate = version_tuple(tag[1:], channel)
+                published = datetime.datetime.fromisoformat(release["published_at"].replace("Z", "+00:00"))
+                if published.tzinfo is None:
+                    raise ValueError("missing timezone")
+            except (ValueError, TypeError, KeyError, AttributeError):
+                continue
+            if now - published >= max_lag and (newest is None or candidate > newest[0]):
+                newest = (candidate, tag[1:], published)
+        if newest and newest[0] > version_tuple(promoted, channel):
+            lagging.append(f"{channel} fork is at {promoted}; {newest[1]} was published "
+                           f"{newest[2].isoformat()} and is not promoted")
+    return lagging
 
 
 def identity(pin):

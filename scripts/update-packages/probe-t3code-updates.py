@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Skip unchanged T3 candidates before installing Nix or downloading sources."""
 import base64
+import datetime
 import importlib.util
 import json
 import os
@@ -17,6 +18,9 @@ source = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source)
 BRANCH = "update/t3code"
 PIN_PATH = "pkgs/t3code/source.json"
+# GitHub's best-effort schedule has left the fork producer up to about eight
+# hours between runs; allow that without hiding a stalled or failing fork.
+FORK_MAX_LAG = datetime.timedelta(hours=12)
 
 
 def forgejo_api(path):
@@ -78,16 +82,23 @@ def pending_pin(pr, get=fetch_json):
 
 def main():
     installed = source.validate_pin(json.loads(Path(PIN_PATH).read_text()))
-    target = source.discover_target()
+    releases = source.upstream_releases()
+    target = source.discover_target(releases=releases)
     pr = open_update_pr()
     pending = pending_pin(pr) if pr else None
     should_run = source.decide(installed, target, pending)
     print(f"T3 candidate: upstream {target['version']}, fork nightly "
           f"{target['forks']['nightly']['version']}, stable {target['forks']['stable']['version']}; "
           f"pending PR: {pr is not None}; update required: {should_run}")
+    lagging = source.lagging_channels(
+        releases, target, datetime.datetime.now(datetime.timezone.utc), FORK_MAX_LAG
+    )
+    for message in lagging:
+        print(f"T3 {message}; check the alcxyz/t3code fork-sync workflow")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         print(f"should_run={str(should_run).lower()}", file=output)
         print(f"existing_update_pr={str(pr is not None).lower()}", file=output)
+        print(f"fork_lagging={str(bool(lagging)).lower()}", file=output)
 
 
 if __name__ == "__main__":
