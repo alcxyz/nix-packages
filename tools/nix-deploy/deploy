@@ -289,6 +289,26 @@ run_phase_jobs() {
   done
 }
 
+# A host whose system switched but whose Home Manager did not runs userspace
+# from an older package set, which can fail to load the new system's graphics
+# drivers at the next login. Say so instead of leaving it to the scrollback.
+warn_partial_deploy() {
+  local host
+  for host in "$@"; do
+    printf '%s %s system updated, Home Manager NOT updated. Fix the error above, then run: deploy --hm %s\n' \
+      "$(color "243;139;168" "deploy: WARNING")" "$(host_label "$host")" "$host" >&2
+  done
+  echo "deploy: until then, Home Manager programs lag the system and may fail to load its graphics drivers." >&2
+}
+
+PARTIAL_DEPLOY_HOST=""
+warn_partial_deploy_on_exit() {
+  local status=$?
+  if ((status != 0)) && [[ -n "$PARTIAL_DEPLOY_HOST" ]]; then
+    warn_partial_deploy "$PARTIAL_DEPLOY_HOST"
+  fi
+}
+
 print_fleet_summary() {
   local hosts=("$@")
   local host known selected
@@ -635,6 +655,10 @@ do_deploy() {
   fi
 
   if [[ "$mode" == "hm" || "$mode" == "full" ]]; then
+    if [[ "$mode" == "full" ]]; then
+      PARTIAL_DEPLOY_HOST="$host"
+      trap warn_partial_deploy_on_exit EXIT
+    fi
     if [[ "$PREFLIGHT" == true && "$is_local" == false && "$hm_preflight_done" == false ]]; then
       section "preflight"
       if ! preflight_host "$host" "hm"; then
@@ -649,6 +673,7 @@ do_deploy() {
     else
       hm_remote "$host"
     fi
+    PARTIAL_DEPLOY_HOST=""
   fi
 }
 
@@ -788,6 +813,15 @@ do_deploy_all() {
   fi
 
   print_fleet_summary "${selected_hosts[@]}"
+  local lagging=()
+  for host in "${selected_hosts[@]}"; do
+    if [[ "${FLEET_RESULTS["system:${host}"]:-}" == ok && "${FLEET_RESULTS["hm:${host}"]:-}" =~ ^(failed|skipped)$ ]]; then
+      lagging+=("$host")
+    fi
+  done
+  if [[ ${#lagging[@]} -gt 0 ]]; then
+    warn_partial_deploy "${lagging[@]}"
+  fi
   if [[ "$FLEET_FAILED" == true ]]; then
     echo "deploy: one or more fleet jobs failed; see the summary above" >&2
     exit 1

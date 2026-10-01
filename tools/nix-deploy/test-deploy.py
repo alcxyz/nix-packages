@@ -50,6 +50,10 @@ elif name == "ssh":
 elif name == "nix":
     if args and args[0] == "build":
         print("/nix/store/fixture-home-activation")
+elif name == "home-manager":
+    if os.environ.get("MOCK_HM_FAILURE"):
+        print("fixture home-manager failure", file=sys.stderr)
+        sys.exit(4)
 elif name == "nixos-rebuild":
     failure = os.environ.get("MOCK_SWITCH_FAILURE")
     if args and args[0] == "switch" and failure:
@@ -118,9 +122,19 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert not actions(calls)
     calls, _ = run("unknown", status=1)
     assert not actions(calls)
-    calls, _ = run()
+    calls, result = run()
     assert ["sudo", "nixos-rebuild", "switch", "--flake", ".#xyz"] in calls
     assert ["home-manager", "switch", "--flake", ".#alc-xyz"] in calls
+    assert "Home Manager NOT updated" not in result.stderr
+    # A Home Manager failure after a successful system switch is called out,
+    # with the command that brings the host back in step.
+    calls, result = run(status=4, MOCK_HM_FAILURE="1")
+    assert ["sudo", "nixos-rebuild", "switch", "--flake", ".#xyz"] in calls
+    assert "[xyz] system updated, Home Manager NOT updated" in result.stderr
+    assert "run: deploy --hm xyz" in result.stderr
+    # A Home Manager-only deployment leaves the system alone; no warning.
+    calls, result = run("--hm", status=4, MOCK_HM_FAILURE="1")
+    assert "Home Manager NOT updated" not in result.stderr
     calls, _ = run("--no-preflight", "--nixos", "edge")
     assert ["nixos-rebuild", "switch", "--flake", ".#node", "--target-host", "root@node.invalid", "--use-substitutes"] in calls
     assert not any(c[0] == "ssh" for c in calls)
@@ -170,6 +184,13 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert ["solo", "ok", "-"] in [line.split() for line in summary]
     assert "not selected by --all: mac" in result.stdout
     assert "one or more fleet jobs failed" in result.stderr
+    assert "Home Manager NOT updated" not in result.stderr
+    # The fleet summary is followed by an explicit warning for hosts whose
+    # system switched while Home Manager failed.
+    calls, result = run("--all", "--no-preflight", status=1, MOCK_HM_FAILURE="1")
+    assert ["xyz", "ok", "failed"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
+    assert "[xyz] system updated, Home Manager NOT updated" in result.stderr
+    assert "[node] system updated" not in result.stderr
     # Preflight-skipped hosts are reported as skipped and do not fail the run.
     calls, result = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
     assert ["node", "skipped", "-"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
@@ -228,4 +249,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     reject_inventory({**HOST_DATA, "aliases": {"node": "solo"}}, "does not satisfy schemaVersion 1")
     reject_inventory({**HOST_DATA, "remoteHosts": ["missing"]}, "does not satisfy schemaVersion 1")
 
-print("Deployment contract: 25 mocked CLI cases and 7 invalid inventories passed; no deployment commands executed")
+print("Deployment contract: 28 mocked CLI cases and 7 invalid inventories passed; no deployment commands executed")
