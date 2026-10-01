@@ -1,31 +1,31 @@
 {
-  "version": "0.0.45-nightly.20261001.2525",
-  "revision": "148e6deea046658639aae9fef5b349781cec39d1",
-  "hash": "sha256-w+b3Hhx6RiXuG3GO88V3GfqxQzar0uvuQ2zavM0FlFs=",
+  "version": "0.0.45-nightly.20261001.2539",
+  "revision": "5cc99e1c23980d7995a13c47f969b47cb68ed1be",
+  "hash": "sha256-IeNxMEVEYN9FK/9hAalQhAF9mBtlp94T/djesOSQEMc=",
   "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
   "pnpmDepsHash": "sha256-xSbgwwIaDaTH6JRvfjK/RqNQCaNUkzqH/GdjRrM08tI=",
   "forks": {
     "nightly": {
-      "upstreamRevision": "148e6deea046658639aae9fef5b349781cec39d1",
-      "releaseTag": "v0.0.45-nightly.20261001.2525",
-      "revision": "df022e2edceb52f13cfe14748250207ea097597f",
-      "version": "0.0.45-nightly.20261001.2525",
-      "featureRevision": "5c944a7f97d67f1b9ae7d151055c7b96e99c4f22",
-      "hash": "sha256-0dZSvph91ZOnU8DqwMOo07sSeKPw2vBIABffyUeR81g=",
+      "featureRevision": "d6bbc4bf7bd542935912264b7d17693890431cc2",
+      "revision": "37ce7898a5b076eb1c4d361873c9b556992e2545",
+      "upstreamRevision": "5cc99e1c23980d7995a13c47f969b47cb68ed1be",
+      "releaseTag": "v0.0.45-nightly.20261001.2539",
+      "version": "0.0.45-nightly.20261001.2539",
+      "hash": "sha256-5CoSI0DNBsH/X39yNuG/Ix5vTxiygeM+PPUr4o1VhXQ=",
       "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
       "pnpmDepsHash": "sha256-xSbgwwIaDaTH6JRvfjK/RqNQCaNUkzqH/GdjRrM08tI=",
-      "patchRevision": 29
+      "patchRevision": 30
     },
     "stable": {
+      "featureRevision": "d6bbc4bf7bd542935912264b7d17693890431cc2",
+      "revision": "b156219723122607c22ccca17b14238c95e375dc",
       "upstreamRevision": "451afcb22d93f06cb24f9bc16703404564952553",
       "releaseTag": "v0.0.44",
-      "revision": "769db8516907b876695ea9054096f6956fcacf67",
       "version": "0.0.44",
-      "featureRevision": "5c944a7f97d67f1b9ae7d151055c7b96e99c4f22",
-      "hash": "sha256-PNyGyqcwKn7Dv/PlUin4SocluNGK9mh+S/zXzvFkaV0=",
+      "hash": "sha256-PWKGWuuX4w5l12gfNh8I9db5SuVfiT/JJJUXEeVXQJE=",
       "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
       "pnpmDepsHash": "sha256-xdS9+PqIDULKIu3+lQRMabA23D0dxCEME96NhFggWPY=",
-      "patchRevision": 2
+      "patchRevision": 3
     }
   }
 }
