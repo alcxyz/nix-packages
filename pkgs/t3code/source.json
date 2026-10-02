@@ -1,31 +1,31 @@
 {
-  "version": "0.0.45-nightly.20261002.2561",
-  "revision": "b33eda13998b5b0571daaf266c87f6f31af41f7d",
-  "hash": "sha256-Fgh7OwfHVvERI+X2QzgLGRvInUUbklxKn/bN/Q2fPhE=",
+  "version": "0.0.45-nightly.20261002.2572",
+  "revision": "99e08526e5ec84f294940cba5929841518c52fec",
+  "hash": "sha256-s5N87wUsaJVWLZnEENCSw04jOHbAWSGeoi+sM7adF8g=",
   "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
   "pnpmDepsHash": "sha256-2dGEHOQrnidTei54NlZTJh5u5/i810hb2LddK4XfUNQ=",
   "forks": {
     "nightly": {
-      "releaseTag": "v0.0.45-nightly.20261001.2539",
-      "featureRevision": "d6bbc4bf7bd542935912264b7d17693890431cc2",
-      "revision": "37ce7898a5b076eb1c4d361873c9b556992e2545",
-      "upstreamRevision": "5cc99e1c23980d7995a13c47f969b47cb68ed1be",
-      "version": "0.0.45-nightly.20261001.2539",
-      "hash": "sha256-5CoSI0DNBsH/X39yNuG/Ix5vTxiygeM+PPUr4o1VhXQ=",
+      "featureRevision": "4c2b03cb322a62cb84c5a74ea3421722ccb5075c",
+      "version": "0.0.45-nightly.20261002.2572",
+      "revision": "4583980c9de44b1a0e81ae2ad1deb0dd9bf34d99",
+      "upstreamRevision": "99e08526e5ec84f294940cba5929841518c52fec",
+      "releaseTag": "v0.0.45-nightly.20261002.2572",
+      "hash": "sha256-SvyNm8sWjkEyA4SpEpAHqXt7nzzRwGUXPM42K0yAzRU=",
       "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
-      "pnpmDepsHash": "sha256-xSbgwwIaDaTH6JRvfjK/RqNQCaNUkzqH/GdjRrM08tI=",
-      "patchRevision": 30
+      "pnpmDepsHash": "sha256-2dGEHOQrnidTei54NlZTJh5u5/i810hb2LddK4XfUNQ=",
+      "patchRevision": 31
     },
     "stable": {
-      "releaseTag": "v0.0.44",
-      "featureRevision": "d6bbc4bf7bd542935912264b7d17693890431cc2",
-      "revision": "b156219723122607c22ccca17b14238c95e375dc",
-      "upstreamRevision": "451afcb22d93f06cb24f9bc16703404564952553",
+      "featureRevision": "4c2b03cb322a62cb84c5a74ea3421722ccb5075c",
       "version": "0.0.44",
-      "hash": "sha256-PWKGWuuX4w5l12gfNh8I9db5SuVfiT/JJJUXEeVXQJE=",
+      "revision": "8bb44675a077acdd026a28740dab9f48affd61da",
+      "upstreamRevision": "451afcb22d93f06cb24f9bc16703404564952553",
+      "releaseTag": "v0.0.44",
+      "hash": "sha256-POsY7c2cdDJRmtrnKVzQXIecSBai22X4YLnQga7tzrk=",
       "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
       "pnpmDepsHash": "sha256-xdS9+PqIDULKIu3+lQRMabA23D0dxCEME96NhFggWPY=",
-      "patchRevision": 3
+      "patchRevision": 4
     }
   }
 }
