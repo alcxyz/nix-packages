@@ -315,26 +315,16 @@ collect_displaced_workloads() {
   rm -f "$pod_list"
 }
 
-workload_requires_target_node() {
-  local namespace="$1"
-  local workload="$2"
-  local workload_json
-  local nodes_json
-
-  workload_json=$(kubectl -n "$namespace" get "$workload" -o json 2>/dev/null) || return 1
-  nodes_json=$(kubectl get nodes -o json 2>/dev/null) || return 1
-
-  jq -en \
-    --arg node "$NODE" \
-    --argjson workload "$workload_json" \
-    --argjson nodes "$nodes_json" '
+# Node-matching jq definitions shared by the workload placement checks.
+# shellcheck disable=SC2016
+NODE_MATCH_JQ_DEFS='
       def requirement_matches($value; $requirement):
         ($requirement.operator // "") as $operator
         | ($requirement.values // []) as $values
         | if $operator == "In" then
             $value != null and ($values | index($value) != null)
           elif $operator == "NotIn" then
-            $value != null and ($values | index($value) == null)
+            $value == null or ($values | index($value) == null)
           elif $operator == "Exists" then
             $value != null
           elif $operator == "DoesNotExist" then
@@ -389,7 +379,21 @@ workload_requires_target_node() {
       def node_is_ready($node):
         any(($node.status.conditions // [])[];
           .type == "Ready" and .status == "True");
+'
 
+workload_requires_target_node() {
+  local namespace="$1"
+  local workload="$2"
+  local workload_json
+  local nodes_json
+
+  workload_json=$(kubectl -n "$namespace" get "$workload" -o json 2>/dev/null) || return 1
+  nodes_json=$(kubectl get nodes -o json 2>/dev/null) || return 1
+
+  jq -en \
+    --arg node "$NODE" \
+    --argjson workload "$workload_json" \
+    --argjson nodes "$nodes_json" "${NODE_MATCH_JQ_DEFS}"'
       ($workload.spec.template.spec // {}) as $pod
       | ($nodes.items // []) as $all_nodes
       | ($all_nodes | map(select(.metadata.name == $node)) | first) as $target
@@ -401,6 +405,93 @@ workload_requires_target_node() {
           | select(node_is_ready(.))
           | select(pod_matches_node($pod; .))]
           | length) == 0' >/dev/null
+}
+
+# Prints the Ready-replica floor a Deployment can meet while NODE is out. A
+# required one-per-node anti-affinity on the pods' own labels caps the floor at
+# the other Ready nodes the pods can use: schedulable ones, plus nodes still
+# running a live replica. The floor never drops below one. Pods that tolerate
+# the cordon (they may land back on NODE) and selector fields this check does
+# not model keep the full replica count.
+deployment_ready_floor() {
+  local namespace="$1"
+  local workload="$2"
+  local snapshot
+  local status=0
+
+  # Namespace Pod and Node lists can exceed the per-argument size limit, so
+  # hand them to jq as files.
+  snapshot=$(mktemp -d)
+  if kubectl -n "$namespace" get "$workload" -o json >"${snapshot}/workload.json" 2>/dev/null &&
+    kubectl get nodes -o json >"${snapshot}/nodes.json" 2>/dev/null &&
+    kubectl -n "$namespace" get pods -o json >"${snapshot}/pods.json" 2>/dev/null; then
+    deployment_ready_floor_from_files "$namespace" "$snapshot" || status=$?
+  else
+    status=1
+  fi
+  rm -rf "$snapshot"
+  return "$status"
+}
+
+deployment_ready_floor_from_files() {
+  local namespace="$1"
+  local snapshot="$2"
+
+  jq -enr \
+    --arg node "$NODE" \
+    --arg namespace "$namespace" \
+    --slurpfile workload_doc "${snapshot}/workload.json" \
+    --slurpfile nodes_doc "${snapshot}/nodes.json" \
+    --slurpfile pods_doc "${snapshot}/pods.json" "${NODE_MATCH_JQ_DEFS}"'
+      def labels_match($labels; $match):
+        ($match // {}) | to_entries | all(($labels[.key] // null) == .value);
+
+      def one_per_node($pod; $labels):
+        any(($pod.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution // [])[];
+          .topologyKey == "kubernetes.io/hostname"
+          and .namespaceSelector == null
+          and ((.namespaces // []) | length == 0 or index($namespace) != null)
+          and (.matchLabelKeys // []) == []
+          and (.mismatchLabelKeys // []) == []
+          and (.labelSelector.matchExpressions // []) == []
+          and ((.labelSelector.matchLabels // {}) | length > 0)
+          and labels_match($labels; .labelSelector.matchLabels));
+
+      def tolerates_cordon($pod):
+        any(($pod.tolerations // [])[];
+          (.key // "") as $key
+          | (.operator // "Equal") as $operator
+          | ($key == "node.kubernetes.io/unschedulable" or ($key == "" and $operator == "Exists"))
+          and ($operator == "Exists" or ($operator == "Equal" and (.value // "") == ""))
+          and ((.effect // "") == "" or .effect == "NoSchedule"));
+
+      $workload_doc[0] as $workload
+      | $nodes_doc[0] as $nodes
+      | $pods_doc[0] as $pods
+      | ($workload.spec.replicas // 1) as $desired
+      | ($workload.spec.template.spec // {}) as $pod
+      | ($workload.spec.template.metadata.labels // {}) as $labels
+      | ($workload.spec.selector // {}) as $selector
+      | if $desired > 1
+          and one_per_node($pod; $labels)
+          and (tolerates_cordon($pod) | not)
+          and ($selector.matchExpressions // []) == []
+          and (($selector.matchLabels // {}) | length > 0) then
+          [($pods.items // [])[]
+            | select(labels_match(.metadata.labels // {}; $selector.matchLabels))
+            | select(.metadata.deletionTimestamp == null)
+            | select(.status.phase != "Succeeded" and .status.phase != "Failed")
+            | .spec.nodeName] as $running_nodes
+          | ([($nodes.items // [])[]
+              | select(.metadata.name != $node)
+              | select(node_is_ready(.))
+              | select((.metadata.name as $name | $running_nodes | index($name) != null)
+                or (pod_matches_node($pod; .) and .spec.unschedulable != true))]
+              | length) as $eligible
+          | [$desired, ([$eligible, 1] | max)] | min
+        else
+          $desired
+        end'
 }
 
 collect_target_pinned_pending_workloads() {
@@ -526,7 +617,20 @@ wait_for_displaced_workload_survivability() {
     fi
 
     case "$workload" in
-      deployment/* | replicaset/*)
+      deployment/*)
+        desired=$(
+          kubectl -n "$namespace" get "$workload" \
+            -o jsonpath='{.spec.replicas}' 2>/dev/null || true
+        )
+        desired="${desired:-1}"
+        minimum_ready=$(deployment_ready_floor "$namespace" "$workload") ||
+          minimum_ready="$desired"
+        if ((minimum_ready < desired)); then
+          log "${namespace}/${workload} runs one Pod per node; requiring ${minimum_ready} of ${desired} Ready while ${NODE} is out"
+        fi
+        wait_for_controller_ready_floor "$namespace" "$workload" "$minimum_ready"
+        ;;
+      replicaset/*)
         desired=$(
           kubectl -n "$namespace" get "$workload" \
             -o jsonpath='{.spec.replicas}' 2>/dev/null || true
