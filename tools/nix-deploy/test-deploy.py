@@ -58,7 +58,20 @@ elif name == "ssh":
             print("fixture endpoint unavailable", file=sys.stderr)
             sys.exit(255)
     elif args[-1].startswith("df -Pk"):
-        print(os.environ.get("MOCK_FREE_KIB", "99999999"))
+        # Collection frees space only on the endpoint that ran it.
+        logged = [json.loads(line) for line in open(os.environ["MOCK_LOG"])]
+        collected = any(c[0] == "ssh" and "nix-gc.service" in c[-1] and c[-2] == args[-2] for c in logged)
+        free = os.environ.get("MOCK_FREE_KIB", "99999999")
+        print(os.environ.get("MOCK_FREE_KIB_AFTER_GC", free) if collected else free)
+    elif "nix-gc.service" in args[-1]:
+        failure = os.environ.get("MOCK_GC_FAILURE")
+        if failure == "hang":
+            time.sleep(30)
+        elif failure == "missing":
+            sys.exit(3)
+        elif failure:
+            print("fixture gc failure", file=sys.stderr)
+            sys.exit(1)
 elif name == "nix":
     if args and args[0] == "build":
         print("/nix/store/fixture-home-activation")
@@ -180,8 +193,48 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert not actions(calls)
     calls, _ = run("--nixos", "node", status=1, MOCK_UNREACHABLE="node.invalid")
     assert not actions(calls)
+    def remote_gc(calls):
+        return [c[-2] for c in calls if c[0] == "ssh" and "nix-gc.service" in c[-1]]
+
     calls, _ = run("--nixos", "node", status=1, MOCK_FREE_KIB="1")
     assert not actions(calls)
+    assert remote_gc(calls) == ["root@node.invalid"]
+    # Low space runs the target's own GC once, then checks again.
+    calls, result = run("--nixos", "node", MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999")
+    assert remote_gc(calls) == ["root@node.invalid"]
+    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    assert "running nix-gc.service on the host" in result.stdout
+    calls, result = run("--nixos", "node", status=1, MOCK_FREE_KIB="1", MOCK_GC_FAILURE="1")
+    assert not actions(calls)
+    assert "nix-gc.service failed: fixture gc failure" in result.stderr
+    calls, result = run("--nixos", "node", status=1, MOCK_FREE_KIB="1", MOCK_GC_FAILURE="missing")
+    assert not actions(calls)
+    assert "no nix-gc.timer on the host" in result.stderr
+    # A failed collection may still have freed enough space.
+    calls, _ = run("--nixos", "node", MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999", MOCK_GC_FAILURE="1")
+    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    # A stalled collection is abandoned at the deadline.
+    started = time.monotonic()
+    calls, result = run("--nixos", "node", status=1, MOCK_FREE_KIB="1", MOCK_GC_FAILURE="hang", DEPLOY_REMOTE_GC_TIMEOUT="1")
+    assert time.monotonic() - started < 15
+    assert not actions(calls)
+    assert "nix-gc.service did not finish within 1s" in result.stderr
+    calls, _ = run("--nixos", "node", status=1, MOCK_FREE_KIB="1", DEPLOY_REMOTE_GC="0")
+    assert not actions(calls) and not remote_gc(calls)
+    # A non-root system user cannot start the unit without a sudo prompt.
+    calls, _ = run("--nixos", "solo", status=1, MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999")
+    assert not actions(calls) and not remote_gc(calls)
+    calls, _ = run("--nixos", "node", status=1, DEPLOY_REMOTE_GC="yes")
+    assert not actions(calls)
+    calls, _ = run("--nixos", "node", status=1, DEPLOY_REMOTE_GC_TIMEOUT="0")
+    assert not actions(calls)
+    # In a fleet, the root host is collected and deployed; the non-root host
+    # gets no collection and is skipped.
+    calls, result = run("--all", "--nixos", MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999")
+    assert remote_gc(calls) == ["root@node.invalid"]
+    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    assert not any(c[0] == "nixos-rebuild" and ".#solo" in c for c in calls)
+    assert ["solo", "skipped", "-"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
     calls, _ = run("--nixos", "node", status=1, MOCK_FREE_KIB="invalid")
     assert not actions(calls)
     calls, _ = run("--no-preflight", "--nixos", "node", MOCK_UNREACHABLE="node.invalid")
@@ -191,7 +244,8 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, _ = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
     assert not any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
     assert any(c[0] == "nixos-rebuild" and ".#solo" in c for c in calls)
-    assert ["sudo", "-v"] in calls
+    # The local sudo prompt comes before preflight, not after it.
+    assert calls.index(["sudo", "-v"]) < min(i for i, c in enumerate(calls) if c[0] == "ssh")
     calls, _ = run("--all", "--nixos", "--fail-unreachable", status=1, MOCK_UNREACHABLE="node.invalid")
     assert not actions(calls)
     calls, _ = run("--all", MOCK_UNREACHABLE="root@node.invalid")
@@ -421,4 +475,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
-print("Deployment contract: 44 mocked CLI cases and 20 invalid inventories passed; no deployment commands executed")
+print("Deployment contract: 54 mocked CLI cases and 20 invalid inventories passed; no deployment commands executed")

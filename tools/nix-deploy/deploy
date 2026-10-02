@@ -116,6 +116,8 @@ SELF=""
 NIX_SSHOPTS="${NIX_SSHOPTS:--o ServerAliveInterval=10 -o ServerAliveCountMax=30 -o TCPKeepAlive=yes -o ConnectTimeout=30}"
 DEPLOY_SSH_CHECK_TIMEOUT="${DEPLOY_SSH_CHECK_TIMEOUT:-5}"
 DEPLOY_REMOTE_MIN_FREE_KIB="${DEPLOY_REMOTE_MIN_FREE_KIB:-4194304}"
+DEPLOY_REMOTE_GC="${DEPLOY_REMOTE_GC:-1}"
+DEPLOY_REMOTE_GC_TIMEOUT="${DEPLOY_REMOTE_GC_TIMEOUT:-600}"
 DEPLOY_SERIAL_READY_INTERVAL="${DEPLOY_SERIAL_READY_INTERVAL:-10}"
 export NIX_SSHOPTS
 # shellcheck disable=SC2206
@@ -131,6 +133,14 @@ FLEET_FAILED=false
 
 if ! [[ "$DEPLOY_REMOTE_MIN_FREE_KIB" =~ ^[0-9]+$ ]]; then
   echo "deploy: DEPLOY_REMOTE_MIN_FREE_KIB must be an integer number of KiB" >&2
+  exit 1
+fi
+if [[ "$DEPLOY_REMOTE_GC" != 0 && "$DEPLOY_REMOTE_GC" != 1 ]]; then
+  echo "deploy: DEPLOY_REMOTE_GC must be 0 or 1" >&2
+  exit 1
+fi
+if ! [[ "$DEPLOY_REMOTE_GC_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "deploy: DEPLOY_REMOTE_GC_TIMEOUT must be a positive integer number of seconds" >&2
   exit 1
 fi
 if ! [[ "$DEPLOY_SERIAL_READY_INTERVAL" =~ ^[1-9][0-9]*$ ]]; then
@@ -160,6 +170,12 @@ SSH preflight timeout.
 
 Remote NixOS phases also require free space on the target filesystem backing
 /nix. Set DEPLOY_REMOTE_MIN_FREE_KIB to tune the threshold, or 0 to disable it.
+When a target logged in as root is below the threshold and has nix-gc.timer,
+preflight starts its nix-gc.service once, waits up to DEPLOY_REMOTE_GC_TIMEOUT
+seconds (default 600) per host, and checks again. Set DEPLOY_REMOTE_GC=0 to
+skip that.
+
+A local system switch asks for the sudo password before preflight.
 
 By default, --all runs from ${OPERATOR_HOST} for the canonical fleet workflow.
 Use --here to run --all from the current machine and build locally before
@@ -452,6 +468,7 @@ print_fleet_summary() {
 }
 
 start_sudo_keepalive() {
+  echo "deploy: sudo is needed to switch ${SELF} locally"
   sudo -v
 
   while true; do
@@ -497,15 +514,10 @@ format_kib_gib() {
   printf '%d.%01d GiB' "$((kib / 1048576))" "$((((kib % 1048576) * 10) / 1048576))"
 }
 
-check_remote_nix_capacity() {
-  local host="$1"
-  local endpoint output status free_kib
-
-  if [[ "$DEPLOY_REMOTE_MIN_FREE_KIB" -eq 0 ]]; then
-    return 0
-  fi
-
-  endpoint="$(system_ssh_user "$host")@$(ssh_host "$host")"
+# Prints the free KiB on the target filesystem backing /nix.
+remote_nix_free_kib() {
+  local endpoint="$1"
+  local output status free_kib
 
   set +e
   output="$(
@@ -521,12 +533,72 @@ check_remote_nix_capacity() {
 
   free_kib="$(printf '%s' "$output" | tail -n 1 | tr -d '[:space:]')"
   if [[ $status -ne 0 || ! "$free_kib" =~ ^[0-9]+$ ]]; then
-    printf '%s %s cannot check free space on %s: %s\n' \
-      "$(phase_label check)" \
-      "$(host_label "$host")" \
-      "$endpoint" \
-      "$(printf '%s' "$output" | tr '\n' ' ' | sed -e 's/[[:space:]]\+/ /g' -e 's/^ //' -e 's/ $//')" >&2
+    printf '%s' "$output" | tr '\n' ' ' | sed -e 's/[[:space:]]\+/ /g' -e 's/^ //' -e 's/ $//'
     return 1
+  fi
+  printf '%s\n' "$free_kib"
+}
+
+# Runs the target's own scheduled garbage collection once and waits at most
+# DEPLOY_REMOTE_GC_TIMEOUT for it; the remote unit may keep running after the
+# wait ends. It runs in the foreground so Ctrl-C reaches it. Hosts without
+# nix-gc.timer are left alone, so this frees only what the host's own schedule
+# would. Sets REMOTE_GC_ERROR when it does not complete.
+REMOTE_GC_ERROR=""
+run_remote_nix_gc() {
+  local endpoint="$1"
+  local output status
+
+  set +e
+  output="$(
+    timeout --foreground --kill-after=5 "$DEPLOY_REMOTE_GC_TIMEOUT" ssh \
+      -o BatchMode=yes \
+      -o ConnectTimeout="$DEPLOY_SSH_CHECK_TIMEOUT" \
+      -o ConnectionAttempts=1 \
+      "${SSH_ARGS[@]}" \
+      "$endpoint" "systemctl cat nix-gc.timer >/dev/null 2>&1 || exit 3; systemctl start nix-gc.service" 2>&1
+  )"
+  status=$?
+  set -e
+
+  case "$status" in
+    0) REMOTE_GC_ERROR="" ;;
+    3) REMOTE_GC_ERROR="no nix-gc.timer on the host" ;;
+    124 | 137) REMOTE_GC_ERROR="nix-gc.service did not finish within ${DEPLOY_REMOTE_GC_TIMEOUT}s; it may still be running on the host" ;;
+    *) REMOTE_GC_ERROR="nix-gc.service failed: $(printf '%s' "$output" | tail -n 1)" ;;
+  esac
+  [[ "$status" -eq 0 ]]
+}
+
+check_remote_nix_capacity() {
+  local host="$1"
+  local endpoint free_kib
+
+  if [[ "$DEPLOY_REMOTE_MIN_FREE_KIB" -eq 0 ]]; then
+    return 0
+  fi
+
+  endpoint="$(system_ssh_user "$host")@$(ssh_host "$host")"
+
+  if ! free_kib="$(remote_nix_free_kib "$endpoint")"; then
+    printf '%s %s cannot check free space on %s: %s\n' \
+      "$(phase_label check)" "$(host_label "$host")" "$endpoint" "$free_kib" >&2
+    return 1
+  fi
+
+  # Only root can start the unit without an interactive sudo prompt.
+  if [[ "$free_kib" -lt "$DEPLOY_REMOTE_MIN_FREE_KIB" && "$DEPLOY_REMOTE_GC" == 1 && "$(system_ssh_user "$host")" == root ]]; then
+    printf '%s %s only %s free on /nix filesystem; running nix-gc.service on the host\n' \
+      "$(phase_label check)" "$(host_label "$host")" "$(format_kib_gib "$free_kib")"
+    if ! run_remote_nix_gc "$endpoint"; then
+      printf '%s %s %s\n' "$(phase_label check)" "$(host_label "$host")" "$REMOTE_GC_ERROR" >&2
+    fi
+    # A failed or interrupted collection may still have freed space.
+    if ! free_kib="$(remote_nix_free_kib "$endpoint")"; then
+      printf '%s %s cannot check free space on %s: %s\n' \
+        "$(phase_label check)" "$(host_label "$host")" "$endpoint" "$free_kib" >&2
+      return 1
+    fi
   fi
 
   if [[ "$free_kib" -lt "$DEPLOY_REMOTE_MIN_FREE_KIB" ]]; then
@@ -848,7 +920,17 @@ do_deploy_all() {
     local serial_skipped=()
     local system_hosts=()
     local cmd index
-    local has_local_system_job=false
+
+    # Ask for the local password before the slow preflight and evaluation
+    # steps, so the prompt appears when the command starts instead of
+    # interrupting later output.
+    for host in "${system_candidates[@]}"; do
+      if [[ "$host" == "$SELF" ]]; then
+        start_sudo_keepalive
+        trap stop_sudo_keepalive EXIT
+        break
+      fi
+    done
 
     if ! filter_reachable_hosts "nixos" "${system_candidates[@]}"; then
       if [[ "$FAIL_UNREACHABLE" == true ]]; then
@@ -867,16 +949,6 @@ do_deploy_all() {
       fi
     done
 
-    for host in "${system_hosts[@]}"; do
-      if [[ "$host" == "$SELF" ]]; then
-        has_local_system_job=true
-        break
-      fi
-    done
-    if [[ "$has_local_system_job" == true ]]; then
-      start_sudo_keepalive
-      trap stop_sudo_keepalive EXIT
-    fi
     section "system rebuilds"
 
     JOB_HOSTS=()

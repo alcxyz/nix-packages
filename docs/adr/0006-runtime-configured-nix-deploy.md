@@ -114,6 +114,14 @@ interface; whitespace and shell metacharacters are rejected before planning.
   interrupts reach it; only validated host names are substituted into it.
   Present serial keys must have the documented type; `null` is not treated as
   absent. The Home Manager phase is unaffected.
-- Fleet mode starts the local sudo keepalive only when the reachable system
-  phase contains a local rebuild job. Remote-only orchestration does not prompt
-  for or refresh local sudo credentials.
+- Fleet mode starts the local sudo keepalive only when the selected system
+  phase contains the local host, and does so before preflight so the password
+  prompt appears when the command starts. Remote-only orchestration does not
+  prompt for or refresh local sudo credentials.
+- When a root-accessed target with `nix-gc.timer` is below the free-space
+  threshold, preflight starts its `nix-gc.service` once, waits in the
+  foreground up to `DEPLOY_REMOTE_GC_TIMEOUT` per host, and checks again, so
+  deployment reclaims space under the host's own GC policy instead of skipping
+  the host. The wait does not stop the remote unit, and the per-host waits add
+  up in the sequential preflight.
+  `DEPLOY_REMOTE_GC=0` disables this.
