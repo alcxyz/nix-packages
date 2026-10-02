@@ -1,6 +1,6 @@
 # ADR-0007: Continuous grouped provider updates
 
-**Status:** Accepted
+**Status:** Accepted; scan cadence amended 2026-09-30
 **Date:** 2026-09-30
 **Applies to:** AI provider update and merge workflows
 
@@ -59,3 +59,11 @@ candidate blocks that combined update until fixed or superseded, while the
 last verified deployed packages remain available. Package-level updaters stay
 usable independently for diagnosis. Detection becomes more frequent without
 weakening release channels or build and activation gates.
+
+## Amendment (2026-09-30)
+
+Hourly provider scans exhausted GitHub's anonymous API limit without an
+authenticated upstream token. Since #442 provider scans run every six hours,
+and the T3 source scan workflow matches the six-hourly cadence ADR-0005
+already recorded; the merge queue stays hourly. Revisit hourly provider scans
+once `UPSTREAM_GITHUB_TOKEN` exists (#443).

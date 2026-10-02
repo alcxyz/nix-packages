@@ -6,7 +6,7 @@ selected explicitly. Each fork pin records its published release tag, exact
 upstream tag commit, applied feature source commit, promoted commit, source hash,
 and Cargo and pnpm dependency hashes.
 
-The hourly T3 scan compares the promoted refs with `dev` and any open update PR
+The six-hourly T3 scan compares the promoted refs with `dev` and any open update PR
 before setting up Nix. For a manual update from the repository root, run:
 
 ```sh

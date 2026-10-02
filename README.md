@@ -47,24 +47,30 @@ Internal tools built from source, tracked in this repo.
 ## Automated updates
 
 Stable Claude Code, Codex CLI, and Codex app-server releases are checked every
-hour by `.forgejo/workflows/update-ai-tools.yml`. A lightweight probe
+six hours by `.forgejo/workflows/update-ai-tools.yml`. A lightweight probe
 compares upstream releases with `dev` and any pending `update/ai-tools` PR before
 installing Nix. Unchanged candidates skip builds; new provider releases update
 one combined PR so T3 validates their versions together. Failed unchanged
 candidates remain visible for diagnosis or explicit CI retry.
 
-Other packages, including T3 nightlies and tested fork promotions, retain the
-daily `.forgejo/workflows/update-packages.yml` scan and one stable
+T3 sources, including nightlies and tested fork promotions, are scanned every
+six hours by `.forgejo/workflows/update-t3code.yml`. Other packages retain the
+daily `.forgejo/workflows/update-packages.yml` scan. Each uses one stable
 `update/<package>` branch. New releases refresh the existing PR. The daily
 matrix is capped at two concurrent package jobs; provider scans are serialized.
 
-The merge queue checks hourly at half past, following provider scans at the
-top of each hour. Green `update/*` pull requests are
+The merge queue checks hourly at half past the hour. Green `update/*` pull requests are
 rebased onto `dev` when needed and squash-merged by
 `.forgejo/workflows/auto-merge-updates.yml`; ordinary PR events trigger validation.
 Consumer promotion and idle-session activation gates remain in place, so scan
 cadence is not a deployment-time guarantee. See
 [ADR-0007](docs/adr/0007-continuous-provider-updates.md).
+
+The `promoted` branch marks the newest `dev` revision that passed the consumer's
+full configuration validation. The nix-config local package promoter moves it
+(nix-config ADR-0080); unattended AI-stack updates follow it, and nix-config's
+`just lock-packages` locks it. Do not commit to it or base work on it.
+
 Successful update PRs are validated before merge, not again on the resulting
 `dev` push; `main` is still validated when changes are promoted manually.
 Promotion from `dev` to `main` is manual. `dev` is a long-lived integration
