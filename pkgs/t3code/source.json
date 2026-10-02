@@ -1,14 +1,14 @@
 {
-  "version": "0.0.45-nightly.20261001.2552",
-  "revision": "094fb230e90ffb0af303a318ca716fecefd66c80",
-  "hash": "sha256-Fk+lXVQo7Boco0ZWn6RBhqMJgviUJxsOChmtpvg7ue4=",
+  "version": "0.0.45-nightly.20261002.2561",
+  "revision": "b33eda13998b5b0571daaf266c87f6f31af41f7d",
+  "hash": "sha256-Fgh7OwfHVvERI+X2QzgLGRvInUUbklxKn/bN/Q2fPhE=",
   "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
   "pnpmDepsHash": "sha256-2dGEHOQrnidTei54NlZTJh5u5/i810hb2LddK4XfUNQ=",
   "forks": {
     "nightly": {
+      "releaseTag": "v0.0.45-nightly.20261001.2539",
       "featureRevision": "d6bbc4bf7bd542935912264b7d17693890431cc2",
       "revision": "37ce7898a5b076eb1c4d361873c9b556992e2545",
-      "releaseTag": "v0.0.45-nightly.20261001.2539",
       "upstreamRevision": "5cc99e1c23980d7995a13c47f969b47cb68ed1be",
       "version": "0.0.45-nightly.20261001.2539",
       "hash": "sha256-5CoSI0DNBsH/X39yNuG/Ix5vTxiygeM+PPUr4o1VhXQ=",
@@ -17,9 +17,9 @@
       "patchRevision": 30
     },
     "stable": {
+      "releaseTag": "v0.0.44",
       "featureRevision": "d6bbc4bf7bd542935912264b7d17693890431cc2",
       "revision": "b156219723122607c22ccca17b14238c95e375dc",
-      "releaseTag": "v0.0.44",
       "upstreamRevision": "451afcb22d93f06cb24f9bc16703404564952553",
       "version": "0.0.44",
       "hash": "sha256-PWKGWuuX4w5l12gfNh8I9db5SuVfiT/JJJUXEeVXQJE=",
