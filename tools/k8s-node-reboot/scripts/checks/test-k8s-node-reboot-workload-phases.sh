@@ -129,6 +129,92 @@ expect_floor 3 'anti-affinity narrowed by mismatchLabelKeys'
 WORKLOAD_JSON='{"spec": {"replicas": 2, "template": {"spec": {}}}}'
 expect_floor 2 'portable Deployment'
 
+SPREAD_JSON='{
+  "spec": {"replicas": 2, "selector": {"matchLabels": {"app": "edge"}}, "template": {
+    "metadata": {"labels": {"app": "edge"}},
+    "spec": {"topologySpreadConstraints": [{
+      "maxSkew": 1,
+      "topologyKey": "kubernetes.io/hostname",
+      "whenUnsatisfiable": "DoNotSchedule",
+      "labelSelector": {"matchLabels": {"app": "edge"}}
+    }]}
+  }}
+}'
+spread_pod() {
+  jq -n --arg node "$1" --arg app "$2" '{
+    "metadata": {"labels": {"app": $app}, "ownerReferences": [{"kind": "ReplicaSet"}]},
+    "spec": {"nodeName": $node},
+    "status": {"phase": "Running"}
+  }'
+}
+
+# Drained worker-a counts as an empty domain, so worker-b keeps its one replica.
+WORKLOAD_JSON="$SPREAD_JSON"
+PODS_JSON=$(jq -n --argjson b "$(spread_pod worker-b edge)" '{"items": [$b]}')
+expect_floor 1 'hostname spread that keeps the drained node in the skew'
+
+# With cordoned nodes dropped from the skew, the replacement fits on worker-b.
+WORKLOAD_JSON=$(jq '.spec.template.spec.topologySpreadConstraints[0].nodeTaintsPolicy = "Honor"' <<<"$SPREAD_JSON")
+expect_floor 2 'hostname spread that drops cordoned nodes from the skew'
+
+WORKLOAD_JSON=$(jq '.spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable = "ScheduleAnyway"' <<<"$SPREAD_JSON")
+expect_floor 2 'soft hostname spread'
+
+# A DaemonSet Pod the spread selects stays on worker-a, so the replacement fits.
+PODS_JSON=$(jq -n --argjson a "$(spread_pod worker-a edge | jq '.metadata.labels = {"app": "edge", "daemon": "yes"} | .metadata.ownerReferences = [{"kind": "DaemonSet"}]')" \
+  --argjson b "$(spread_pod worker-b edge)" '{"items": [$a, $b]}')
+WORKLOAD_JSON=$(jq '.spec.selector.matchLabels = {"app": "edge", "component": "web"}
+  | .spec.template.metadata.labels.component = "web"' <<<"$SPREAD_JSON")
+PODS_JSON=$(jq '.items[1].metadata.labels.component = "web"' <<<"$PODS_JSON")
+expect_floor 2 'DaemonSet Pods the spread selects on the drained node'
+
+# A DaemonSet Pod sharing the Deployment selector still survives the drain.
+WORKLOAD_JSON="$SPREAD_JSON"
+PODS_JSON=$(jq -n --argjson a "$(spread_pod worker-a edge | jq '.metadata.ownerReferences = [{"kind": "DaemonSet"}]')" \
+  --argjson b "$(spread_pod worker-b edge)" '{"items": [$a, $b]}')
+expect_floor 2 'DaemonSet Pod with the Deployment labels on the drained node'
+
+# DaemonSet Pods sharing the selector are not Deployment replicas: A=1, B=2
+# after the drain, so no replacement fits and only B's replica counts.
+WORKLOAD_JSON=$(jq '.spec.replicas = 3' <<<"$SPREAD_JSON")
+PODS_JSON=$(jq -n --argjson a "$(spread_pod worker-a edge | jq '.metadata.ownerReferences = [{"kind": "DaemonSet"}]')" \
+  --argjson d "$(spread_pod worker-b edge | jq '.metadata.ownerReferences = [{"kind": "DaemonSet"}]')" \
+  --argjson b "$(spread_pod worker-b edge)" '{"items": [$a, $d, $b]}')
+expect_floor 1 'DaemonSet Pods are not counted as running replicas'
+
+# Surviving replicas stacked beyond one per node still count.
+WORKLOAD_JSON=$(jq '.spec.replicas = 3' <<<"$SPREAD_JSON")
+PODS_JSON=$(jq -n --argjson b "$(spread_pod worker-b edge)" '{"items": [$b, $b]}')
+expect_floor 2 'replicas already stacked on a surviving node'
+
+# Another DoNotSchedule constraint the replay does not model keeps every replica.
+WORKLOAD_JSON=$(jq '.spec.template.spec.topologySpreadConstraints += [{
+  "maxSkew": 1, "topologyKey": "topology.kubernetes.io/zone",
+  "whenUnsatisfiable": "DoNotSchedule", "labelSelector": {"matchLabels": {"app": "edge"}}
+}]' <<<"$SPREAD_JSON")
+expect_floor 2 'an additional zone spread'
+
+# An empty node with an untolerated NoSchedule taint.
+SAVED_NODES_JSON="$NODES_JSON"
+NODES_JSON=$(jq '.items += [{
+  "metadata": {"name": "worker-d", "labels": {"kubernetes.io/hostname": "worker-d"}},
+  "spec": {"taints": [{"key": "dedicated", "value": "gpu", "effect": "NoSchedule"}]},
+  "status": {"conditions": [{"type": "Ready", "status": "True"}]}
+}]' <<<"$NODES_JSON")
+PODS_JSON=$(jq -n --argjson b "$(spread_pod worker-b edge)" '{"items": [$b]}')
+# Ignore keeps it as an empty domain, but nothing can be placed on it.
+WORKLOAD_JSON="$SPREAD_JSON"
+expect_floor 1 'Ignore spread with an empty untolerated node'
+# Honor drops it from the domains, so the replacement fits on worker-b.
+WORKLOAD_JSON=$(jq '.spec.template.spec.topologySpreadConstraints[0].nodeTaintsPolicy = "Honor"' <<<"$SPREAD_JSON")
+expect_floor 2 'Honor spread drops an untolerated node'
+# Tolerating the taint opens worker-d for the replacement.
+WORKLOAD_JSON=$(jq '.spec.template.spec.tolerations = [{"key": "dedicated", "operator": "Equal", "value": "gpu", "effect": "NoSchedule"}]' <<<"$SPREAD_JSON")
+expect_floor 2 'tolerated taint opens a node'
+NODES_JSON="$SAVED_NODES_JSON"
+PODS_JSON='{"items": []}'
+PODS_JSON='{"items": []}'
+
 # NotIn admits nodes without the label, as the Kubernetes scheduler does, so
 # the unlabelled worker-b can still host this workload.
 WORKLOAD_JSON='{

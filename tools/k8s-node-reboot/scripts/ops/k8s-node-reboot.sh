@@ -413,6 +413,8 @@ workload_requires_target_node() {
 # running a live replica. The floor never drops below one. Pods that tolerate
 # the cordon (they may land back on NODE) and selector fields this check does
 # not model keep the full replica count.
+# A strict hostname spread instead replays the scheduler's skew check to find
+# how many replicas can still run with NODE out.
 deployment_ready_floor() {
   local namespace="$1"
   local workload="$2"
@@ -457,6 +459,45 @@ deployment_ready_floor_from_files() {
           and ((.labelSelector.matchLabels // {}) | length > 0)
           and labels_match($labels; .labelSelector.matchLabels));
 
+      # The strict hostname spread on the Pod template labels, if any. Other
+      # spread forms keep the full replica count.
+      def hostname_spread($pod; $labels):
+        [($pod.topologySpreadConstraints // [])[] | select(.whenUnsatisfiable == "DoNotSchedule")]
+        | if length == 1
+            and (.[0]
+              | .topologyKey == "kubernetes.io/hostname"
+              and ((.maxSkew // 0) >= 1)
+              and (.nodeAffinityPolicy // "Honor") == "Honor"
+              and .minDomains == null
+              and (.matchLabelKeys // []) == []
+              and (.labelSelector.matchExpressions // []) == []
+              and ((.labelSelector.matchLabels // {}) | length > 0)
+              and labels_match($labels; .labelSelector.matchLabels)) then
+            .[0]
+          else
+            null
+          end;
+
+      def tolerates_taint($pod; $taint):
+        any(($pod.tolerations // [])[];
+          (.operator // "Equal") as $operator
+          | ((.key // "") == "" and $operator == "Exists"
+            or (.key // "") == $taint.key)
+          and ($operator == "Exists" or (.value // "") == ($taint.value // ""))
+          and ((.effect // "") == "" or .effect == $taint.effect));
+
+      # Taints that block scheduling, other than the cordon itself.
+      def node_admits($pod; $candidate):
+        all(($candidate.spec.taints // [])[]
+          | select(.effect == "NoSchedule" or .effect == "NoExecute")
+          | select(.key != "node.kubernetes.io/unschedulable");
+          tolerates_taint($pod; .));
+
+      def live_pod:
+        .metadata.deletionTimestamp == null
+        and .status.phase != "Succeeded" and .status.phase != "Failed"
+        and (.spec.nodeName // "") != "";
+
       def tolerates_cordon($pod):
         any(($pod.tolerations // [])[];
           (.key // "") as $key
@@ -472,23 +513,78 @@ deployment_ready_floor_from_files() {
       | ($workload.spec.template.spec // {}) as $pod
       | ($workload.spec.template.metadata.labels // {}) as $labels
       | ($workload.spec.selector // {}) as $selector
+      | hostname_spread($pod; $labels) as $spread
       | if $desired > 1
-          and one_per_node($pod; $labels)
           and (tolerates_cordon($pod) | not)
           and ($selector.matchExpressions // []) == []
-          and (($selector.matchLabels // {}) | length > 0) then
+          and (($selector.matchLabels // {}) | length > 0)
+          and (one_per_node($pod; $labels) or $spread != null) then
           [($pods.items // [])[]
             | select(labels_match(.metadata.labels // {}; $selector.matchLabels))
-            | select(.metadata.deletionTimestamp == null)
-            | select(.status.phase != "Succeeded" and .status.phase != "Failed")
-            | .spec.nodeName] as $running_nodes
-          | ([($nodes.items // [])[]
-              | select(.metadata.name != $node)
-              | select(node_is_ready(.))
-              | select((.metadata.name as $name | $running_nodes | index($name) != null)
-                or (pod_matches_node($pod; .) and .spec.unschedulable != true))]
-              | length) as $eligible
-          | [$desired, ([$eligible, 1] | max)] | min
+            | select(live_pod)] as $replicas
+          | if one_per_node($pod; $labels) then
+              [$replicas[] | .spec.nodeName] as $running_nodes
+              | ([($nodes.items // [])[]
+                  | select(.metadata.name != $node)
+                  | select(node_is_ready(.))
+                  | select((.metadata.name as $name | $running_nodes | index($name) != null)
+                    or (pod_matches_node($pod; .) and .spec.unschedulable != true
+                      and node_admits($pod; .)))]
+                  | length) as $eligible
+              | [$desired, ([$eligible, 1] | max)] | min
+            else
+              # Replay the scheduler spread filter: count every live Pod the
+              # constraint selects per node domain (DaemonSet Pods included),
+              # then place the missing replicas one at a time on schedulable
+              # nodes while the skew stays within maxSkew.
+              ([$replicas[]
+                | select(.spec.nodeName != $node)
+                | select((.metadata.ownerReferences // []) | any(.kind == "ReplicaSet"))]
+                | length) as $running
+              | [($nodes.items // [])[]
+                  | select(pod_matches_node($pod; .))
+                  | select((.metadata.labels["kubernetes.io/hostname"] // "") != "")
+                  | select(($spread.nodeTaintsPolicy // "Ignore") == "Ignore"
+                    or (.spec.unschedulable != true and .metadata.name != $node
+                      and node_admits($pod; .)))
+                  | .metadata.name as $name
+                  | {
+                      name: $name,
+                      hostname: .metadata.labels["kubernetes.io/hostname"],
+                      # The drain removes this Deployment from NODE; other
+                      # selected Pods there, such as DaemonSet Pods, remain.
+                      count: ([($pods.items // [])[]
+                        | select(live_pod and .spec.nodeName == $name)
+                        | select(labels_match(.metadata.labels // {}; $spread.labelSelector.matchLabels))
+                        | select($name != $node
+                          or (labels_match(.metadata.labels // {}; $selector.matchLabels)
+                            and ((.metadata.ownerReferences // []) | any(.kind == "ReplicaSet"))
+                            | not))]
+                        | length),
+                      open: ($name != $node and .spec.unschedulable != true
+                        and node_is_ready(.) and node_admits($pod; .))
+                    }] as $domains
+              # Shared hostname values would merge domains; keep every replica.
+              | if ($domains | length) == 0
+                  or ($domains | map(.hostname) | unique | length) != ($domains | length)
+                  or $running >= $desired then
+                  $desired
+                else
+                  (reduce range(0; $desired - $running) as $unused (
+                    {domains: $domains, placed: 0};
+                    ([.domains[].count] | min) as $minimum
+                    | ([.domains[] | select(.open and .count + 1 - $minimum <= $spread.maxSkew)]
+                      | min_by(.count) // null) as $pick
+                    | if $pick == null then
+                        .
+                      else
+                        .domains |= map(if .name == $pick.name then .count += 1 else . end)
+                        | .placed += 1
+                      end)
+                  | .placed) as $placed
+                  | [$desired, ([$running + $placed, 1] | max)] | min
+                end
+            end
         else
           $desired
         end'
@@ -626,7 +722,7 @@ wait_for_displaced_workload_survivability() {
         minimum_ready=$(deployment_ready_floor "$namespace" "$workload") ||
           minimum_ready="$desired"
         if ((minimum_ready < desired)); then
-          log "${namespace}/${workload} runs one Pod per node; requiring ${minimum_ready} of ${desired} Ready while ${NODE} is out"
+          log "${namespace}/${workload} cannot place every replica while ${NODE} is out; requiring ${minimum_ready} of ${desired} Ready"
         fi
         wait_for_controller_ready_floor "$namespace" "$workload" "$minimum_ready"
         ;;
