@@ -40,7 +40,15 @@ func runDaily(args []string) int {
 	repoPath := fs.String("repo", "", "Path to the journal git repo (required)")
 	dateStr := fs.String("date", lastCompleteDevlogDate().Format("2006-01-02"), "Devlog date to generate (YYYY-MM-DD). Covers 05:00 that day through 04:59 the next day.")
 	ghUser := fs.String("user", "alcxyz", "GitHub username for activity lookup")
+	forgejoURL := fs.String("forgejo-url", "", "Forgejo base URL for activity lookup; the token is read from FORGEJO_API_TOKEN_FILE. Empty disables Forgejo.")
+	forgejoUser := fs.String("forgejo-user", "alcxyz", "Forgejo username for activity lookup")
 	fs.Parse(args)
+
+	src, err := newSources(*ghUser, *forgejoURL, *forgejoUser)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 
 	if err := gitSync(*repoPath); err != nil {
 		fmt.Fprintf(os.Stderr, "error syncing journal: %v\n", err)
@@ -53,7 +61,7 @@ func runDaily(args []string) int {
 		return 1
 	}
 
-	generated, err := generateDaily(*repoPath, date, *ghUser)
+	generated, err := generateDaily(*repoPath, date, src)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -72,7 +80,34 @@ func runDaily(args []string) int {
 	return 0
 }
 
-func generateDaily(repoPath string, date time.Time, ghUser string) (bool, error) {
+// activitySources are the forges devlog reads; forgejo is nil when disabled.
+type activitySources struct {
+	ghUser  string
+	forgejo *forgejoClient
+}
+
+func newSources(ghUser, forgejoURL, forgejoUser string) (activitySources, error) {
+	src := activitySources{ghUser: ghUser}
+	if forgejoURL == "" {
+		return src, nil
+	}
+	client, err := newForgejoClient(forgejoURL, forgejoUser)
+	if err != nil {
+		return src, err
+	}
+	src.forgejo = client
+	return src, nil
+}
+
+// commitRef is one commit and the forge its diff is fetched from.
+type commitRef struct {
+	Source  string
+	Repo    string
+	SHA     string
+	Message string
+}
+
+func generateDaily(repoPath string, date time.Time, src activitySources) (bool, error) {
 	ds := date.Format("2006-01-02")
 	start, end := devlogWindow(date)
 	window := formatWindow(start, end)
@@ -84,15 +119,34 @@ func generateDaily(repoPath string, date time.Time, ghUser string) (bool, error)
 
 	fmt.Printf("Generating devlog for %s (%s)...\n", ds, window)
 
-	commits, err := fetchCommitData(ghUser, date)
+	// Forgejo errors fail the run: an entry written without it would be
+	// incomplete and never regenerated.
+	var commits []commitRef
+	var prs, issues string
+	if src.forgejo != nil {
+		events, err := src.forgejo.fetchEvents(start, end)
+		if err != nil {
+			return false, fmt.Errorf("error fetching Forgejo activity for %s: %w", ds, err)
+		}
+		commits, prs, issues, err = summarizeForgejoEvents(events, src.forgejo.fetchPushCommits)
+		if err != nil {
+			return false, fmt.Errorf("error reading Forgejo activity for %s: %w", ds, err)
+		}
+	}
+
+	ghCommits, err := fetchCommitData(src.ghUser, date)
 	if err != nil {
 		return false, fmt.Errorf("error fetching commits for %s: %w", ds, err)
 	}
+	// GitHub mirrors of Forgejo repositories carry the same commits.
+	commits = withoutReported(mergeCommits(commits, ghCommits), reportedCommits(repoPath, date))
 
-	prs, _ := fetchSearchItems(ghUser, date, "pr")
-	issues, _ := fetchSearchItems(ghUser, date, "issue")
+	ghPRs, _ := fetchSearchItems(src.ghUser, date, "pr")
+	ghIssues, _ := fetchSearchItems(src.ghUser, date, "issue")
+	prs = joinLines(prs, ghPRs)
+	issues = joinLines(issues, ghIssues)
 
-	if commits == "" && prs == "" && issues == "" {
+	if len(commits) == 0 && prs == "" && issues == "" {
 		mustMkdir(filepath.Dir(outfile))
 		content := fmt.Sprintf("---\ndate: %s\nwindow: %s\n---\n# Devlog — %s\n\nNo activity.\n", ds, window, ds)
 		if err := os.WriteFile(outfile, []byte(content), 0644); err != nil {
@@ -101,24 +155,30 @@ func generateDaily(repoPath string, date time.Time, ghUser string) (bool, error)
 		fmt.Printf("No activity for %s.\n", ds)
 	} else {
 		fmt.Println("Fetching diffs...")
-		diffs := fetchDiffs(commits)
+		diffs, err := fetchDiffs(commits, src.forgejo)
+		if err != nil {
+			return false, fmt.Errorf("error fetching diffs for %s: %w", ds, err)
+		}
 
 		prompt := buildDailyPrompt(ds, window, diffs, prs, issues)
 		mustMkdir(filepath.Dir(outfile))
 		if err := runLLM(prompt, outfile); err != nil {
 			return false, fmt.Errorf("error running LLM for %s: %w", ds, err)
 		}
+		if err := appendReported(outfile, commits); err != nil {
+			return false, err
+		}
 	}
 
 	return true, nil
 }
 
-func fetchCommitData(user string, date time.Time) (string, error) {
+func fetchCommitData(user string, date time.Time) ([]commitRef, error) {
 	start, end := devlogWindow(date)
 	query := fmt.Sprintf("author:%s+committer-date:%s..%s", user, start.Format("2006-01-02"), end.Format("2006-01-02"))
 	out, err := run("gh", "api", fmt.Sprintf("search/commits?q=%s&per_page=100", query))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	var result struct {
@@ -136,18 +196,49 @@ func fetchCommitData(user string, date time.Time) (string, error) {
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	var lines []string
+	var commits []commitRef
 	for _, item := range result.Items {
 		if !inDevlogWindow(item.Commit.Committer.Date, start, end) {
 			continue
 		}
-		msg := strings.Split(item.Commit.Message, "\n")[0]
-		lines = append(lines, fmt.Sprintf("%s %s %s", item.Repository.FullName, item.SHA, msg))
+		commits = append(commits, commitRef{
+			Source:  "github",
+			Repo:    item.Repository.FullName,
+			SHA:     item.SHA,
+			Message: strings.Split(item.Commit.Message, "\n")[0],
+		})
 	}
-	return strings.Join(lines, "\n"), nil
+	return commits, nil
+}
+
+// mergeCommits appends commits whose SHA is not already present, keeping the
+// first source seen for each.
+func mergeCommits(lists ...[]commitRef) []commitRef {
+	seen := make(map[string]bool)
+	var merged []commitRef
+	for _, list := range lists {
+		for _, c := range list {
+			if seen[c.SHA] {
+				continue
+			}
+			seen[c.SHA] = true
+			merged = append(merged, c)
+		}
+	}
+	return merged
+}
+
+func joinLines(parts ...string) string {
+	var nonEmpty []string
+	for _, p := range parts {
+		if p != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	return strings.Join(nonEmpty, "\n")
 }
 
 func fetchSearchItems(user string, date time.Time, itemType string) (string, error) {
@@ -182,34 +273,54 @@ func fetchSearchItems(user string, date time.Time, itemType string) (string, err
 	return strings.Join(lines, "\n"), nil
 }
 
-func fetchDiffs(commitData string) string {
-	if commitData == "" {
-		return ""
-	}
+// Diffs are truncated per commit, and once the total budget is spent the
+// remaining commits are listed by message only, to keep busy days within the
+// model's context.
+const (
+	maxDiffLines      = 200
+	maxTotalDiffLines = 4000
+)
 
+// A Forgejo diff error fails the run, like the feed, except for a pruned
+// commit; GitHub diffs stay best effort as before.
+func fetchDiffs(commits []commitRef, forgejo *forgejoClient) (string, error) {
 	var diffs strings.Builder
-	for _, line := range strings.Split(commitData, "\n") {
-		parts := strings.SplitN(line, " ", 3)
-		if len(parts) < 3 {
+	total := 0
+	for _, c := range commits {
+		if total >= maxTotalDiffLines {
+			fmt.Fprintf(&diffs, "\n### %s — %s\n(diff omitted: daily diff budget reached)\n", c.Repo, c.Message)
 			continue
 		}
-		repo, sha, msg := parts[0], parts[1], parts[2]
-
-		jq := `"Files changed: \(.stats.total // 0) (+\(.stats.additions // 0) -\(.stats.deletions // 0))\n" + ([.files[] | "  \(.filename) (+\(.additions) -\(.deletions))"] | join("\n")) + "\n\nPatch (truncated):\n" + ([.files[] | select(.patch != null) | "--- \(.filename)\n\(.patch)"] | join("\n"))`
-		detail, err := run("gh", "api", fmt.Sprintf("repos/%s/commits/%s", repo, sha), "--jq", jq)
+		var detail string
+		var err error
+		switch c.Source {
+		case "forgejo":
+			detail, err = forgejo.fetchDiff(c.Repo, c.SHA)
+			if err != nil && !isForgejoNotFound(err) {
+				return "", fmt.Errorf("diff %s@%s: %w", c.Repo, c.SHA, err)
+			}
+		default:
+			jq := `"Files changed: \(.stats.total // 0) (+\(.stats.additions // 0) -\(.stats.deletions // 0))\n" + ([.files[] | "  \(.filename) (+\(.additions) -\(.deletions))"] | join("\n")) + "\n\nPatch (truncated):\n" + ([.files[] | select(.patch != null) | "--- \(.filename)\n\(.patch)"] | join("\n"))`
+			detail, err = run("gh", "api", fmt.Sprintf("repos/%s/commits/%s", c.Repo, c.SHA), "--jq", jq)
+		}
 		if err != nil {
 			detail = "(diff unavailable)"
 		} else {
-			// Truncate to ~200 lines
-			lines := strings.Split(detail, "\n")
-			if len(lines) > 200 {
-				detail = strings.Join(lines[:200], "\n")
+			limit := maxDiffLines
+			if remaining := maxTotalDiffLines - total; remaining < limit {
+				limit = remaining
 			}
+			lines := strings.Split(detail, "\n")
+			if len(lines) > limit {
+				lines = lines[:limit]
+				detail = strings.Join(lines, "\n") + "\n(truncated)"
+			}
+			total += len(lines)
 		}
 
-		fmt.Fprintf(&diffs, "\n### %s — %s\n%s\n", repo, msg, detail)
+		fmt.Fprintf(&diffs, "\n### %s — %s\n%s\n", c.Repo, c.Message, detail)
 	}
-	return diffs.String()
+	return diffs.String(), nil
 }
 
 func buildDailyPrompt(date, window, diffs, prs, issues string) string {
@@ -274,8 +385,16 @@ func runCatchUp(args []string) int {
 	startStr := fs.String("start", "", "First date to consider (YYYY-MM-DD). Defaults to -days before end")
 	days := fs.Int("days", 30, "Number of recent days to scan when -start is not set")
 	ghUser := fs.String("user", "alcxyz", "GitHub username for activity lookup")
+	forgejoURL := fs.String("forgejo-url", "", "Forgejo base URL for activity lookup; the token is read from FORGEJO_API_TOKEN_FILE. Empty disables Forgejo.")
+	forgejoUser := fs.String("forgejo-user", "alcxyz", "Forgejo username for activity lookup")
 	refreshWeekly := fs.Bool("weekly", true, "Refresh complete weekly summaries affected by newly generated daily entries")
 	fs.Parse(args)
+
+	src, err := newSources(*ghUser, *forgejoURL, *forgejoUser)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 
 	if err := gitSync(*repoPath); err != nil {
 		fmt.Fprintf(os.Stderr, "error syncing journal: %v\n", err)
@@ -312,11 +431,17 @@ func runCatchUp(args []string) int {
 	var changed []string
 	var generatedDates []time.Time
 	affectedWeeks := make(map[string]time.Time)
+	// A failure stops generation, but the entries already written are still
+	// committed, since the next run skips them as existing. Weeklies missing
+	// an existing daily entry are refreshed on every run, so a failed refresh
+	// is retried.
+	failed := false
 	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
-		generated, err := generateDaily(*repoPath, d, *ghUser)
+		generated, err := generateDaily(*repoPath, d, src)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return 1
+			failed = true
+			break
 		}
 		if generated {
 			ds := d.Format("2006-01-02")
@@ -329,6 +454,11 @@ func runCatchUp(args []string) int {
 	}
 
 	if *refreshWeekly {
+		for d := weekday(start, time.Monday); !d.After(end); d = d.AddDate(0, 0, 7) {
+			if weeklyMissesDaily(*repoPath, d) {
+				affectedWeeks[isoWeekString(d)] = d
+			}
+		}
 		today, _ := time.Parse("2006-01-02", time.Now().Format("2006-01-02"))
 		for weekStr, monday := range affectedWeeks {
 			sunday := monday.AddDate(0, 0, 6)
@@ -339,7 +469,8 @@ func runCatchUp(args []string) int {
 			generated, err := generateWeekly(*repoPath, monday, true)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				return 1
+				failed = true
+				continue
 			}
 			if generated {
 				changed = append(changed, filepath.Join("weekly", weekStr+".md"))
@@ -348,12 +479,18 @@ func runCatchUp(args []string) int {
 	}
 
 	if len(changed) == 0 {
+		if failed {
+			return 1
+		}
 		fmt.Println("No missing devlogs found.")
 		return 0
 	}
 
 	if err := gitCommitAndPushMany(*repoPath, changed, catchUpCommitMessage(generatedDates, end)); err != nil {
 		fmt.Fprintf(os.Stderr, "error committing: %v\n", err)
+		return 1
+	}
+	if failed {
 		return 1
 	}
 
@@ -451,7 +588,7 @@ func generateWeekly(repoPath string, monday time.Time, force bool) (bool, error)
 			fmt.Printf("  No entry for %s, skipping\n", ds)
 			continue
 		}
-		content := string(data)
+		content := stripReported(string(data))
 		if !strings.Contains(content, "No activity.") {
 			hasContent = true
 		}
@@ -505,8 +642,8 @@ func generateWeekly(repoPath string, monday time.Time, force bool) (bool, error)
 			if err != nil {
 				continue
 			}
-			stitched.WriteString("\n")
-			stitched.Write(data)
+			stitched.WriteString("\n" + weeklyDayMarker(ds) + "\n")
+			stitched.WriteString(stripReported(string(data)))
 			stitched.WriteString("\n\n---\n")
 		}
 
@@ -516,6 +653,39 @@ func generateWeekly(repoPath string, monday time.Time, force bool) (bool, error)
 	}
 
 	return true, nil
+}
+
+// weeklyDayMarker precedes each daily entry stitched into a weekly summary,
+// so completeness does not depend on model-written text, which also mentions
+// neighbouring dates.
+func weeklyDayMarker(ds string) string {
+	return "<!-- devlog-day: " + ds + " -->"
+}
+
+// weeklyMissesDaily reports whether the week's summary is missing, or lacks a
+// daily entry with activity that exists now, for example after a failed
+// refresh. Summaries written before the markers existed are matched by the
+// daily's "# Devlog — date" title. No-activity entries are ignored, because an
+// all-quiet week gets a stub summary without them.
+func weeklyMissesDaily(repoPath string, monday time.Time) bool {
+	weekly, err := os.ReadFile(filepath.Join(repoPath, "weekly", isoWeekString(monday)+".md"))
+	missing := err != nil
+	marked := strings.Contains(string(weekly), "<!-- devlog-day: ")
+	for d := monday; d.Before(monday.AddDate(0, 0, 7)); d = d.AddDate(0, 0, 1) {
+		ds := d.Format("2006-01-02")
+		daily, err := os.ReadFile(filepath.Join(repoPath, "devlog", ds+".md"))
+		if err != nil || strings.Contains(string(daily), "No activity.") {
+			continue
+		}
+		want := weeklyDayMarker(ds)
+		if !marked {
+			want = "# Devlog — " + ds
+		}
+		if missing || !strings.Contains(string(weekly), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildWeeklyPrompt(monday, friday, sunday, week, weekdayEntries, weekendEntries string) string {

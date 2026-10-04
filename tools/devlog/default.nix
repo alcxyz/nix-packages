@@ -12,7 +12,7 @@ buildGoModule {
   nativeCheckInputs = [ git ];
 
   meta = {
-    description = "Daily and weekly devlog generator from GitHub activity";
+    description = "Daily and weekly devlog generator from Forgejo and GitHub activity";
     mainProgram = "devlog";
   };
 }
