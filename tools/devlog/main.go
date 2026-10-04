@@ -808,7 +808,9 @@ func gitCommitAndPushMany(repoPath string, relPaths []string, message string) er
 	if err := git(addArgs...); err != nil {
 		return fmt.Errorf("git add: %w", err)
 	}
-	diff := exec.Command("git", "diff", "--cached", "--quiet")
+	// Only devlog's own paths are checked and committed; anything else staged
+	// in the checkout is left alone.
+	diff := exec.Command("git", append([]string{"diff", "--cached", "--quiet", "--"}, relPaths...)...)
 	diff.Dir = repoPath
 	if err := diff.Run(); err == nil {
 		fmt.Println("No git changes to commit.")
@@ -816,25 +818,33 @@ func gitCommitAndPushMany(repoPath string, relPaths []string, message string) er
 	} else if _, ok := err.(*exec.ExitError); !ok {
 		return fmt.Errorf("git diff --cached: %w", err)
 	}
-	if err := git("commit", "-m", message); err != nil {
+	commitArgs := append([]string{"commit", "-m", message, "--only", "--"}, relPaths...)
+	if err := git(commitArgs...); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
 	return gitSync(repoPath)
 }
 
+// pullArgs syncs the journal. --no-autostash overrides rebase.autoStash, so
+// changes that appear after checkClean make the pull fail instead of being
+// stashed.
+var pullArgs = []string{"pull", "--rebase", "--no-autostash"}
+
 // gitSync replays local commits on the remote branch and pushes any that are
 // pending, including those left by an earlier failed push. The journal is
 // also edited elsewhere, so entries are generated from, and pushed onto, the
-// current remote state. Unrelated local edits are stashed around the rebase.
-// A rebase or conflict already in progress is left for the user to finish.
+// current remote state. It never stashes or rewrites uncommitted work: tracked
+// files may be in a sensitive transient state (for example decrypted in
+// place), so a dirty tree, conflict or rebase in progress fails the run and is
+// left for the user.
 func gitSync(repoPath string) error {
 	if rebaseInProgress(repoPath) {
 		return fmt.Errorf("a rebase is already in progress in %s", repoPath)
 	}
-	if err := checkNoConflicts(repoPath); err != nil {
+	if err := checkClean(repoPath); err != nil {
 		return err
 	}
-	cmd := exec.Command("git", "pull", "--rebase", "--autostash")
+	cmd := exec.Command("git", pullArgs...)
 	cmd.Dir = repoPath
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -846,11 +856,6 @@ func gitSync(repoPath string) error {
 		}
 		return fmt.Errorf("git pull --rebase: %w", err)
 	}
-	// Restoring the autostash can leave conflicts while the pull succeeds.
-	if err := checkNoConflicts(repoPath); err != nil {
-		return err
-	}
-
 	ahead := exec.Command("git", "rev-list", "--count", "@{upstream}..HEAD")
 	ahead.Dir = repoPath
 	out, err := ahead.Output()
@@ -889,15 +894,17 @@ func rebaseInProgress(repoPath string) bool {
 	return false
 }
 
-func checkNoConflicts(repoPath string) error {
-	cmd := exec.Command("git", "ls-files", "--unmerged")
+// checkClean fails when tracked files have uncommitted changes, including
+// unresolved conflicts. Untracked files do not block a rebase.
+func checkClean(repoPath string) error {
+	cmd := exec.Command("git", "status", "--porcelain", "--untracked-files=no")
 	cmd.Dir = repoPath
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("git ls-files --unmerged: %w", err)
+		return fmt.Errorf("git status: %w", err)
 	}
 	if len(bytes.TrimSpace(out)) > 0 {
-		return fmt.Errorf("unresolved conflicts in %s", repoPath)
+		return fmt.Errorf("uncommitted changes to tracked files in %s; commit or discard them", repoPath)
 	}
 	return nil
 }

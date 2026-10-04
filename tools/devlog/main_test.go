@@ -372,6 +372,18 @@ func (f *journalFixture) write(dir, name, content string) {
 	}
 }
 
+// assertNotStored fails when a file's current content was written to the
+// object store, as any stash or autostash would do.
+func (f *journalFixture) assertNotStored(dir, name string) {
+	f.t.Helper()
+	blob := f.run(dir, "hash-object", name)
+	cmd := exec.Command("git", "cat-file", "-e", blob)
+	cmd.Dir = dir
+	if cmd.Run() == nil {
+		f.t.Errorf("content of %s was written to the object store", name)
+	}
+}
+
 func (f *journalFixture) commit(dir, name, content, message string) {
 	f.write(dir, name, content)
 	f.run(dir, "add", name)
@@ -384,8 +396,6 @@ func TestGitCommitAndPushRebasesOntoRemote(t *testing.T) {
 	f.run(f.other, "push", "--quiet")
 
 	f.write(f.journal, "entry.md", "entry\n")
-	// An unrelated unstaged edit must not block, or be lost by, the sync.
-	f.write(f.journal, "base.md", "edited\n")
 	if err := gitCommitAndPush(f.journal, "entry.md", "devlog: entry"); err != nil {
 		t.Fatalf("gitCommitAndPush: %v", err)
 	}
@@ -394,9 +404,6 @@ func TestGitCommitAndPushRebasesOntoRemote(t *testing.T) {
 	}
 	if got := f.run(f.root, "--git-dir=remote.git", "log", "--format=%s", "dev"); got != "devlog: entry\nelsewhere\nbase" {
 		t.Errorf("remote history = %q", got)
-	}
-	if got := f.run(f.journal, "status", "--porcelain"); got != "M base.md" {
-		t.Errorf("journal status = %q, want unrelated edit kept", got)
 	}
 }
 
@@ -414,14 +421,18 @@ func TestGitSyncLeavesForeignRebaseAlone(t *testing.T) {
 	}
 }
 
-func TestGitSyncReportsAutostashConflict(t *testing.T) {
+func TestGitSyncLeavesUncommittedChangesAlone(t *testing.T) {
 	f := newJournalFixture(t)
-	f.commit(f.other, "base.md", "remote\n", "remote edit")
+	f.commit(f.other, "elsewhere.md", "elsewhere\n", "elsewhere")
 	f.run(f.other, "push", "--quiet")
 	f.write(f.journal, "base.md", "local\n")
 
 	if err := gitSync(f.journal); err == nil {
-		t.Fatal("gitSync succeeded with a conflicted autostash")
+		t.Fatal("gitSync succeeded with uncommitted changes")
+	}
+	f.assertNotStored(f.journal, "base.md")
+	if got := f.run(f.journal, "status", "--porcelain"); got != "M base.md" {
+		t.Errorf("journal status = %q, want the edit untouched", got)
 	}
 }
 
@@ -435,5 +446,44 @@ func TestGitSyncPushesPendingCommits(t *testing.T) {
 	}
 	if got := f.run(f.root, "--git-dir=remote.git", "log", "-1", "--format=%s", "dev"); got != "devlog: entry" {
 		t.Errorf("remote tip = %q, want the pending entry", got)
+	}
+}
+
+func TestGitSyncIgnoresConfiguredAutostash(t *testing.T) {
+	f := newJournalFixture(t)
+	f.run(f.journal, "config", "rebase.autoStash", "true")
+	// Diverge so the pull has to rebase.
+	f.commit(f.other, "elsewhere.md", "elsewhere\n", "elsewhere")
+	f.run(f.other, "push", "--quiet")
+	f.commit(f.journal, "entry.md", "entry\n", "devlog: entry")
+	f.write(f.journal, "base.md", "local\n")
+
+	// Bypass checkClean to model a change that appears after it.
+	cmd := exec.Command("git", pullArgs...)
+	cmd.Dir = f.journal
+	if err := cmd.Run(); err == nil {
+		t.Fatal("pull succeeded over a dirty tree")
+	}
+	f.assertNotStored(f.journal, "base.md")
+}
+
+func TestGitCommitAndPushCommitsOnlyItsPaths(t *testing.T) {
+	f := newJournalFixture(t)
+	f.write(f.journal, "base.md", "staged elsewhere\n")
+	f.run(f.journal, "add", "base.md")
+	f.write(f.journal, "entry.md", "entry\n")
+
+	// The final sync refuses the dirty tree, so the commit stays local.
+	if err := gitCommitAndPush(f.journal, "entry.md", "devlog: entry"); err == nil {
+		t.Fatal("gitCommitAndPush succeeded with other staged changes")
+	}
+	if got := f.run(f.journal, "show", "--name-only", "--format=", "HEAD"); got != "entry.md" {
+		t.Errorf("committed files = %q, want only entry.md", got)
+	}
+	if got := f.run(f.journal, "status", "--porcelain"); got != "M  base.md" {
+		t.Errorf("journal status = %q, want base.md still staged", got)
+	}
+	if got := f.run(f.root, "--git-dir=remote.git", "log", "-1", "--format=%s", "dev"); got != "base" {
+		t.Errorf("remote tip = %q, want nothing pushed", got)
 	}
 }
