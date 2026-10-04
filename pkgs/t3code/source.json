@@ -1,15 +1,15 @@
 {
-  "version": "0.0.46-nightly.20261003.2632",
-  "revision": "f391794a35c604d57e166a3ab48d56fc6e4e469a",
-  "hash": "sha256-phC+xfp3+MR+w87N9HIaxlqah2yPizvs4S9DQAhIhhQ=",
+  "version": "0.0.46-nightly.20261003.2638",
+  "revision": "5e35272fda7cc94d9c140377bc8db70580295133",
+  "hash": "sha256-THWeDfcGbSxj4pVsNQWGOzxT2l4+sPYOxsyfaNVE0tA=",
   "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
-  "pnpmDepsHash": "sha256-IvBYaCbOYy/5Sf5hziU9bCkrcm5SZJHwTQsXiYW7dMo=",
+  "pnpmDepsHash": "sha256-YNIHsTSvgdIbU0rLOreqN0mJ0HIT645+PrKRB3Wf6Rs=",
   "forks": {
     "nightly": {
-      "version": "0.0.45-nightly.20261002.2595",
       "releaseTag": "v0.0.45-nightly.20261002.2595",
       "upstreamRevision": "6c8fed35dded9ff71c5b46807125457acbb76be6",
       "featureRevision": "4c2b03cb322a62cb84c5a74ea3421722ccb5075c",
+      "version": "0.0.45-nightly.20261002.2595",
       "revision": "151e9c1e62298e6432719176f729aec73719f73f",
       "hash": "sha256-YigZuAQ35DvylnfUpWoKyCIQFRBwmUsysY9pWQ1jizg=",
       "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
@@ -17,10 +17,10 @@
       "patchRevision": 32
     },
     "stable": {
-      "version": "0.0.45",
       "releaseTag": "v0.0.45",
       "upstreamRevision": "6c8fed35dded9ff71c5b46807125457acbb76be6",
       "featureRevision": "4c2b03cb322a62cb84c5a74ea3421722ccb5075c",
+      "version": "0.0.45",
       "revision": "da2a832a1d9262cc0a83d06e375e11af54c22cf6",
       "hash": "sha256-x0AgJ3ilQmKvE8u/VE5gb+NLlZJbkCHbnSBGP3NgcM8=",
       "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
