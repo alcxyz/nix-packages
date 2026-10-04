@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -315,5 +317,123 @@ func TestNoActivityOutput(t *testing.T) {
 	}
 	if !containsStr(got, "No activity.") {
 		t.Error("no-activity output missing 'No activity.'")
+	}
+}
+
+// journalFixture is a bare remote with two clones: "other" stands for edits
+// made elsewhere, "journal" for the checkout devlog writes to.
+type journalFixture struct {
+	t       *testing.T
+	root    string
+	other   string
+	journal string
+}
+
+func newJournalFixture(t *testing.T) *journalFixture {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	f := &journalFixture{t: t, root: t.TempDir()}
+	f.run(f.root, "init", "--quiet", "--bare", "--initial-branch=dev", "remote.git")
+	f.other = f.clone("other")
+	f.commit(f.other, "base.md", "base.md\n", "base")
+	f.run(f.other, "push", "--quiet", "origin", "dev")
+	f.journal = f.clone("journal")
+	return f
+}
+
+func (f *journalFixture) run(dir string, args ...string) string {
+	f.t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		f.t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (f *journalFixture) clone(name string) string {
+	dir := filepath.Join(f.root, name)
+	f.run(f.root, "clone", "--quiet", "remote.git", name)
+	f.run(dir, "config", "user.name", "Test")
+	f.run(dir, "config", "user.email", "test@example.invalid")
+	return dir
+}
+
+func (f *journalFixture) write(dir, name, content string) {
+	f.t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *journalFixture) commit(dir, name, content, message string) {
+	f.write(dir, name, content)
+	f.run(dir, "add", name)
+	f.run(dir, "commit", "--quiet", "-m", message)
+}
+
+func TestGitCommitAndPushRebasesOntoRemote(t *testing.T) {
+	f := newJournalFixture(t)
+	f.commit(f.other, "elsewhere.md", "elsewhere\n", "elsewhere")
+	f.run(f.other, "push", "--quiet")
+
+	f.write(f.journal, "entry.md", "entry\n")
+	// An unrelated unstaged edit must not block, or be lost by, the sync.
+	f.write(f.journal, "base.md", "edited\n")
+	if err := gitCommitAndPush(f.journal, "entry.md", "devlog: entry"); err != nil {
+		t.Fatalf("gitCommitAndPush: %v", err)
+	}
+	if got := f.run(f.journal, "rev-list", "--count", "origin/dev..dev"); got != "0" {
+		t.Errorf("unpushed commits = %s, want 0", got)
+	}
+	if got := f.run(f.root, "--git-dir=remote.git", "log", "--format=%s", "dev"); got != "devlog: entry\nelsewhere\nbase" {
+		t.Errorf("remote history = %q", got)
+	}
+	if got := f.run(f.journal, "status", "--porcelain"); got != "M base.md" {
+		t.Errorf("journal status = %q, want unrelated edit kept", got)
+	}
+}
+
+func TestGitSyncLeavesForeignRebaseAlone(t *testing.T) {
+	f := newJournalFixture(t)
+	marker := filepath.Join(f.journal, ".git", "rebase-merge")
+	if err := os.Mkdir(marker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitSync(f.journal); err == nil {
+		t.Fatal("gitSync succeeded during a rebase in progress")
+	}
+	if !fileExists(marker) {
+		t.Error("gitSync aborted a rebase it did not start")
+	}
+}
+
+func TestGitSyncReportsAutostashConflict(t *testing.T) {
+	f := newJournalFixture(t)
+	f.commit(f.other, "base.md", "remote\n", "remote edit")
+	f.run(f.other, "push", "--quiet")
+	f.write(f.journal, "base.md", "local\n")
+
+	if err := gitSync(f.journal); err == nil {
+		t.Fatal("gitSync succeeded with a conflicted autostash")
+	}
+}
+
+func TestGitSyncPushesPendingCommits(t *testing.T) {
+	f := newJournalFixture(t)
+	// A commit left behind by an earlier run whose push failed.
+	f.commit(f.journal, "entry.md", "entry\n", "devlog: entry")
+
+	if err := gitSync(f.journal); err != nil {
+		t.Fatalf("gitSync: %v", err)
+	}
+	if got := f.run(f.root, "--git-dir=remote.git", "log", "-1", "--format=%s", "dev"); got != "devlog: entry" {
+		t.Errorf("remote tip = %q, want the pending entry", got)
 	}
 }

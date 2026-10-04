@@ -42,6 +42,11 @@ func runDaily(args []string) int {
 	ghUser := fs.String("user", "alcxyz", "GitHub username for activity lookup")
 	fs.Parse(args)
 
+	if err := gitSync(*repoPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error syncing journal: %v\n", err)
+		return 1
+	}
+
 	date, err := time.Parse("2006-01-02", *dateStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid date: %s\n", *dateStr)
@@ -272,6 +277,11 @@ func runCatchUp(args []string) int {
 	refreshWeekly := fs.Bool("weekly", true, "Refresh complete weekly summaries affected by newly generated daily entries")
 	fs.Parse(args)
 
+	if err := gitSync(*repoPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error syncing journal: %v\n", err)
+		return 1
+	}
+
 	end, err := time.Parse("2006-01-02", *endStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid end date: %s\n", *endStr)
@@ -381,6 +391,11 @@ func runWeekly(args []string) int {
 	dateStr := fs.String("date", sevenDaysAgo(), "Any date in the target week (YYYY-MM-DD)")
 	force := fs.Bool("force", false, "Regenerate weekly devlog even if it already exists")
 	fs.Parse(args)
+
+	if err := gitSync(*repoPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error syncing journal: %v\n", err)
+		return 1
+	}
 
 	refDate, err := time.Parse("2006-01-02", *dateStr)
 	if err != nil {
@@ -804,8 +819,85 @@ func gitCommitAndPushMany(repoPath string, relPaths []string, message string) er
 	if err := git("commit", "-m", message); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
-	if err := git("push"); err != nil {
+	return gitSync(repoPath)
+}
+
+// gitSync replays local commits on the remote branch and pushes any that are
+// pending, including those left by an earlier failed push. The journal is
+// also edited elsewhere, so entries are generated from, and pushed onto, the
+// current remote state. Unrelated local edits are stashed around the rebase.
+// A rebase or conflict already in progress is left for the user to finish.
+func gitSync(repoPath string) error {
+	if rebaseInProgress(repoPath) {
+		return fmt.Errorf("a rebase is already in progress in %s", repoPath)
+	}
+	if err := checkNoConflicts(repoPath); err != nil {
+		return err
+	}
+	cmd := exec.Command("git", "pull", "--rebase", "--autostash")
+	cmd.Dir = repoPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if rebaseInProgress(repoPath) {
+			abort := exec.Command("git", "rebase", "--abort")
+			abort.Dir = repoPath
+			abort.Run()
+		}
+		return fmt.Errorf("git pull --rebase: %w", err)
+	}
+	// Restoring the autostash can leave conflicts while the pull succeeds.
+	if err := checkNoConflicts(repoPath); err != nil {
+		return err
+	}
+
+	ahead := exec.Command("git", "rev-list", "--count", "@{upstream}..HEAD")
+	ahead.Dir = repoPath
+	out, err := ahead.Output()
+	if err != nil {
+		return fmt.Errorf("git rev-list: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "0" {
+		return nil
+	}
+	push := exec.Command("git", "push")
+	push.Dir = repoPath
+	push.Stdout = os.Stdout
+	push.Stderr = os.Stderr
+	if err := push.Run(); err != nil {
 		return fmt.Errorf("git push: %w", err)
+	}
+	return nil
+}
+
+func rebaseInProgress(repoPath string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		cmd := exec.Command("git", "rev-parse", "--git-path", name)
+		cmd.Dir = repoPath
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		path := strings.TrimSpace(string(out))
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(repoPath, path)
+		}
+		if fileExists(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkNoConflicts(repoPath string) error {
+	cmd := exec.Command("git", "ls-files", "--unmerged")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("git ls-files --unmerged: %w", err)
+	}
+	if len(bytes.TrimSpace(out)) > 0 {
+		return fmt.Errorf("unresolved conflicts in %s", repoPath)
 	}
 	return nil
 }
