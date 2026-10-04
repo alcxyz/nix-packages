@@ -112,3 +112,30 @@ func mustWriteFile(t *testing.T, path, content string) {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
 }
+
+func TestLoadConfigReadsEffort(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	mustWriteFile(t, filepath.Join(cfgDir, "llm", "config.toml"), `
+[roles.strong]
+provider = "openai"
+model = "gpt-5.4"
+transport = "cli"
+effort = "medium"
+
+[roles.strong.backup]
+provider = "anthropic"
+model = "opus"
+transport = "cli"
+effort = "high"
+`)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if cfg.Model.Effort != "medium" || cfg.Model.Backup == nil || cfg.Model.Backup.Effort != "high" {
+		t.Fatalf("loadConfig() = %+v, want efforts medium and high", cfg.Model)
+	}
+}

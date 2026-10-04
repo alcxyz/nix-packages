@@ -37,7 +37,7 @@ func main() {
 
 func runDaily(args []string) int {
 	fs := flag.NewFlagSet("daily", flag.ExitOnError)
-	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
+	repoPath := fs.String("repo", "", "Path to the journal git repo (required)")
 	dateStr := fs.String("date", lastCompleteDevlogDate().Format("2006-01-02"), "Devlog date to generate (YYYY-MM-DD). Covers 05:00 that day through 04:59 the next day.")
 	ghUser := fs.String("user", "alcxyz", "GitHub username for activity lookup")
 	fs.Parse(args)
@@ -269,7 +269,7 @@ ISSUES:
 
 func runCatchUp(args []string) int {
 	fs := flag.NewFlagSet("catch-up", flag.ExitOnError)
-	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
+	repoPath := fs.String("repo", "", "Path to the journal git repo (required)")
 	endStr := fs.String("end", lastCompleteDevlogDate().Format("2006-01-02"), "Last devlog date to consider (YYYY-MM-DD). Dates cover 05:00 through 04:59 the next day.")
 	startStr := fs.String("start", "", "First date to consider (YYYY-MM-DD). Defaults to -days before end")
 	days := fs.Int("days", 30, "Number of recent days to scan when -start is not set")
@@ -387,7 +387,7 @@ func sameDate(a, b time.Time) bool {
 
 func runWeekly(args []string) int {
 	fs := flag.NewFlagSet("weekly", flag.ExitOnError)
-	repoPath := fs.String("repo", defaultRepoPath(), "Path to journal git repo")
+	repoPath := fs.String("repo", "", "Path to the journal git repo (required)")
 	dateStr := fs.String("date", sevenDaysAgo(), "Any date in the target week (YYYY-MM-DD)")
 	force := fs.Bool("force", false, "Regenerate weekly devlog even if it already exists")
 	fs.Parse(args)
@@ -608,13 +608,13 @@ func callProvider(cfg ModelConfig, prompt string) ([]byte, error) {
 	switch cfg.Provider {
 	case "anthropic":
 		return callWithTransport(cfg.Transport, apiKey != "", func() ([]byte, error) {
-			return callAnthropicCLI(cfg.Model, prompt)
+			return callAnthropicCLI(cfg.Model, cfg.Effort, prompt)
 		}, func() ([]byte, error) {
 			return callAnthropicAPI(cfg.Model, apiKey, prompt)
 		})
 	case "openai":
 		return callWithTransport(cfg.Transport, apiKey != "", func() ([]byte, error) {
-			return callOpenAICLI(cfg.Model, prompt)
+			return callOpenAICLI(cfg.Model, cfg.Effort, prompt)
 		}, func() ([]byte, error) {
 			return callOpenAIAPI(cfg.Model, apiKey, prompt)
 		})
@@ -644,8 +644,18 @@ func callWithTransport(transport string, apiAvailable bool, cliFn, apiFn func() 
 	}
 }
 
-func callAnthropicCLI(model, prompt string) ([]byte, error) {
-	cmd := exec.Command("claude", "-p", "--model", model)
+// anthropicCLIArgs builds the Claude Code arguments; an empty effort keeps
+// the CLI's default.
+func anthropicCLIArgs(model, effort string) []string {
+	args := []string{"-p", "--model", model}
+	if effort != "" {
+		args = append(args, "--effort", effort)
+	}
+	return args
+}
+
+func callAnthropicCLI(model, effort, prompt string) ([]byte, error) {
+	cmd := exec.Command("claude", anthropicCLIArgs(model, effort)...)
 	cmd.Stdin = strings.NewReader(prompt)
 	out, err := cmd.Output()
 	if err != nil {
@@ -755,7 +765,23 @@ func callOpenAIAPI(model, apiKey, prompt string) ([]byte, error) {
 	return []byte(result.Choices[0].Message.Content), nil
 }
 
-func callOpenAICLI(model, prompt string) ([]byte, error) {
+// codexArgs builds the codex exec arguments; an empty effort keeps the
+// configured default.
+func codexArgs(model, effort, outPath string) []string {
+	args := []string{"exec",
+		"--skip-git-repo-check",
+		"--ignore-rules",
+		"--ephemeral",
+		"-C", os.TempDir(),
+		"-m", model,
+	}
+	if effort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+effort)
+	}
+	return append(args, "-o", outPath, "-")
+}
+
+func callOpenAICLI(model, effort, prompt string) ([]byte, error) {
 	outFile, err := os.CreateTemp("", "devlog-codex-*.txt")
 	if err != nil {
 		return nil, fmt.Errorf("create codex output file: %w", err)
@@ -764,15 +790,7 @@ func callOpenAICLI(model, prompt string) ([]byte, error) {
 	outFile.Close()
 	defer os.Remove(outPath)
 
-	cmd := exec.Command("codex", "exec",
-		"--skip-git-repo-check",
-		"--ignore-rules",
-		"--ephemeral",
-		"-C", os.TempDir(),
-		"-m", model,
-		"-o", outPath,
-		"-",
-	)
+	cmd := exec.Command("codex", codexArgs(model, effort, outPath)...)
 	cmd.Stdin = strings.NewReader(prompt)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -838,6 +856,9 @@ var pullArgs = []string{"pull", "--rebase", "--no-autostash"}
 // place), so a dirty tree, conflict or rebase in progress fails the run and is
 // left for the user.
 func gitSync(repoPath string) error {
+	if repoPath == "" {
+		return fmt.Errorf("the journal repository path is required (-repo)")
+	}
 	if rebaseInProgress(repoPath) {
 		return fmt.Errorf("a rebase is already in progress in %s", repoPath)
 	}
@@ -924,11 +945,6 @@ func weekday(t time.Time, target time.Weekday) time.Time {
 		diff += 7
 	}
 	return t.AddDate(0, 0, -diff)
-}
-
-func defaultRepoPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "git", "journal")
 }
 
 func sevenDaysAgo() string {

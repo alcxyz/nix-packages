@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -485,5 +486,33 @@ func TestGitCommitAndPushCommitsOnlyItsPaths(t *testing.T) {
 	}
 	if got := f.run(f.root, "--git-dir=remote.git", "log", "-1", "--format=%s", "dev"); got != "base" {
 		t.Errorf("remote tip = %q, want nothing pushed", got)
+	}
+}
+
+func TestCLIArgsPassEffort(t *testing.T) {
+	if got, want := anthropicCLIArgs("opus", "high"), []string{"-p", "--model", "opus", "--effort", "high"}; !slices.Equal(got, want) {
+		t.Errorf("anthropicCLIArgs = %q, want %q", got, want)
+	}
+	if got, want := anthropicCLIArgs("opus", ""), []string{"-p", "--model", "opus"}; !slices.Equal(got, want) {
+		t.Errorf("anthropicCLIArgs without effort = %q, want %q", got, want)
+	}
+
+	got := codexArgs("gpt-5.4", "medium", "/tmp/out")
+	if !slices.Contains(got, "model_reasoning_effort=medium") {
+		t.Errorf("codexArgs = %q, want model_reasoning_effort=medium", got)
+	}
+	if got[len(got)-1] != "-" || !slices.Contains(got, "/tmp/out") {
+		t.Errorf("codexArgs = %q, want output path and stdin prompt last", got)
+	}
+	if slices.ContainsFunc(codexArgs("gpt-5.4", "", "/tmp/out"), func(arg string) bool {
+		return strings.HasPrefix(arg, "model_reasoning_effort=")
+	}) {
+		t.Error("codexArgs without effort sets model_reasoning_effort")
+	}
+}
+
+func TestGitSyncRequiresRepoPath(t *testing.T) {
+	if err := gitSync(""); err == nil {
+		t.Fatal("gitSync(\"\") succeeded")
 	}
 }

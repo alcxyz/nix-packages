@@ -13,9 +13,12 @@ type Config struct {
 }
 
 type ModelConfig struct {
-	Provider  string       `toml:"provider"`
-	Model     string       `toml:"model"`
-	Transport string       `toml:"transport"`
+	Provider  string `toml:"provider"`
+	Model     string `toml:"model"`
+	Transport string `toml:"transport"`
+	// Effort is the reasoning effort passed to the CLI transports; empty keeps
+	// the CLI's default. The API transports ignore it.
+	Effort    string       `toml:"effort"`
 	APIKeyEnv string       `toml:"api_key_env"`
 	Backup    *ModelConfig `toml:"backup"`
 }

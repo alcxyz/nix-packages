@@ -1,4 +1,4 @@
-{ lib, buildGoModule }:
+{ lib, buildGoModule, git }:
 
 buildGoModule {
   pname = "devlog";
@@ -7,6 +7,9 @@ buildGoModule {
   src = ./.;
 
   vendorHash = null;
+
+  # The journal sync tests drive real repositories.
+  nativeCheckInputs = [ git ];
 
   meta = {
     description = "Daily and weekly devlog generator from GitHub activity";
