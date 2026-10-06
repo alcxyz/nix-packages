@@ -171,6 +171,7 @@
                 pkgs.gnugrep
                 pkgs.gnused
                 pkgs.jq
+                pkgs.ripgrep
                 pkgs.shellcheck
               ];
               source = lib.cleanSource ./tools/k8s-node-reboot;
@@ -179,6 +180,7 @@
               cd "$source"
               shellcheck scripts/ops/*.sh scripts/checks/*.sh
               bash scripts/checks/test-k8s-node-reboot-workload-phases.sh
+              bash scripts/checks/test-k8s-node-reboot-fence-gates.sh
               bash scripts/checks/test-k8s-node-reboot-network-audits.sh
               bash scripts/checks/test-k8s-node-network-audit.sh
               touch "$out"

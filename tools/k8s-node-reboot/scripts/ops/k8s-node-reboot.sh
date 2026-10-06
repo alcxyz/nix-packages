@@ -13,6 +13,15 @@ RESUME_MAINTENANCE=false
 CHECK_ONLY=false
 DRAIN_TIMEOUT="10m"
 READY_TIMEOUT="10m"
+FENCE_TIMEOUT="10m"
+FENCE_STOP_TIMEOUT_SECONDS=60
+FENCE_HAS_AGENT=false
+FENCE_PREVIOUS_MODE=""
+FENCE_STATUS_JSON=""
+FENCE_STATUS_EXIT=0
+FENCE_FAILURE=""
+FENCE_AGENT_STOPPED=false
+FENCE_STOPPED_AT=""
 # Longhorn deliberately waits up to 30 minutes for a returning node so it can
 # reuse failed replicas instead of creating replacements. A cluster with
 # automatic rebuild admission disabled then needs time for its guarded,
@@ -60,6 +69,7 @@ Options:
                            report planned database switchovers without changes.
   --drain-timeout <dur>    kubectl drain duration. Default: 10m.
   --ready-timeout <dur>    kubectl wait duration. Default: 10m.
+  --fence-timeout <dur>    Agent recovery/heartbeat wait duration. Default: 10m.
   --settle-timeout <dur>   Workload/Longhorn health wait duration. Default: 90m.
   --ssh-timeout <seconds>  SSH return timeout. Default: 900.
   --require-longhorn-backup-target
@@ -68,6 +78,15 @@ Options:
                            the remaining stable nodes.
                            Default: 20.
   -h, --help               Show this help.
+
+Agent-enabled targets require healthy, verified fence states on every server
+before maintenance, with no recent unfence, disabled annotation, or out-of-service
+taint. The target agent must publish stopped before reboot/off. Before uncordon,
+its healthy agent must return in the original mode (kon accepts either mode)
+and publish a heartbeat recorded by the API server after the agent was stopped
+or, for kon, after a new maintenance baseline established once the node is Ready.
+Fence failures after cordon leave the node cordoned. Targets without an agent
+annotation skip these gates. --check-only also checks fence preflight.
 
 Requires kubectl access to the target cluster and SSH sudo rights on the host.
 EOF
@@ -110,6 +129,9 @@ cleanup_runtime_state() {
   local status=$?
 
   trap - EXIT
+  if [[ "$FENCE_AGENT_STOPPED" == true ]]; then
+    log "node-self-fence is still stopped on ${NODE}; start it with systemctl start node-self-fence before retrying maintenance"
+  fi
   restore_longhorn_rebuild_limit || status=1
   cleanup_workloads_file
   exit "$status"
@@ -186,6 +208,13 @@ parse_args() {
       --ready-timeout)
         [[ $# -ge 2 ]] || die "--ready-timeout requires a value"
         READY_TIMEOUT="$2"
+        shift 2
+        ;;
+      --fence-timeout)
+        [[ $# -ge 2 ]] || die "--fence-timeout requires a value"
+        # No leading zeros: bash arithmetic would read them as octal.
+        [[ "$2" =~ ^([1-9][0-9]*|0)[smh]?$ ]] || die "unsupported fence duration: $2"
+        FENCE_TIMEOUT="$2"
         shift 2
         ;;
       --settle-timeout)
@@ -1305,12 +1334,197 @@ verify_remote_privilege() {
 }
 
 remote_root_shell() {
-  ssh -o BatchMode=yes "$SSH_TARGET" '
+  ssh -o BatchMode=yes "$@" "$SSH_TARGET" '
     if [[ $(id -u) -eq 0 ]]; then
       exec bash -s
     fi
     exec sudo -n bash -s
   '
+}
+
+# The annotation identifies agent-enabled targets even while the agent is stopped.
+initialize_fence_gate() {
+  local node_json
+
+  node_json=$(kubectl get node "$NODE" -o json) || die "could not read ${NODE} fence annotations"
+  jq -e 'type == "object" and (.metadata | type == "object")
+    and ((.metadata.annotations // {}) | type == "object")' \
+    >/dev/null 2>&1 <<<"$node_json" || die "${NODE}: invalid Node fence metadata"
+  if jq -e '.metadata.annotations // {} | has("fence.alc.xyz/agent-mode")' \
+    >/dev/null <<<"$node_json"; then
+    FENCE_HAS_AGENT=true
+  else
+    FENCE_HAS_AGENT=false
+    log "${NODE} has no self-fence agent annotation; skipping all fence gates"
+  fi
+}
+
+read_fence_status() {
+  FENCE_STATUS_EXIT=0
+  FENCE_STATUS_JSON=$(remote_root_shell -o ConnectTimeout=5 \
+    -o ServerAliveInterval=5 -o ServerAliveCountMax=1 <<'EOF'
+set -euo pipefail
+if ! command -v node-self-fence-status >/dev/null 2>&1; then
+  exit 127
+fi
+exec timeout --kill-after=5s 15s node-self-fence-status --json
+EOF
+  ) || FENCE_STATUS_EXIT=$?
+
+  FENCE_FAILURE=""
+  if [[ "$FENCE_STATUS_EXIT" -eq 127 ]]; then
+    FENCE_FAILURE="${NODE}: self-fence agent is not deployed (node-self-fence-status is missing on ${SSH_TARGET})"
+    return 1
+  fi
+  if ! jq -e -s --arg node "$NODE" '
+    length == 1 and (.[0] | type == "object" and .node == $node
+    and (.states | type == "array" and length > 0)
+    and ([.states[] | select(.self == true)] | length == 1)
+    and ([.states[] | select(.self == true)][0].node == $node))
+  ' >/dev/null 2>&1 <<<"$FENCE_STATUS_JSON"; then
+    FENCE_FAILURE="${NODE}: invalid or unavailable self-fence status (exit ${FENCE_STATUS_EXIT})"
+    return 1
+  fi
+}
+
+# Each diagnostic names the server, falling back to its address for unverified replies.
+fence_state_failures() {
+  jq -r '
+    .states[]
+    | (.node // .address // "unknown server") as $server
+    | if .ok != true then "\($server): unverified fence state (\(.error // "missing ok"))"
+      elif .fenced != false then "\($server): fenced or missing fenced state"
+      elif .classification != "healthy" then "\($server): classification \(.classification // "missing")"
+      elif (.mode != "enforce" and .mode != "observe") then "\($server): agent mode \(.mode // "missing")"
+      elif (has("since_unfence") | not) or (.refence_window | type) != "number"
+        or .refence_window < 0 then "\($server): missing or invalid unfence timing"
+      elif .since_unfence != null then
+        if (.since_unfence | type) != "number" then "\($server): invalid since_unfence"
+        elif .since_unfence < .refence_window then
+          "\($server): recent unfence (\(.since_unfence)s < refence window \(.refence_window)s)"
+        else empty end
+      else empty end
+  ' <<<"$FENCE_STATUS_JSON"
+}
+
+verify_fence_preflight() {
+  local nodes_json failures mode
+
+  initialize_fence_gate
+  [[ "$FENCE_HAS_AGENT" == true ]] || return 0
+  log "checking self-fence preflight on ${NODE} and its peers"
+
+  nodes_json=$(kubectl get nodes -o json) || die "${NODE}: could not check cluster fence annotations/taints"
+  failures=$(jq -r '
+    .items[]
+    | .metadata.name as $node
+    | (if .metadata.annotations["fence.alc.xyz/disabled"] == "true" then
+        "\($node): fence.alc.xyz/disabled=true" else empty end),
+      (if any(.spec.taints[]?; .key == "node.kubernetes.io/out-of-service") then
+        "\($node): node.kubernetes.io/out-of-service taint" else empty end)
+  ' <<<"$nodes_json") || die "${NODE}: invalid cluster fence metadata"
+  [[ -z "$failures" ]] || die "self-fence preflight failed: ${failures}"
+
+  read_fence_status || die "$FENCE_FAILURE"
+  failures=$(fence_state_failures) || die "${NODE}: invalid self-fence states"
+  [[ -z "$failures" ]] || die "self-fence preflight failed: ${failures}"
+  [[ "$FENCE_STATUS_EXIT" -eq 0 ]] || die "${NODE}: node-self-fence-status failed (exit ${FENCE_STATUS_EXIT})"
+  jq -e '.servers == (.states | length)' >/dev/null <<<"$FENCE_STATUS_JSON" ||
+    die "${NODE}: incomplete self-fence server states"
+  # The agent's peer list could miss a server: every control-plane Node must
+  # have reported a verified state.
+  failures=$(jq -r --argjson status "$FENCE_STATUS_JSON" '
+    [$status.states[].node] as $reported
+    | .items[]
+    | select(.metadata.labels["node-role.kubernetes.io/control-plane"] != null)
+    | .metadata.name
+    | select(. as $server | $reported | index($server) | not)
+    | "\(.): control-plane Node has no verified self-fence state"
+  ' <<<"$nodes_json") || die "${NODE}: invalid cluster server list"
+  [[ -z "$failures" ]] || die "self-fence preflight failed: ${failures}"
+
+  mode=$(jq -r '.states[] | select(.self == true) | .mode' <<<"$FENCE_STATUS_JSON")
+  if [[ -z "$FENCE_PREVIOUS_MODE" ]]; then
+    FENCE_PREVIOUS_MODE="$mode"
+  elif [[ "$mode" != "$FENCE_PREVIOUS_MODE" ]]; then
+    die "${NODE}: agent mode changed from ${FENCE_PREVIOUS_MODE} to ${mode} during maintenance"
+  fi
+}
+
+stop_fence_agent() {
+  [[ "$FENCE_HAS_AGENT" == true ]] || return 0
+  local deadline=$((SECONDS + FENCE_STOP_TIMEOUT_SECONDS))
+  local node_json
+  local recovery="${NODE} remains cordoned; inspect node-self-fence and restore it with systemctl start node-self-fence before retrying maintenance"
+
+  # The drain can take many minutes; peers must still be healthy when the
+  # target leaves, or the remaining servers may lose their quorum.
+  verify_fence_preflight
+  log "stopping self-fence agent on ${NODE} before the power action"
+  if ! remote_root_shell -o ConnectTimeout=5 \
+    -o ServerAliveInterval=5 -o ServerAliveCountMax=1 <<'EOF'
+set -euo pipefail
+exec timeout --kill-after=5s 60s systemctl stop node-self-fence
+EOF
+  then
+    die "${NODE}: failed to stop node-self-fence; ${recovery}"
+  fi
+
+  while true; do
+    if node_json=$(kubectl get node "$NODE" -o json --request-timeout=5s) &&
+      jq -e '.metadata.annotations["fence.alc.xyz/agent-mode"] == "stopped"' \
+        >/dev/null <<<"$node_json"; then
+      FENCE_AGENT_STOPPED=true
+      # API-server time of the stop write; a returned heartbeat must be later.
+      FENCE_STOPPED_AT=$(kubectl get node "$NODE" -o json --show-managed-fields=true --request-timeout=5s |
+        jq -r '[.metadata.managedFields[]? | select(.manager == "node-self-fence") | .time
+          | fromdateiso8601] | max // empty') || FENCE_STOPPED_AT=""
+      return 0
+    fi
+    ((SECONDS < deadline)) || die "${NODE}: agent did not publish mode=stopped within ${FENCE_STOP_TIMEOUT_SECONDS}s; ${recovery}"
+    sleep "$POLL_SECONDS"
+  done
+}
+
+wait_for_returned_fence_agent() {
+  [[ "$FENCE_HAS_AGENT" == true ]] || return 0
+  local deadline=$((SECONDS + $(duration_to_seconds "$FENCE_TIMEOUT")))
+  local own_state mode node_json
+
+  log "waiting for ${NODE} healthy self-fence agent and a fresh heartbeat"
+  while true; do
+    if read_fence_status; then
+      if ((FENCE_STATUS_EXIT > 1)); then
+        FENCE_FAILURE="${NODE}: node-self-fence-status failed (exit ${FENCE_STATUS_EXIT})"
+      else
+        own_state=$(jq -c '.states[] | select(.self == true)' <<<"$FENCE_STATUS_JSON")
+        mode=$(jq -r '.mode // "missing"' <<<"$own_state")
+        if ! jq -e '.ok == true and .classification == "healthy" and .fenced == false
+          and (.mode == "enforce" or .mode == "observe")' >/dev/null <<<"$own_state"; then
+          FENCE_FAILURE="${NODE}: own agent is not healthy and unfenced (mode=${mode}, $(jq -r '"ok=\(.ok), classification=\(.classification // "missing"), fenced=\(.fenced), error=\(.error // "none")"' <<<"$own_state"))"
+        elif [[ "$ACTION" != "on" && "$mode" != "$FENCE_PREVIOUS_MODE" ]]; then
+          FENCE_FAILURE="${NODE}: agent mode ${mode} differs from pre-maintenance mode ${FENCE_PREVIOUS_MODE}"
+        elif node_json=$(kubectl get node "$NODE" -o json --show-managed-fields=true --request-timeout=5s) &&
+          jq -e --arg mode "$mode" --arg baseline "$FENCE_STOPPED_AT" '
+            # Compare against the stop write or kon maintenance baseline, both
+            # recorded by the API server. The Ready transition carries the
+            # kubelet clock and is not compared.
+            [.metadata.managedFields[]? | select(.manager == "node-self-fence")
+              | .time | fromdateiso8601] as $heartbeat
+            | .metadata.annotations["fence.alc.xyz/agent-mode"] == $mode
+              and ($heartbeat | length) > 0
+              and ($baseline == "" or ($heartbeat | max) > ($baseline | tonumber))
+          ' >/dev/null 2>&1 <<<"$node_json"; then
+          log "${NODE} self-fence agent recovered in ${mode} mode with a fresh heartbeat"
+          return 0
+        else
+          FENCE_FAILURE="${NODE}: no node-self-fence heartbeat after the maintenance baseline"
+        fi
+      fi
+    fi
+    ((SECONDS < deadline)) || die "${FENCE_FAILURE}; fence recovery timed out after ${FENCE_TIMEOUT}; ${NODE} remains cordoned"
+    sleep "$POLL_SECONDS"
+  done
 }
 
 wait_for_node_storage_detach() {
@@ -1745,6 +1959,7 @@ prepare_node_for_disruption() {
   log "checking Kubernetes node ${NODE}"
   kubectl get node "$NODE" >/dev/null
   verify_remote_privilege
+  verify_fence_preflight
   verify_all_node_network_paths
 
   if [[ "$RESUME_MAINTENANCE" == true ]]; then
@@ -1811,8 +2026,10 @@ run_reboot() {
   trap cleanup_runtime_state EXIT
 
   prepare_node_for_disruption "$WORKLOADS_FILE"
+  stop_fence_agent
   reboot_host
   wait_for_ssh_down
+  FENCE_AGENT_STOPPED=false
   verify_survivor_node_network_paths
   wait_for_ssh_up
   verify_new_boot
@@ -1826,6 +2043,7 @@ run_reboot() {
   if [[ "$LEAVE_CORDONED" == true ]]; then
     log "leaving ${NODE} cordoned"
   else
+    wait_for_returned_fence_agent
     log "uncordoning ${NODE}"
     kubectl uncordon "$NODE"
     settle_cluster "$WORKLOADS_FILE"
@@ -1839,8 +2057,10 @@ run_poweroff() {
   trap cleanup_runtime_state EXIT
 
   prepare_node_for_disruption "$WORKLOADS_FILE"
+  stop_fence_agent
   poweroff_host
   wait_for_ssh_down
+  FENCE_AGENT_STOPPED=false
   verify_survivor_node_network_paths
 
   log "${NODE} is powered off and remains cordoned"
@@ -1854,6 +2074,7 @@ run_poweron_finalize() {
   kubectl get node "$NODE" >/dev/null
 
   wait_for_ssh_up
+  initialize_fence_gate
 
   log "waiting for ${NODE} to report Ready"
   kubectl wait "node/${NODE}" --for=condition=Ready --timeout="$READY_TIMEOUT"
@@ -1863,6 +2084,25 @@ run_poweron_finalize() {
   wait_for_cloudnativepg_survivability
   collect_target_pinned_pending_workloads >"$WORKLOADS_FILE"
 
+  if [[ "$FENCE_HAS_AGENT" == true ]]; then
+    local baseline_value
+    baseline_value="$(date +%s%N)-$$-${RANDOM}"
+    # kon has no stop timestamp from a previous process. A unique annotation
+    # write establishes an API-clock baseline even after an unplanned outage.
+    log "establishing self-fence heartbeat baseline for ${NODE}"
+    kubectl annotate node "$NODE" "fence.alc.xyz/maintenance-baseline=${baseline_value}" \
+      --overwrite --field-manager=k8s-node-reboot --request-timeout=5s >/dev/null ||
+      die "${NODE}: could not establish self-fence heartbeat baseline (annotation write failed); ${NODE} remains cordoned"
+    FENCE_STOPPED_AT=$(kubectl get node "$NODE" -o json --show-managed-fields=true --request-timeout=5s |
+      jq -r '[.metadata.managedFields[]? | select(.manager == "k8s-node-reboot") | .time
+        | fromdateiso8601] | max // empty') || FENCE_STOPPED_AT=""
+    kubectl annotate node "$NODE" fence.alc.xyz/maintenance-baseline- --request-timeout=5s >/dev/null ||
+      die "${NODE}: could not establish self-fence heartbeat baseline (annotation cleanup failed); ${NODE} remains cordoned"
+    [[ -n "$FENCE_STOPPED_AT" ]] ||
+      die "${NODE}: could not establish self-fence heartbeat baseline (API-server timestamp unavailable); ${NODE} remains cordoned"
+  fi
+
+  wait_for_returned_fence_agent
   log "uncordoning ${NODE}"
   kubectl uncordon "$NODE"
 
@@ -1880,6 +2120,7 @@ run_check_only() {
   log "checking Kubernetes node ${NODE} without changing cluster or host state"
   kubectl get node "$NODE" >/dev/null
   verify_remote_privilege
+  verify_fence_preflight
   verify_all_node_network_paths
 
   if [[ "$RESUME_MAINTENANCE" == true ]]; then
