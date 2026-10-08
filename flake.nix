@@ -86,39 +86,18 @@
           t3code = unstablePkgs.callPackage ./pkgs/t3code {
             inherit (allPackages) claude-code codex-cli;
           };
-          t3code-fork-nightly = unstablePkgs.callPackage ./pkgs/t3code/fork.nix {
-            inherit (allPackages) claude-code codex-cli;
-          };
-          t3code-fork = allPackages.t3code-fork-nightly;
-          t3code-fork-stable = unstablePkgs.callPackage ./pkgs/t3code/fork.nix {
-            inherit (allPackages) claude-code codex-cli;
-            forkChannel = "stable";
+          # Profile-installable AI stack, so consumers can update T3 and its
+          # providers without rebuilding anything else.
+          ai-stack-upstream = pkgs.buildEnv {
+            name = "ai-stack-upstream";
+            paths = [
+              allPackages.t3code
+              allPackages.claude-code
+              allPackages.codex-cli
+              allPackages.codex-app-server
+            ];
           };
         }
-        # One profile-installable AI stack per T3 channel, so consumers can
-        # update T3 and its providers without rebuilding anything else.
-        // lib.optionalAttrs (system == "x86_64-linux") (
-          lib.mapAttrs'
-            (
-              channel: t3:
-              lib.nameValuePair "ai-stack-${channel}" (
-                pkgs.buildEnv {
-                  name = "ai-stack-${channel}";
-                  paths = [
-                    t3
-                    allPackages.claude-code
-                    allPackages.codex-cli
-                    allPackages.codex-app-server
-                  ];
-                }
-              )
-            )
-            {
-              upstream = allPackages.t3code;
-              fork-nightly = allPackages.t3code-fork-nightly;
-              fork-stable = allPackages.t3code-fork-stable;
-            }
-        )
         // lib.optionalAttrs (system == "aarch64-darwin") {
           omniwm = pkgs.callPackage ./pkgs/omniwm { };
         }

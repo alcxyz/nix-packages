@@ -15,11 +15,7 @@
   src,
   stdenv,
   t3code,
-  upstreamRevision,
-  variant,
   version,
-  patchHash ? null,
-  patchRevision ? null,
 }:
 
 let
@@ -117,14 +113,7 @@ in
         '';
 
       passthru = (previousAttrs.passthru or { }) // {
-        inherit resourceMonitor;
-        inherit
-          patchHash
-          patchRevision
-          sourceRevision
-          upstreamRevision
-          variant
-          ;
+        inherit resourceMonitor sourceRevision;
         embeddedProviderVersions = {
           claudeCode = claude-code.version;
           codexCli = codex-cli.version;

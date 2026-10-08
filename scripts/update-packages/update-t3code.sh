@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update the published upstream nightly and both validated fork channels.
+# Update the published upstream T3 Code nightly.
 set -euo pipefail
 # shellcheck source=scripts/ci/t3code-nix-home.sh disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../ci/t3code-nix-home.sh"
@@ -7,8 +7,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/../ci/t3code-nix-home.sh"
 PIN_FILE=pkgs/t3code/source.json
 HELPER=scripts/update-packages/t3code-source.py
 FAKE_HASH=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-PREFLIGHT_REPORT="${T3CODE_PREFLIGHT_REPORT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/t3code-patch-preflight.json}"
-rm -f -- "$PREFLIGHT_REPORT"
 work=$(mktemp -d)
 success=false
 cleanup() {
@@ -30,66 +28,22 @@ if [[ "$should_update" == false && "${FORCE_UPDATE:-false}" != true ]]; then
 fi
 cp "$PIN_FILE" "$work/original.json"
 
-prefetch_source() {
-  local owner=$1 revision=$2
-  clean_homeless_shelter
-  nix store prefetch-file --unpack --json "https://github.com/${owner}/t3code/archive/${revision}.tar.gz" |
+clean_homeless_shelter
+source_hash=$(
+  nix store prefetch-file --unpack --json \
+    "https://github.com/pingdotgg/t3code/archive/$(jq -r .revision "$work/target.json").tar.gz" |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["hash"])'
-}
-
-upstream_hash=$(prefetch_source pingdotgg "$(jq -r .revision "$work/target.json")")
-nightly_hash=$(prefetch_source alcxyz "$(jq -r .forks.nightly.revision "$work/target.json")")
-stable_hash=$(prefetch_source alcxyz "$(jq -r .forks.stable.revision "$work/target.json")")
-python3 - "$work/hashes.json" "$upstream_hash" "$nightly_hash" "$stable_hash" "$FAKE_HASH" <<'PY'
-import json, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-_, upstream, nightly, stable, fake = sys.argv[1:]
-path.write_text(json.dumps({channel: {"hash": value, "cargoHash": fake, "pnpmDepsHash": fake}
-                            for channel, value in (("upstream", upstream), ("nightly", nightly), ("stable", stable))}))
-PY
+)
+jq -n --arg hash "$source_hash" --arg fake "$FAKE_HASH" \
+  '{hash: $hash, cargoHash: $fake, pnpmDepsHash: $fake}' >"$work/hashes.json"
 
 stage() {
-  python3 "$HELPER" materialize "$PIN_FILE" "$work/target.json" "$work/hashes.json" "$work/original.json"
+  python3 "$HELPER" materialize "$PIN_FILE" "$work/target.json" "$work/hashes.json"
 }
 set_hash() {
-  python3 - "$work/hashes.json" "$1" "$2" "$3" <<'PY'
-import json, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-hashes = json.loads(path.read_text())
-hashes[sys.argv[2]][sys.argv[3]] = sys.argv[4]
-path.write_text(json.dumps(hashes))
-PY
+  jq --arg field "$1" --arg value "$2" '.[$field] = $value' "$work/hashes.json" >"$work/hashes.next"
+  mv "$work/hashes.next" "$work/hashes.json"
   stage
-}
-report_preflight() {
-  python3 - "$PREFLIGHT_REPORT" "$1" "$2" <<'PY'
-import json, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-report = json.loads(path.read_text()) if path.exists() else {
-    "schemaVersion": 2, "check": "t3code-fork-quota-patch-application",
-    "scope": "quota-patch-application-only", "channels": {}, "fullBuildValidated": False,
-}
-report["channels"][sys.argv[2]] = {"status": "passed" if sys.argv[3] == "0" else "failed",
-                                      "exitCode": int(sys.argv[3])}
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(report, indent=2) + "\n")
-PY
-}
-preflight() {
-  local channel=$1 status=0 log
-  log=$(mktemp)
-  clean_homeless_shelter
-  nix build -L ".#t3code-fork-${channel}.src" --no-link 2>"$log" || status=$?
-  cat "$log" >&2
-  rm -f "$log"
-  report_preflight "$channel" "$status"
-  if ((status != 0)); then
-    echo "T3 Code ${channel} quota patch failed; stopping before dependency hash builds." >&2
-    return "$status"
-  fi
 }
 collect_hash() {
   local attr=$1 label=$2 log hash
@@ -112,24 +66,9 @@ collect_hash() {
 }
 
 stage
-for channel in nightly stable; do
-  preflight "$channel"
-done
-for channel in upstream nightly stable; do
-  attr=t3code
-  [[ "$channel" == upstream ]] || attr="t3code-fork-${channel}"
-  set_hash "$channel" cargoHash "$(collect_hash ".#${attr}.resourceMonitor" "${channel} cargoHash")"
-  set_hash "$channel" pnpmDepsHash "$(collect_hash ".#${attr}.pnpmDeps" "${channel} pnpmDepsHash")"
-done
+set_hash cargoHash "$(collect_hash .#t3code.resourceMonitor cargoHash)"
+set_hash pnpmDepsHash "$(collect_hash .#t3code.pnpmDeps pnpmDepsHash)"
 T3CODE_VERIFY_ALWAYS=true scripts/ci/verify-t3code-providers.sh
 success=true
-upstream_version=$(jq -r .version "$work/target.json")
-nightly_version=$(jq -r .forks.nightly.version "$work/target.json")
-stable_version=$(jq -r .forks.stable.version "$work/target.json")
-nightly_revision=$(jq -r .forks.nightly.revision "$work/target.json")
-stable_revision=$(jq -r .forks.stable.revision "$work/target.json")
-{
-  echo 'updated=true'
-  echo "version=${upstream_version} + fork nightly ${nightly_version} + stable ${stable_version}"
-  echo "upstream_url=https://github.com/pingdotgg/t3code/releases/tag/v${upstream_version} and fork nightly https://github.com/alcxyz/t3code/commit/${nightly_revision} and stable https://github.com/alcxyz/t3code/commit/${stable_revision}"
-} >>"${GITHUB_OUTPUT:-/dev/null}"
+version=$(jq -r .version "$work/target.json")
+printf 'updated=true\nversion=%s\n' "$version" >>"${GITHUB_OUTPUT:-/dev/null}"

@@ -287,20 +287,18 @@ assert_not_called 'mac-only'
 for provider_input in verify-t3code-providers t3code-nix-home ephemeral-nix-home; do
   new_case "provider-input-${provider_input}"
   change_file "scripts/ci/${provider_input}.sh"
-  printf '{"x86_64-linux":["t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+  printf '{"x86_64-linux":["t3code"],"aarch64-darwin":["t3code"]}\n' >exports
   run_case 0
   assert_called 'build .#packages.x86_64-linux.t3code -L'
-  assert_called 'build .#packages.x86_64-linux.t3code-fork -L'
 done
 
 for input in claude-code codex-cli; do
   new_case "reverse-dependency-${input}"
   change_file "pkgs/${input}/default.nix"
-  printf '{"x86_64-linux":["%s","t3code","t3code-fork"],"aarch64-darwin":["%s","t3code","t3code-fork"]}\n' "$input" "$input" >exports
+  printf '{"x86_64-linux":["%s","t3code"],"aarch64-darwin":["%s","t3code"]}\n' "$input" "$input" >exports
   run_case 0
   assert_called "build .#packages.x86_64-linux.${input} -L"
   assert_called 'build .#packages.x86_64-linux.t3code -L'
-  assert_called 'build .#packages.x86_64-linux.t3code-fork -L'
   assert_called "eval .#packages.aarch64-darwin.${input}.drvPath"
   assert_not_called 'widget'
 done
@@ -370,7 +368,7 @@ new_case plan-reverse-dependencies
 change_file pkgs/claude-code/default.nix
 export PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
 run_case 0
-printf '%s\n' claude-code t3code t3code-fork t3code-fork-nightly t3code-fork-stable >expected-plan
+printf '%s\n' claude-code t3code >expected-plan
 diff -u expected-plan plan
 assert_not_called 'eval .#packages'
 assert_not_called 'build '
@@ -436,7 +434,7 @@ sed -n 's/^::group::changed package //p' output >"$partition_root/shard-3-repeat
 diff -u "$partition_root/shard-3" "$partition_root/shard-3-repeat"
 
 new_case full-matrix-t3-shards
-printf '{"x86_64-linux":["alpha","t3code","t3code-fork"],"aarch64-darwin":["t3code","t3code-fork"]}\n' >exports
+printf '{"x86_64-linux":["alpha","beta","t3code"],"aarch64-darwin":["t3code"]}\n' >exports
 change_file flake.lock
 export PACKAGE_BUILD_SHARD_COUNT=2 PACKAGE_BUILD_SELECTED_FILE=selected
 for shard in 0 1; do
@@ -445,14 +443,8 @@ for shard in 0 1; do
   cp selected "shard-$shard"
 done
 cat shard-0 shard-1 | sort >actual
-printf '%s\n' alpha t3code t3code-fork | sort >expected
+printf '%s\n' alpha beta t3code >expected
 diff -u expected actual
-if grep -Fqx t3code shard-0; then
-  grep -Fqx t3code-fork shard-1
-else
-  grep -Fqx t3code shard-1
-  grep -Fqx t3code-fork shard-0
-fi
 
 for invalid in \
   'selected 0 0' \
@@ -516,30 +508,20 @@ printf '{"x86_64-linux":["openzfs_7_1"]}\n' >exports
 run_case 0
 assert_called 'build .#packages.x86_64-linux.openzfs_7_1 -L'
 
-new_case t3-fork-only
-change_file pkgs/t3code/patches/fork-only.patch
-printf '{"x86_64-linux":["t3code","t3code-fork"]}\n' >exports
-run_case 0
-assert_called 'build .#packages.x86_64-linux.t3code-fork -L'
-assert_not_called '.#packages.aarch64-darwin.t3code'
-assert_not_called '.#packages.x86_64-linux.t3code.pnpmDeps'
-assert_not_called '.#packages.x86_64-linux.t3code.resourceMonitor'
-assert_not_called '.#packages.x86_64-linux.t3code -L'
-
 new_case t3-shared-source
 prepare_cleanup_fixture
 touch "$test_root/.dockerenv"
 export NIX_CI_EPHEMERAL_CONTAINER=1
 export MOCK_RECREATE_HOME_AFTER_BUILD=true
 change_file pkgs/t3code/source.json
-printf '{"x86_64-linux":["t3code","t3code-fork","t3code-fork-nightly","t3code-fork-stable"]}\n' >exports
+printf '{"x86_64-linux":["t3code"]}\n' >exports
 run_case 0
 python3 - <<'PYTEST'
 from pathlib import Path
 calls = Path("calls").read_text().splitlines()
 expected = [
     f"build .#packages.x86_64-linux.{flavor}{suffix} -L"
-    for flavor in ("t3code", "t3code-fork", "t3code-fork-nightly", "t3code-fork-stable")
+    for flavor in ("t3code",)
     for suffix in (".pnpmDeps --no-link", ".resourceMonitor --no-link", "")
 ]
 actual = [call for call in calls if call.startswith("build .#packages.x86_64-linux.t3code")]
@@ -553,11 +535,10 @@ assert_not_called 'build .#packages.aarch64-darwin.'
 
 new_case t3-dependency-failure
 change_file pkgs/t3code/default.nix
-printf '{"x86_64-linux":["t3code","t3code-fork"]}\n' >exports
+printf '{"x86_64-linux":["t3code"]}\n' >exports
 export MOCK_FAIL_BUILD='.#packages.x86_64-linux.t3code.resourceMonitor'
 run_case 43
 assert_called 'build .#packages.x86_64-linux.t3code.pnpmDeps --no-link -L'
 assert_not_called 'build .#packages.x86_64-linux.t3code -L'
-assert_not_called 'build .#packages.x86_64-linux.t3code-fork'
 
 echo 'Changed-package validation regression tests passed.'

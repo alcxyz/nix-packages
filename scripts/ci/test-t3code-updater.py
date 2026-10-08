@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline release, promotion, and pin checks for T3 Code."""
+"""Offline release and pin checks for T3 Code."""
 import base64
 import importlib.util
 import json
@@ -27,45 +27,19 @@ HASH = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 GOT_HASH = "sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
 
 
-def promotion(channel, version, revision, baseline, feature="e" * 40):
-    return {"channel": channel, "releaseTag": "v" + version, "version": version,
-            "revision": revision, "upstreamRevision": baseline, "featureRevision": feature}
-
-
 def pin():
     return {
         "version": "0.0.44-nightly.20260929.2456", "revision": "a" * 40,
         "hash": HASH, "cargoHash": HASH, "pnpmDepsHash": HASH,
-        "forks": {
-            channel: {key: value for key, value in promotion(channel, version, revision, "a" * 40).items()
-                      if key != "channel"} | {
-                          "hash": HASH, "cargoHash": HASH, "pnpmDepsHash": HASH, "patchRevision": 3
-                      }
-            for channel, version, revision in (
-                ("nightly", "0.0.44-nightly.20260929.2456", "b" * 40),
-                ("stable", "0.0.44", "c" * 40),
-            )
-        },
-    }
-
-
-def legacy_pin():
-    return {
-        "version": "0.0.43-nightly.20260929.2450", "revision": "f" * 40,
-        "hash": HASH, "cargoHash": HASH, "pnpmDepsHash": HASH,
-        "forkVersion": "0.0.42", "forkRevision": "d" * 40,
-        "forkUpstreamRevision": "e" * 40, "forkHash": HASH,
-        "forkCargoHash": HASH, "forkPnpmDepsHash": HASH, "forkPatchRevision": 23,
     }
 
 
 def target(value):
-    return {"version": value["version"], "revision": value["revision"],
-            "forks": {channel: source.validate_promotion(
-                {"channel": channel, **{key: fork[key] for key in source.PROMOTION_FIELDS - {"channel"}}},
-                channel,
-            ) | {"revision": fork["revision"]}
-            for channel, fork in value["forks"].items()}}
+    return {"version": value["version"], "revision": value["revision"]}
+
+
+def newer_target():
+    return {"version": "0.0.45-nightly.20260930.1", "revision": "f" * 40}
 
 
 def encoded(data):
@@ -82,71 +56,6 @@ class T3SourceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             source.select_nightly([stable, draft])
 
-    def test_metadata_requires_exact_channel_tag_and_full_revisions(self):
-        valid = promotion("nightly", "0.0.44-nightly.20260929.2456", "b" * 40, "a" * 40)
-        valid.pop("revision")
-        self.assertEqual(source.validate_promotion(valid, "nightly"), valid)
-        for changed in (
-            {"channel": "stable"}, {"releaseTag": "v0.0.43"},
-            {"version": "0.0.44"}, {"featureRevision": "main"}, {"extra": True},
-        ):
-            with self.subTest(changed=changed), self.assertRaises(ValueError):
-                source.validate_promotion(valid | changed, "nightly")
-        with self.assertRaises(ValueError):
-            source.validate_promotion(valid | {"channel": "stable"}, "stable")
-
-    def test_resolves_promoted_head_against_published_exact_tag_commit(self):
-        version = "0.0.44"
-        baseline = "a" * 40
-        head = "b" * 40
-        feature = "c" * 40
-        metadata = promotion("stable", version, head, baseline, feature)
-        metadata.pop("revision")
-        calls = []
-
-        def request(owner, path):
-            calls.append((owner, path))
-            if path == "git/ref/heads/fork/stable":
-                return {"object": {"type": "commit", "sha": head}}
-            if path.startswith("contents/"):
-                self.assertTrue(path.endswith("?ref=" + head))
-                return encoded(metadata)
-            if path == "commits/" + feature:
-                return {"sha": feature}
-            if path == "releases/tags/v" + version:
-                return {"tag_name": "v" + version, "draft": False, "prerelease": False}
-            if path == "git/ref/tags/v" + version:
-                return {"object": {"type": "commit", "sha": baseline}}
-            if path.startswith("compare/"):
-                return {"status": "ahead", "merge_base_commit": {"sha": baseline}}
-            raise AssertionError((owner, path))
-
-        self.assertEqual(source.resolve_fork_promotion("stable", request), metadata | {"revision": head})
-        self.assertIn(("alcxyz", f"compare/{baseline}...{head}"), calls)
-        self.assertNotIn(("alcxyz", f"compare/{feature}...{head}"), calls)
-
-        def wrong_baseline(owner, path):
-            value = request(owner, path)
-            if path == "git/ref/tags/v" + version:
-                return {"object": {"type": "commit", "sha": "d" * 40}}
-            return value
-        with self.assertRaisesRegex(ValueError, "exact upstream release tag"):
-            source.resolve_fork_promotion("stable", wrong_baseline)
-
-        def missing_feature(owner, path):
-            value = request(owner, path)
-            return {"sha": "d" * 40} if path == "commits/" + feature else value
-        with self.assertRaisesRegex(ValueError, "exact fork commit"):
-            source.resolve_fork_promotion("stable", missing_feature)
-
-        def divergent(owner, path):
-            value = request(owner, path)
-            if path.startswith("compare/"):
-                return {"status": "diverged", "merge_base_commit": {"sha": "d" * 40}}
-            return value
-        with self.assertRaisesRegex(ValueError, "does not descend"):
-            source.resolve_fork_promotion("stable", divergent)
-
     def test_annotated_and_lightweight_release_tags(self):
         commit = "a" * 40
         tag_object = "b" * 40
@@ -162,41 +71,18 @@ class T3SourceTests(unittest.TestCase):
         self.assertEqual(source.resolve_tag("0.0.44", request), commit)
         self.assertEqual(calls[-1], ("pingdotgg", "git/tags/" + tag_object))
 
-    def test_nightly_promotion_requires_published_matching_release(self):
+    def test_discovers_newest_published_nightly_tag_commit(self):
         version = "0.0.44-nightly.20260929.2456"
-        baseline = "a" * 40
-        head = "b" * 40
-        metadata = promotion("nightly", version, head, baseline)
-        metadata.pop("revision")
-
         def request(owner, path):
-            if path == "git/ref/heads/fork/nightly":
-                return {"object": {"type": "commit", "sha": head}}
-            if path.startswith("contents/"):
-                return encoded(metadata)
-            if path == "commits/" + metadata["featureRevision"]:
-                return {"sha": metadata["featureRevision"]}
-            if path == "releases/tags/v" + version:
-                return {"tag_name": "v" + version, "draft": False, "prerelease": True}
+            self.assertEqual(owner, "pingdotgg")
+            if path.startswith("releases?"):
+                return [{"tag_name": "v" + version, "published_at": "2026-09-29T02:00:00Z", "draft": False}]
             if path == "git/ref/tags/v" + version:
-                return {"object": {"type": "commit", "sha": baseline}}
-            if path.startswith("compare/"):
-                return {"status": "ahead", "merge_base_commit": {"sha": baseline}}
-            raise AssertionError((owner, path))
-        self.assertEqual(source.resolve_fork_promotion("nightly", request)["revision"], head)
-
-        def draft(owner, path):
-            value = request(owner, path)
-            return value | {"draft": True} if path == "releases/tags/v" + version else value
-        with self.assertRaisesRegex(ValueError, "published upstream release"):
-            source.resolve_fork_promotion("nightly", draft)
-
-    def test_decodes_wrapped_metadata_content(self):
-        metadata = promotion("stable", "0.0.44", "b" * 40, "a" * 40)
-        response = encoded(metadata)
-        content = response["content"]
-        response["content"] = content[:20] + "\n" + content[20:]
-        self.assertEqual(source.decode_content(response), metadata)
+                return {"object": {"type": "commit", "sha": "a" * 40}}
+            raise AssertionError(path)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("T3CODE_VERSION", None)
+            self.assertEqual(source.discover_target(request), {"version": version, "revision": "a" * 40})
 
     def test_pin_validation_and_atomic_write(self):
         value = pin()
@@ -206,141 +92,50 @@ class T3SourceTests(unittest.TestCase):
             original = path.read_bytes()
             for changed in (
                 {"hash": "sha256-"},
-                {"forks": value["forks"] | {"stable": value["forks"]["stable"] | {"releaseTag": "v0.0.43"}}},
-                {"forks": value["forks"] | {"stable": value["forks"]["stable"] | {"patchRevision": True}}},
+                {"revision": "main"},
+                {"version": "latest"},
+                {"forks": {}},
             ):
-                with self.assertRaises(ValueError):
+                with self.subTest(changed=changed), self.assertRaises(ValueError):
                     source.write_pin(path, value | changed)
                 self.assertEqual(path.read_bytes(), original)
 
-    def test_legacy_pin_requires_bootstrap_and_is_not_called_nightly(self):
-        value = legacy_pin()
-        self.assertNotIn("forks", source.validate_pin(value))
-        current_target = target(pin())
-        self.assertTrue(source.decide(value, current_target))
-        hashes = {channel: {"hash": HASH, "cargoHash": HASH, "pnpmDepsHash": HASH}
-                  for channel in ("upstream", "nightly", "stable")}
-        result = source.materialize(value, current_target, hashes)
-        self.assertEqual(result["forks"]["nightly"]["patchRevision"], value["forkPatchRevision"] + 1)
-        self.assertEqual(result["forks"]["stable"]["patchRevision"], 1)
-        self.assertEqual(result["forks"]["stable"]["version"], "0.0.44")
-
     def test_unchanged_open_pr_skips_rebuild_and_versions_cannot_regress(self):
         installed = pin()
-        candidate = target(installed)
-        self.assertFalse(source.decide(installed, candidate))
-        self.assertFalse(source.decide(installed, candidate, installed))
-        changed = json.loads(json.dumps(candidate))
-        changed["forks"]["nightly"]["revision"] = "d" * 40
+        self.assertFalse(source.decide(installed, target(installed)))
+        changed = newer_target()
         self.assertTrue(source.decide(installed, changed))
-        pending = json.loads(json.dumps(installed))
-        pending["forks"]["nightly"]["revision"] = "d" * 40
+        pending = installed | changed
         self.assertFalse(source.decide(installed, changed, pending))
-        changed["forks"]["stable"]["version"] = "0.0.43"
-        changed["forks"]["stable"]["releaseTag"] = "v0.0.43"
-        with self.assertRaisesRegex(ValueError, "stable fork version regression"):
-            source.decide(installed, changed)
-        changed = target(installed)
-        changed["forks"]["nightly"]["version"] = "0.0.44-nightly.20260929.2455"
-        changed["forks"]["nightly"]["releaseTag"] = "v0.0.44-nightly.20260929.2455"
-        with self.assertRaisesRegex(ValueError, "nightly fork version regression"):
-            source.decide(installed, changed)
-        changed = target(installed)
-        changed["version"] = "0.0.43-nightly.20260928.1"
+        regressed = target(installed) | {"version": "0.0.43-nightly.20260928.1"}
         with self.assertRaisesRegex(ValueError, "upstream T3 version regression"):
-            source.decide(installed, changed)
+            source.decide(installed, regressed)
+        with self.assertRaisesRegex(ValueError, "upstream T3 version regression"):
+            source.decide(installed, target(installed), pending)
 
-    def test_each_channel_revision_increases_independently(self):
+    def test_materialize_combines_target_and_hashes(self):
+        hashes = {"hash": GOT_HASH, "cargoHash": HASH, "pnpmDepsHash": HASH}
+        result = source.materialize(newer_target(), hashes)
+        self.assertEqual(result, newer_target() | hashes)
+        with self.assertRaisesRegex(ValueError, "all source and dependency hashes"):
+            source.materialize(newer_target(), {"hash": GOT_HASH})
+
+    def test_probe_exports_update_decision(self):
         installed = pin()
-        candidate = target(installed)
-        hashes = {channel: {"hash": HASH, "cargoHash": HASH, "pnpmDepsHash": HASH}
-                  for channel in ("upstream", "nightly", "stable")}
-        unchanged = source.materialize(installed, candidate, hashes)
-        self.assertEqual(unchanged["forks"]["nightly"]["patchRevision"], 3)
-        self.assertEqual(unchanged["forks"]["stable"]["patchRevision"], 3)
-        candidate["forks"]["nightly"]["revision"] = "d" * 40
-        updated = source.materialize(installed, candidate, hashes)
-        self.assertEqual(updated["forks"]["nightly"]["patchRevision"], 4)
-        self.assertEqual(updated["forks"]["stable"]["patchRevision"], 3)
-
-    def test_lagging_stable_promotion_can_remain_pinned(self):
-        installed = pin()
-        candidate = target(installed)
-        candidate["version"] = "0.0.45-nightly.20260930.1"
-        candidate["revision"] = "f" * 40
-        candidate["forks"]["nightly"]["version"] = candidate["version"]
-        candidate["forks"]["nightly"]["releaseTag"] = "v" + candidate["version"]
-        candidate["forks"]["nightly"]["upstreamRevision"] = candidate["revision"]
-        candidate["forks"]["nightly"]["revision"] = "d" * 40
-        self.assertTrue(source.decide(installed, candidate))
-        hashes = {channel: {"hash": HASH, "cargoHash": HASH, "pnpmDepsHash": HASH}
-                  for channel in ("upstream", "nightly", "stable")}
-        result = source.materialize(installed, candidate, hashes)
-        self.assertEqual(result["forks"]["stable"], installed["forks"]["stable"])
-        self.assertEqual(result["forks"]["nightly"]["patchRevision"], 4)
-
-    def test_lagging_channels_report_only_overdue_unpromoted_releases(self):
-        installed = pin()
-        candidate = target(installed)
-        now = source.datetime.datetime(2026, 10, 1, 12, tzinfo=source.datetime.timezone.utc)
-        max_lag = source.datetime.timedelta(hours=12)
-
-        def release(version, published, **extra):
-            return {"tag_name": "v" + version, "published_at": published,
-                    "draft": False, "prerelease": "-" in version} | extra
-
-        current = [
-            release("0.0.44", "2026-09-29T20:00:00Z"),
-            release("0.0.44-nightly.20260929.2456", "2026-09-29T19:00:00Z"),
-            release("0.0.45-nightly.20261001.2539", "2026-10-01T06:00:00Z"),
-            release("0.0.45-preview.20261001.2518", "2026-09-30T00:00:00Z"),
-            release("0.0.46", "2026-09-30T00:00:00Z", draft=True),
-            release("0.0.47", "2026-09-30T00:00:00Z", prerelease=True),
-        ]
-        self.assertEqual(source.lagging_channels(current, candidate, now, max_lag), [])
-
-        overdue = current + [
-            release("0.0.45", "2026-09-30T23:00:00Z"),
-            release("0.0.45-nightly.20260930.2510", "2026-09-30T23:59:00Z"),
-        ]
-        lagging = source.lagging_channels(overdue, candidate, now, max_lag)
-        self.assertEqual(len(lagging), 2)
-        self.assertTrue(lagging[0].startswith("nightly fork is at 0.0.44-nightly.20260929.2456; "
-                                              "0.0.45-nightly.20260930.2510"))
-        self.assertTrue(lagging[1].startswith("stable fork is at 0.0.44; 0.0.45 "))
-
-        candidate["forks"]["stable"]["version"] = "0.0.45"
-        self.assertEqual(len(source.lagging_channels(overdue, candidate, now, max_lag)), 1)
-
-        boundary = [release("0.0.45", "2026-10-01T00:00:00Z")]
-        candidate = target(installed)
-        self.assertEqual(len(source.lagging_channels(boundary, candidate, now, max_lag)), 1)
-        self.assertEqual(source.lagging_channels(boundary, candidate, now, max_lag + max_lag / 720), [])
-
-    def test_probe_exports_fork_lag_from_the_fetched_release_list(self):
-        installed = pin()
-        releases = [{"tag_name": "v0.0.45", "published_at": "2026-09-01T00:00:00Z",
-                     "draft": False, "prerelease": False}]
-        for releases_seen, expected in ((releases, "true"), ([], "false")):
+        for candidate, expected in ((newer_target(), "true"), (target(installed), "false")):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory:
                 pin_path = Path(directory) / "source.json"
                 pin_path.write_text(json.dumps(installed))
                 output = Path(directory) / "output"
-                calls = []
-
-                def discover(releases=None):
-                    calls.append(releases)
-                    return target(installed)
-
                 with mock.patch.object(probe, "PIN_PATH", str(pin_path)), \
                         mock.patch.object(probe, "open_update_pr", return_value=None), \
-                        mock.patch.object(probe.source, "upstream_releases", return_value=releases_seen), \
-                        mock.patch.object(probe.source, "discover_target", discover), \
+                        mock.patch.object(probe.source, "discover_target", return_value=candidate), \
                         mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
                         mock.patch("sys.stdout"):
                     probe.main()
-                self.assertIs(calls[0], releases_seen)
-                self.assertIn(f"fork_lagging={expected}", output.read_text().splitlines())
+                lines = output.read_text().splitlines()
+                self.assertIn(f"should_run={expected}", lines)
+                self.assertIn("existing_update_pr=false", lines)
 
     def test_probe_reads_immutable_pr_head_and_skips_identical_candidate(self):
         installed = pin()
@@ -391,16 +186,11 @@ if sys.argv[1] == "target":
 else:
     os.execv(sys.executable, [sys.executable, "scripts/update-packages/real-helper.py", *sys.argv[1:]])
 ''')
-            original_pin = source.validate_pin(legacy_pin())
-            candidate = target(pin())
+            original_pin = pin()
+            candidate = target(original_pin) if current else newer_target()
             (root / "target.json").write_text(json.dumps(candidate))
             pin_path = root / "pkgs/t3code/source.json"
-            if current:
-                hashes = {channel: {"hash": GOT_HASH, "cargoHash": GOT_HASH, "pnpmDepsHash": GOT_HASH}
-                          for channel in ("upstream", "nightly", "stable")}
-                source.write_pin(pin_path, source.materialize(original_pin, candidate, hashes))
-            else:
-                source.write_pin(pin_path, original_pin)
+            source.write_pin(pin_path, original_pin)
             initial = pin_path.read_bytes()
             nix = root / "bin/nix"
             nix.write_text('''#!/usr/bin/env python3
@@ -410,10 +200,6 @@ with pathlib.Path("nix-calls").open("a") as calls:
     calls.write(" ".join(args) + "\\n")
 if args[:2] == ["store", "prefetch-file"]:
     print(json.dumps({"hash": "''' + GOT_HASH + '''"}))
-elif args[:2] == ["build", "-L"] and args[2].endswith(".src"):
-    if os.environ.get("FAILURE") == "preflight-" + args[2].split("fork-")[-1].split(".")[0]:
-        print("quota patch failed", file=sys.stderr)
-        sys.exit(23)
 else:
     if os.environ.get("FAILURE") == "hash" and "resourceMonitor" in args[2]:
         print("hash unavailable", file=sys.stderr)
@@ -429,13 +215,10 @@ touch verified
 ''')
             verify.chmod(0o755)
             output = root / "output"
-            report = root / "report.json"
-            if failure == "discovery":
-                report.write_text('{"status": "stale"}\n')
             result = subprocess.run(
                 ["bash", "scripts/update-packages/update-t3code.sh"], cwd=root,
                 env=os.environ | {"PATH": str(root / "bin") + ":" + os.environ["PATH"],
-                                  "GITHUB_OUTPUT": str(output), "T3CODE_PREFLIGHT_REPORT": str(report),
+                                  "GITHUB_OUTPUT": str(output),
                                   "T3CODE_CI_CLEAN_HOME": "false", "NIX_CI_EPHEMERAL_CONTAINER": "0",
                                   "FAILURE": failure or ""},
                 capture_output=True, text=True,
@@ -452,18 +235,11 @@ touch verified
                 self.assertFalse(output.exists())
                 if failure == "discovery":
                     self.assertIn("discovery unavailable", result.stderr)
-                    self.assertFalse(report.exists())
                     self.assertFalse((root / "nix-calls").exists())
                     return
                 calls = (root / "nix-calls").read_text()
-                if failure.startswith("preflight-"):
-                    channel = failure.removeprefix("preflight-")
-                    self.assertEqual(json.loads(report.read_text())["channels"][channel]["status"], "failed")
-                    self.assertNotIn("resourceMonitor", calls)
-                    self.assertNotIn("pnpmDeps", calls)
-                    self.assertFalse((root / "verified").exists())
-                elif failure == "hash":
-                    self.assertIn("resourceMonitor", calls)
+                if failure == "hash":
+                    self.assertIn(".#t3code.resourceMonitor", calls)
                     self.assertNotIn("pnpmDeps", calls)
                     self.assertFalse((root / "verified").exists())
                 elif failure == "verify":
@@ -471,26 +247,22 @@ touch verified
                 return
             self.assertEqual(result.returncode, 0, result.stderr)
             installed = source.validate_pin(json.loads(pin_path.read_text()))
-            self.assertEqual(installed["forks"]["nightly"]["hash"], GOT_HASH)
-            self.assertEqual(installed["forks"]["stable"]["pnpmDepsHash"], GOT_HASH)
-            self.assertEqual(installed["forks"]["nightly"]["patchRevision"], original_pin["forkPatchRevision"] + 1)
+            self.assertEqual(installed, candidate | {
+                "hash": GOT_HASH, "cargoHash": GOT_HASH, "pnpmDepsHash": GOT_HASH,
+            })
             self.assertTrue((root / "verified").exists())
             calls = (root / "nix-calls").read_text()
-            for channel in ("nightly", "stable"):
-                self.assertLess(calls.index(f".#t3code-fork-{channel}.src"),
-                                calls.index(f".#t3code-fork-{channel}.resourceMonitor"))
-            self.assertIn("updated=true", output.read_text())
+            self.assertIn("pingdotgg/t3code/archive/" + candidate["revision"], calls)
+            self.assertNotIn("alcxyz", calls)
+            self.assertLess(calls.index(".#t3code.resourceMonitor"), calls.index(".#t3code.pnpmDeps"))
+            self.assertEqual(output.read_text().splitlines(),
+                             ["updated=true", "version=" + candidate["version"]])
 
-    def test_success_bootstraps_complete_channel_pins(self):
+    def test_success_pins_published_upstream_nightly(self):
         self.run_updater()
 
     def test_unchanged_candidate_skips_nix(self):
         self.run_updater(current=True)
-
-    def test_each_patch_failure_restores_previous_pin(self):
-        for channel in ("nightly", "stable"):
-            with self.subTest(channel=channel):
-                self.run_updater(failure="preflight-" + channel)
 
     def test_missing_dependency_hash_restores_previous_pin(self):
         self.run_updater(failure="hash")
@@ -498,7 +270,7 @@ touch verified
     def test_runtime_validation_failure_restores_previous_pin(self):
         self.run_updater(failure="verify")
 
-    def test_discovery_failure_clears_stale_preflight_report(self):
+    def test_discovery_failure_leaves_pin_untouched(self):
         self.run_updater(failure="discovery")
 
 

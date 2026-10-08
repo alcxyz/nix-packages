@@ -3,19 +3,13 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
-fork_flavors=(t3code-fork-nightly t3code-fork-stable)
-flavors=(t3code t3code-fork "${fork_flavors[@]}")
+flavors=(t3code)
 if [[ -n "${PACKAGE_BUILD_SELECTED_FILE:-}" ]]; then
   [[ -f "$PACKAGE_BUILD_SELECTED_FILE" ]] || {
     echo "Selected package list is missing: $PACKAGE_BUILD_SELECTED_FILE" >&2
     exit 2
   }
-  flavors=()
-  for flavor in t3code t3code-fork "${fork_flavors[@]}"; do
-    if grep -Fqx "$flavor" "$PACKAGE_BUILD_SELECTED_FILE"; then
-      flavors+=("$flavor")
-    fi
-  done
+  grep -Fqx t3code "$PACKAGE_BUILD_SELECTED_FILE" || flavors=()
 elif [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
   plan_file=$(mktemp)
   trap 'rm -f "$plan_file"' EXIT
@@ -26,18 +20,7 @@ elif [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
     PACKAGE_BUILD_PLAN_FILE="$plan_file" \
     "$script_dir/build-changed-packages.sh"
 
-  flavors=()
-  if grep -Fqx '*' "$plan_file"; then
-    flavors=(t3code t3code-fork "${fork_flavors[@]}")
-  else
-    grep -Fqx t3code "$plan_file" && flavors+=(t3code)
-    for flavor in t3code-fork "${fork_flavors[@]}"; do
-      if grep -Fqx "$flavor" "$plan_file"; then
-        flavors+=("$flavor")
-      fi
-    done
-  fi
-
+  grep -Fqx -e '*' -e t3code "$plan_file" || flavors=()
 fi
 if ((${#flavors[@]} == 0)); then
   echo "No T3 Code provider inputs changed; skipping provider closure verification."

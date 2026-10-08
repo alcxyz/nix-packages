@@ -131,7 +131,7 @@ The flake explicitly exports the following combinations. "All four" means
 | `herdr` | Both Linux systems, `aarch64-darwin` |
 | `helium`, `default` | `x86_64-linux`, both Darwin systems |
 | `ghostty` | Both Darwin systems |
-| `t3code`, `t3code-fork`, `t3code-fork-nightly`, `t3code-fork-stable` | `x86_64-linux` |
+| `t3code`, `ai-stack-upstream` | `x86_64-linux` |
 | `omniwm` | `aarch64-darwin` |
 | `ledger-live`, `wcap`, `zen-browser` | `x86_64-linux` |
 

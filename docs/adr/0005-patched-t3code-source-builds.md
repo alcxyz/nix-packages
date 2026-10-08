@@ -1,4 +1,4 @@
-# ADR-0005: Patched T3 Code Source Builds
+# ADR-0005: T3 Code Source Builds
 
 **Status:** Accepted
 **Date:** 2026-07-11
@@ -9,15 +9,22 @@
 **Amended:** 2026-09-21
 **Amended:** 2026-09-30
 **Amended:** 2026-10-01
+**Amended:** 2026-10-08
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
 
-T3 Code needs changes that are maintained in a fork and are not present in the
-official release artifacts. Packaging an upstream AppImage on Linux and DMG on
-Darwin can produce matching display versions while silently omitting those
-changes. The desktop and its bundled server also require exact protocol
-compatibility, so mixing a patched server with an upstream desktop is unsafe.
+T3 Code was originally built from source so that changes maintained in a fork
+could be packaged alongside upstream. Packaging an upstream AppImage on Linux
+and DMG on Darwin can produce matching display versions while silently
+omitting such changes. The desktop and its bundled server also require exact
+protocol compatibility, so mixing a patched server with an upstream desktop is
+unsafe.
+
+The fork is no longer used. Its sync workflow is disabled and its promotion
+branches are frozen. Because the updater pinned upstream and fork channels
+together, the stalled fork and a quota patch that no longer applied blocked
+upstream updates.
 
 Building the Electron monorepo from source exposed several cross-platform
 constraints:
@@ -39,38 +46,28 @@ constraints:
 
 ## Decision
 
-Expose upstream `t3code` and two promoted fork channels on `x86_64-linux`.
-`t3code` tracks a pinned published upstream nightly. `t3code-fork-nightly`
-tracks `fork/nightly`, and `t3code-fork-stable` tracks `fork/stable`.
-`t3code-fork` remains an alias for nightly. Both fork packages apply the
-separate, narrowly scoped quota recovery patch. A shared `source.json` records
-each flavor's exact commit, source hash, dependency hashes, and declared
-upstream release baseline. All variants use one build recipe and provider wiring.
+Expose only upstream `t3code` on `x86_64-linux`, built from source and
+tracking a pinned published upstream nightly. `source.json` records its exact
+release tag commit, source hash, and dependency hashes. The fork packaging
+(`t3code-fork*` packages, `ai-stack-fork-*` bundles, the quota recovery patch
+and fork channel automation) is retired because the fork is no longer used.
+Restoring it means reverting that retirement change and re-enabling the
+fork's sync workflow.
+
+Linux keeps source builds: the recipe wires the packaged Claude Code and Codex
+CLIs into T3's runtime and has been validated against the constraints above.
+Replacing it with official Linux artifacts is a separate decision.
 
 On macOS, use the upstream developer-signed nightly app through the
 `t3-code@nightly` Homebrew cask, declared by nix-darwin, with existing profile
 wiring retained in Home Manager. Do not export Darwin T3 packages: Mac rebuilds
 no longer consume them, and CI should not evaluate unused Darwin variants.
-The native desktop uses its matching upstream server; it is not a client for a
-locally patched server. This platform exception follows nix-config ADR-0073.
-
-The fork's `fork/nightly` and `fork/stable` branches are promotion refs. Their
-metadata records the channel, exact published release tag and version, upstream
-tag commit, and feature patch source commit. Package automation resolves each
-branch once and reads its metadata and archive by that immutable commit. It
-checks that the declared baseline is the exact published upstream tag commit
-and an ancestor of the promoted fork commit. The fork workflow owns validation
-of the applied feature content and advances a promotion ref only after testing.
-
-Consumers select the variant explicitly while retaining the same service,
-application data, port, and user-facing endpoint. Switching variants must not
-create a second application identity or a separate conversation store. Small
-patches must remain backward-compatible with the upstream data format so a
-consumer can switch back to `t3code` without migrating or discarding user data.
+The native desktop uses its matching upstream server. This platform exception
+follows nix-config ADR-0073.
 
 The package must:
 
-- pin each selected revision, source hash, Cargo dependency hash, and pnpm
+- pin the selected revision, source hash, Cargo dependency hash, and pnpm
   dependency hash;
 - build the web client, server, and desktop application explicitly;
 - disable pnpm's `verifyDepsBeforeRun` nested-install behavior in the build;
@@ -78,16 +75,6 @@ The package must:
 - be built and smoke-tested on Linux before deployment;
 - verify the runtime-reported T3 and provider CLI versions, not only Nix
   derivation names.
-
-An unmerged schema prerequisite must not consume a numbered upstream migration
-identifier. Bootstrap its schema idempotently outside the numbered ledger, then
-explicitly reconcile that bootstrap when the upstream migration lands.
-
-The six-hourly updater must build each fork source with its separate quota patch
-immediately after pinning a candidate source and before computing generated
-dependency hashes. It records that narrow quota-patch preflight separately from
-the later full build and provider validation, so a passing patch check is not
-presented as a validated package update.
 
 Codex CLI follows npm's stable `latest` dist-tag. Prerelease channels create
 substantial update churn and may move between release lines, so the updater
@@ -110,16 +97,11 @@ not a successful GUI launch and must fail runtime verification.
 
 ## Alternatives Considered
 
-- **Track raw upstream `main` or a continuously rebased feature head** —
-  Rejected because those commits are not published releases and can change
-  product behavior between scans. Promoted stable and nightly refs tie each
-  build to an exact release tag while preserving the fork patch set.
-- **Use official artifacts for the upstream channel on Linux** — Rejected
-  because source builds keep the two selectable variants structurally identical.
-  macOS uses official artifacts to retain upstream application identity.
-- **Run upstream and fork as separate services** — Rejected for small,
-  data-compatible patches because it fragments conversation history and changes
-  the user-facing endpoint.
+- **Track raw upstream `main`** — Rejected because those commits are not
+  published releases and can change product behavior between scans.
+- **Keep the fork channels pinned but frozen** — Rejected because the fork is
+  unused, its patch no longer applies to newer sources, and coupled channel
+  updates blocked upstream releases.
 - **Allow pnpm or Vite to install dependencies during the build** — Rejected
   because it bypasses Nix hashes and fails in sandboxed Darwin builds.
 - **Always track prerelease Codex CLI** — Rejected now that stable supports the
@@ -131,13 +113,9 @@ not a successful GUI launch and must fail runtime verification.
 
 ## Consequences
 
-- Linux exposes upstream and fork variants built by the same recipe from
-  independently pinned sources. macOS uses upstream nightly releases and does
-  not receive fork-only patches through this package set.
-- The fork's declared upstream baseline remains distinguishable from its
-  feature commits and from the separately selected published nightly.
-- Selecting a variant changes only the package used by the existing service;
-  application state and network identity are retained.
+- Linux exposes one upstream T3 package and the `ai-stack-upstream` bundle.
+  macOS uses upstream nightly releases. Consumers of the retired fork outputs
+  must switch to `t3code` or `ai-stack-upstream`.
 - Builds are slower than repackaging release binaries, especially on Darwin.
 - The Codex package follows stable releases by default and still needs explicit
   build and runtime smoke tests.
@@ -146,25 +124,11 @@ not a successful GUI launch and must fail runtime verification.
   because the desktop launcher prepends its build-time runtime package set.
 - Switching desktop distribution identities can require one-time regeneration
   of encrypted connection metadata, while project data remains independent.
-- The six-hourly updater selects the latest published upstream nightly and both
-  tested fork promotions independently. A lightweight check compares their
-  identities with `dev` and any open update PR before Nix setup. A changed
-  candidate triggers source, dependency, full-build, and embedded-provider
-  validation before opening an update PR. A quota patch conflict or failed
-  build leaves the last package pin in place.
-- Fork package versions use each channel's published release version and an
-  independently increasing fork revision. A new fork commit remains visible
-  even when its release version has not changed.
-- Both fork channels derive their version from the published tag; upstream
-  source files can lag release version stamping. The fork workflow qualifies
-  its channel commits before package automation can select them.
-- The fork syncs its channels on a GitHub schedule four times a day, ahead of
-  the package scan. GitHub's schedule is best effort: it skipped most hourly
-  slots and has started runs over five hours late. Package automation does not
-  dispatch the fork workflow, which would need new write access to it. Instead,
-  the package scan fails when a channel has not promoted a published upstream
-  release within 18 hours, so a stalled or failing producer cannot hide
-  behind successful downstream scans.
+- The six-hourly updater selects the latest published upstream nightly. A
+  lightweight check compares its identity with `dev` and any open update PR
+  before Nix setup. A changed candidate triggers source, dependency,
+  full-build, and embedded-provider validation before opening an update PR. A
+  failed build leaves the last package pin in place.
 - Nightly selection applies to T3 Code only. It does not opt Codex into a
   prerelease channel. Linux retains source builds; macOS app versions follow
   the cask or upstream updater rather than the Nix lock file.

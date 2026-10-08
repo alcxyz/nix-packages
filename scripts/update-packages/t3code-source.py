@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Discover and validate published upstream and promoted fork T3 pins."""
+"""Discover and validate the published upstream T3 nightly pin."""
 import base64
 import datetime
 import json
@@ -12,23 +12,10 @@ import urllib.error
 import urllib.request
 
 UPSTREAM_OWNER = "pingdotgg"
-FORK_OWNER = "alcxyz"
 REPOSITORY = "t3code"
-FORK_METADATA = ".github/fork-source.json"
-CHANNELS = ("nightly", "stable")
 VERSION = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
 NIGHTLY = VERSION + r"-nightly\.(\d{8})\.(\d+)"
 UPSTREAM_FIELDS = {"version", "revision", "hash", "cargoHash", "pnpmDepsHash"}
-FORK_FIELDS = {
-    "version", "releaseTag", "revision", "upstreamRevision", "featureRevision",
-    "hash", "cargoHash", "pnpmDepsHash", "patchRevision",
-}
-LEGACY_FIELDS = UPSTREAM_FIELDS | {
-    "forkVersion", "forkRevision", "forkUpstreamRevision", "forkHash",
-    "forkCargoHash", "forkPnpmDepsHash", "forkPatchRevision",
-}
-PROMOTION_FIELDS = {"channel", "releaseTag", "version", "upstreamRevision", "featureRevision"}
-FAKE_HASH = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 
 def validate_version(version, nightly=False):
@@ -39,16 +26,6 @@ def validate_version(version, nightly=False):
     if match.groups() and match.group(1):
         datetime.datetime.strptime(match.group(1), "%Y%m%d")
     return version
-
-
-def version_tuple(version, channel):
-    validate_version(version, nightly=channel == "nightly")
-    if channel == "stable" and not re.fullmatch(VERSION, version):
-        raise ValueError("stable fork version must be stable")
-    base, *suffix = version.split("-nightly.")
-    return tuple(int(part) for part in base.split(".")) + (
-        tuple(map(int, suffix[0].split("."))) if suffix else ()
-    )
 
 
 def upstream_version_tuple(version):
@@ -93,52 +70,13 @@ def select_nightly(releases):
 
 
 def validate_pin(pin):
-    if not isinstance(pin, dict):
-        raise ValueError("T3 source pin must be an object")
-    if set(pin) == LEGACY_FIELDS:
-        validate_version(pin["version"])
-        version_tuple(pin["forkVersion"], "stable")
-        for field in ("revision", "forkRevision", "forkUpstreamRevision"):
-            validate_sha(pin[field], field)
-        for field in ("hash", "cargoHash", "pnpmDepsHash", "forkHash", "forkCargoHash", "forkPnpmDepsHash"):
-            validate_hash(pin[field], field)
-        if type(pin["forkPatchRevision"]) is not int or pin["forkPatchRevision"] < 1:
-            raise ValueError("forkPatchRevision must be a positive integer")
-        return pin
-    if set(pin) != UPSTREAM_FIELDS | {"forks"}:
+    if not isinstance(pin, dict) or set(pin) != UPSTREAM_FIELDS:
         raise ValueError("unexpected T3 source pin fields")
     validate_version(pin["version"])
     validate_sha(pin["revision"], "upstream revision")
     for field in ("hash", "cargoHash", "pnpmDepsHash"):
         validate_hash(pin[field], field)
-    if not isinstance(pin["forks"], dict) or set(pin["forks"]) != set(CHANNELS):
-        raise ValueError("both fork channels are required")
-    for channel, fork in pin["forks"].items():
-        if not isinstance(fork, dict) or set(fork) != FORK_FIELDS:
-            raise ValueError(f"unexpected {channel} fork pin fields")
-        version_tuple(fork["version"], channel)
-        if fork["releaseTag"] != "v" + fork["version"]:
-            raise ValueError(f"{channel} release tag/version mismatch")
-        for field in ("revision", "upstreamRevision", "featureRevision"):
-            validate_sha(fork[field], f"{channel} {field}")
-        for field in ("hash", "cargoHash", "pnpmDepsHash"):
-            validate_hash(fork[field], f"{channel} {field}")
-        if type(fork["patchRevision"]) is not int or fork["patchRevision"] < 1:
-            raise ValueError(f"{channel} patchRevision must be a positive integer")
     return pin
-
-
-def validate_promotion(metadata, channel):
-    if not isinstance(metadata, dict) or set(metadata) != PROMOTION_FIELDS:
-        raise ValueError("unexpected fork promotion metadata fields")
-    if metadata["channel"] != channel:
-        raise ValueError("fork promotion channel mismatch")
-    version_tuple(metadata["version"], channel)
-    if metadata["releaseTag"] != "v" + metadata["version"]:
-        raise ValueError("fork promotion release tag/version mismatch")
-    validate_sha(metadata["upstreamRevision"], "fork upstream revision")
-    validate_sha(metadata["featureRevision"], "fork feature revision")
-    return metadata
 
 
 def write_pin(path, pin):
@@ -184,44 +122,6 @@ def resolve_tag(version, request=api):
     raise ValueError("tag does not resolve to a commit")
 
 
-def decode_content(response):
-    if response.get("encoding") != "base64" or not isinstance(response.get("content"), str):
-        raise ValueError("fork promotion metadata is not base64 content")
-    try:
-        encoded = "".join(response["content"].split())
-        return json.loads(base64.b64decode(encoded, validate=True))
-    except (ValueError, TypeError, json.JSONDecodeError) as error:
-        raise ValueError("invalid fork promotion metadata content") from error
-
-
-def resolve_fork_promotion(channel, request=api):
-    if channel not in CHANNELS:
-        raise ValueError("unknown fork channel")
-    ref = request(FORK_OWNER, "git/ref/heads/fork/" + channel)
-    revision = validate_sha(ref["object"]["sha"], "fork revision")
-    if ref["object"].get("type") != "commit":
-        raise ValueError("fork promotion ref does not resolve to a commit")
-    metadata = validate_promotion(
-        decode_content(request(FORK_OWNER, f"contents/{FORK_METADATA}?ref={revision}")), channel
-    )
-    feature = metadata["featureRevision"]
-    if request(FORK_OWNER, "commits/" + feature).get("sha") != feature:
-        raise ValueError("fork feature revision is not an exact fork commit")
-    release = request(UPSTREAM_OWNER, "releases/tags/" + metadata["releaseTag"])
-    if release.get("tag_name") != metadata["releaseTag"] or release.get("draft") is not False:
-        raise ValueError("fork baseline is not a published upstream release")
-    if channel == "stable" and release.get("prerelease") is not False:
-        raise ValueError("stable fork baseline is a prerelease")
-    baseline = resolve_tag(metadata["version"], request)
-    if metadata["upstreamRevision"] != baseline:
-        raise ValueError("fork baseline differs from exact upstream release tag commit")
-    comparison = request(FORK_OWNER, f"compare/{baseline}...{revision}")
-    merge_base = comparison.get("merge_base_commit") or {}
-    if comparison.get("status") not in ("ahead", "identical") or merge_base.get("sha") != baseline:
-        raise ValueError("fork promotion does not descend from its declared upstream revision")
-    return metadata | {"revision": revision}
-
-
 def upstream_releases(request=api):
     releases = []
     page = 1
@@ -234,47 +134,16 @@ def upstream_releases(request=api):
     return releases
 
 
-def discover_target(request=api, releases=None):
+def discover_target(request=api):
     version = os.environ.get("T3CODE_VERSION")
     if version is None:
-        version = select_nightly(upstream_releases(request) if releases is None else releases)
+        version = select_nightly(upstream_releases(request))
     validate_version(version)
-    revision = resolve_tag(version, request)
-    return {"version": version, "revision": revision,
-            "forks": {channel: resolve_fork_promotion(channel, request) for channel in CHANNELS}}
-
-
-def lagging_channels(releases, target, now, max_lag):
-    """Report fork channels behind a release published longer than max_lag ago."""
-    lagging = []
-    for channel in CHANNELS:
-        promoted = target["forks"][channel]["version"]
-        newest = None
-        for release in releases:
-            tag = release.get("tag_name", "")
-            if release.get("draft") or not isinstance(tag, str) or not tag.startswith("v"):
-                continue
-            if channel == "stable" and release.get("prerelease") is not False:
-                continue
-            try:
-                candidate = version_tuple(tag[1:], channel)
-                published = datetime.datetime.fromisoformat(release["published_at"].replace("Z", "+00:00"))
-                if published.tzinfo is None:
-                    raise ValueError("missing timezone")
-            except (ValueError, TypeError, KeyError, AttributeError):
-                continue
-            if now - published >= max_lag and (newest is None or candidate > newest[0]):
-                newest = (candidate, tag[1:], published)
-        if newest and newest[0] > version_tuple(promoted, channel):
-            lagging.append(f"{channel} fork is at {promoted}; {newest[1]} was published "
-                           f"{newest[2].isoformat()} and is not promoted")
-    return lagging
+    return {"version": version, "revision": resolve_tag(version, request)}
 
 
 def identity(pin):
-    return {"version": pin["version"], "revision": pin["revision"],
-            "forks": {channel: {field: fork[field] for field in (PROMOTION_FIELDS - {"channel"}) | {"revision"}}
-                      for channel, fork in pin["forks"].items()}} if "forks" in pin else None
+    return {"version": pin["version"], "revision": pin["revision"]}
 
 
 def decide(pin, target, pending=None):
@@ -282,45 +151,17 @@ def decide(pin, target, pending=None):
     if pending is not None:
         validate_pin(pending)
     for candidate in (pin, pending):
-        if candidate is None:
-            continue
-        if upstream_version_tuple(target["version"]) < upstream_version_tuple(candidate["version"]):
+        if candidate is not None and upstream_version_tuple(target["version"]) < upstream_version_tuple(candidate["version"]):
             raise ValueError("upstream T3 version regression")
-        if "forks" in candidate:
-            for channel in CHANNELS:
-                old = candidate["forks"][channel]
-                new = target["forks"][channel]
-                if version_tuple(new["version"], channel) < version_tuple(old["version"], channel):
-                    raise ValueError(f"{channel} fork version regression")
     if pending is not None and identity(pending) == identity(target):
         return False
     return identity(pin) != identity(target)
 
 
-def materialize(pin, target, hashes):
-    validate_pin(pin)
-    if set(hashes) != {"upstream", *CHANNELS}:
+def materialize(target, hashes):
+    if set(hashes) != {"hash", "cargoHash", "pnpmDepsHash"}:
         raise ValueError("all source and dependency hashes are required")
-    result = {"version": target["version"], "revision": target["revision"]}
-    for field in ("hash", "cargoHash", "pnpmDepsHash"):
-        result[field] = hashes["upstream"][field]
-    result["forks"] = {}
-    for channel in CHANNELS:
-        previous = pin["forks"][channel] if "forks" in pin else None
-        new = target["forks"][channel]
-        if previous:
-            if version_tuple(new["version"], channel) < version_tuple(previous["version"], channel):
-                raise ValueError(f"{channel} fork version regression")
-            revision = previous["patchRevision"] + (identity(pin)["forks"][channel] != identity(target)["forks"][channel])
-        elif channel == "nightly":
-            revision = pin["forkPatchRevision"] + 1
-        else:
-            revision = 1
-        result["forks"][channel] = {field: new[field] for field in PROMOTION_FIELDS | {"revision"} if field != "channel"}
-        result["forks"][channel].update(hashes[channel])
-        result["forks"][channel]["patchRevision"] = revision
-    validate_pin(result)
-    return result
+    return validate_pin(identity(target) | hashes)
 
 
 def main():
@@ -334,11 +175,9 @@ def main():
         target = json.loads(Path(args[1]).read_text())
         pending = json.loads(Path(args[2]).read_text()) if len(args) == 3 else None
         print(str(decide(pin, target, pending)).lower())
-    elif command == "materialize" and len(args) == 4:
-        path, target_path, hash_path, old_path = map(Path, args)
-        result = materialize(json.loads(old_path.read_text()), json.loads(target_path.read_text()),
-                             json.loads(hash_path.read_text()))
-        write_pin(path, result)
+    elif command == "materialize" and len(args) == 3:
+        path, target_path, hash_path = map(Path, args)
+        write_pin(path, materialize(json.loads(target_path.read_text()), json.loads(hash_path.read_text())))
     else:
         raise ValueError("unknown command or arguments")
 

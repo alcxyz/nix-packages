@@ -8,6 +8,6 @@ Non-obvious decisions in this repo are documented here. Before changing tool des
 | [ADR-0001](0001-wcap-go-cli-window-capture.md) | wcap as a Go CLI wrapping gpu-screen-recorder | `tools/wcap` |
 | [ADR-0002](0002-model-agnostic-llm-config-for-devlog.md) | Model-Agnostic LLM Configuration for devlog | `tools/devlog/` |
 | [ADR-0003](0003-fail-loud-automated-package-updates.md) | Fail-Loud Automated Package Updates | package update CI |
-| [ADR-0005](0005-patched-t3code-source-builds.md) | Patched T3 Code Source Builds | `pkgs/t3code/`, `pkgs/codex-cli/` |
+| [ADR-0005](0005-patched-t3code-source-builds.md) | T3 Code Source Builds | `pkgs/t3code/`, `pkgs/codex-cli/` |
 | [ADR-0006](0006-runtime-configured-nix-deploy.md) | Runtime-configured nix-deploy | `tools/nix-deploy/` |
 | [ADR-0007](0007-continuous-provider-updates.md) | Continuous grouped provider updates | AI provider automation |

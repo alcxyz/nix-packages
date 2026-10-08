@@ -22,7 +22,7 @@ metadata, prereleases, and version regressions must fail loudly.
 
 Publish provider changes together on `update/ai-tools`. Serialize discovery and
 publication for that branch. Reuse the existing individual updater validation
-and ordinary PR checks, including both T3 variants and provider contracts.
+and ordinary PR checks, including the T3 package and provider contracts.
 A newer release may supersede an outstanding candidate; the existing stale-head
 watcher stops obsolete PR builds. Unchanged failed candidates remain visible
 for diagnosis or explicit CI retry rather than endlessly regenerating them.

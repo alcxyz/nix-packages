@@ -10,7 +10,7 @@ on:
 
 jobs:
   update:
-    name: Check published T3 releases and promoted fork channels
+    name: Check published T3 nightly releases
     runs-on: forgejo-podman-canary
     container:
       image: docker.io/library/node:20-bookworm
@@ -96,17 +96,6 @@ jobs:
           clean_ephemeral_nix_home
           bash scripts/update-packages/update-t3code.sh
 
-      - name: Report T3 Code quota patch preflight
-        if: always()
-        run: |
-          report="${RUNNER_TEMP}/t3code-patch-preflight.json"
-          if [[ -f "$report" ]]; then
-            echo "T3 Code quota patch preflight report:"
-            python3 -m json.tool "$report" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
-          else
-            echo "No T3 Code quota patch preflight report was produced; no candidate update reached patch validation." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
-          fi
-
       - name: Export validated T3 dependencies
         if: steps.update.outputs.updated == 'true'
         continue-on-error: true
@@ -131,24 +120,12 @@ jobs:
           FORGEJO_REPO: nix-packages
           UPDATE_BRANCH: update/t3code
           COMMIT_MESSAGE: |
-            chore(t3code): refresh published source pins
+            chore(t3code): refresh published source pin
 
-            Refresh upstream and promoted fork channels after full build and runtime checks.
-          PR_TITLE: "chore(t3code): refresh published source pins"
+            Refresh the upstream nightly after full build and runtime checks.
+          PR_TITLE: "chore(t3code): refresh published source pin"
           BODY_NAME: T3 Code
           VERSION: ${{ steps.update.outputs.version }}
           UPSTREAM_URL: "https://github.com/pingdotgg/t3code/releases/tag/v${{ steps.update.outputs.version }}"
-          UPDATE_UPSTREAM_URL: ${{ steps.update.outputs.upstream_url }}
           EXISTING_UPDATE_PR: ${{ steps.probe.outputs.existing_update_pr }}
-        run: |
-          if [[ -n "${UPDATE_UPSTREAM_URL:-}" ]]; then
-            export UPSTREAM_URL="$UPDATE_UPSTREAM_URL"
-          fi
-          scripts/forgejo/upsert-update-pr.sh
-
-      # Downstream scans can pass while the GitHub-scheduled fork producer stalls.
-      - name: Fail on stalled fork promotion
-        if: always() && steps.probe.outputs.fork_lagging == 'true'
-        run: |
-          echo "A T3 fork channel has not promoted an overdue upstream release; see the probe log." | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
-          exit 1
+        run: scripts/forgejo/upsert-update-pr.sh
