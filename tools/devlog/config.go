@@ -27,43 +27,30 @@ type sharedConfig struct {
 	Roles map[string]ModelConfig `toml:"roles"`
 }
 
+// devlogRole is the agent role devlog requests from the shared LLM config.
+const devlogRole = "standard"
+
+// defaultConfig is used when the shared LLM config does not exist. "opus" is
+// a Claude Code alias, not an API model ID, so it must use the CLI transport.
 func defaultConfig() Config {
 	return Config{
 		Model: ModelConfig{
 			Provider:  "anthropic",
-			Model:     "claude-sonnet-4-6",
-			Transport: "prefer-cli",
+			Model:     "opus",
+			Transport: "cli",
 		},
 	}
 }
 
 func loadConfig() (Config, error) {
-	if shared, found, err := loadSharedRoleConfig("strong"); err != nil {
+	shared, found, err := loadSharedRoleConfig(devlogRole)
+	if err != nil {
 		return Config{}, err
-	} else if found {
-		return Config{Model: *shared}, nil
 	}
-
-	configDir, err := os.UserConfigDir()
-	if err != nil {
+	if !found {
 		return defaultConfig(), nil
 	}
-
-	path := filepath.Join(configDir, "devlog", "config.toml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return defaultConfig(), nil
-	}
-
-	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return defaultConfig(), nil
-	}
-	if err := normalizeModelConfig(&cfg.Model, false); err != nil {
-		return defaultConfig(), nil
-	}
-
-	return cfg, nil
+	return Config{Model: *shared}, nil
 }
 
 func loadSharedRoleConfig(role string) (*ModelConfig, bool, error) {
@@ -90,37 +77,22 @@ func loadSharedRoleConfig(role string) (*ModelConfig, bool, error) {
 	if !ok {
 		return nil, false, fmt.Errorf("shared llm config %s is missing roles.%s", path, role)
 	}
-	if err := normalizeModelConfig(&rc, true); err != nil {
+	if err := normalizeModelConfig(&rc); err != nil {
 		return nil, false, fmt.Errorf("invalid shared llm config %s role %s: %w", path, role, err)
 	}
 
 	return &rc, true, nil
 }
 
-func normalizeModelConfig(cfg *ModelConfig, requireTransport bool) error {
+func normalizeModelConfig(cfg *ModelConfig) error {
 	if cfg.Provider == "" {
 		cfg.Provider = "anthropic"
 	}
 	if cfg.Model == "" {
-		switch cfg.Provider {
-		case "anthropic":
-			cfg.Model = "claude-sonnet-4-6"
-		default:
-			return fmt.Errorf("missing model")
-		}
+		return fmt.Errorf("missing model for provider %s", cfg.Provider)
 	}
 	if cfg.Transport == "" {
-		if requireTransport {
-			return fmt.Errorf("missing transport for provider %s", cfg.Provider)
-		}
-		switch cfg.Provider {
-		case "anthropic":
-			cfg.Transport = "prefer-cli"
-		case "openai":
-			cfg.Transport = "prefer-api"
-		default:
-			return fmt.Errorf("unsupported provider: %s", cfg.Provider)
-		}
+		return fmt.Errorf("missing transport for provider %s", cfg.Provider)
 	}
 	switch cfg.Transport {
 	case "cli", "api", "prefer-cli", "prefer-api":
@@ -128,7 +100,7 @@ func normalizeModelConfig(cfg *ModelConfig, requireTransport bool) error {
 		return fmt.Errorf("unsupported transport %q", cfg.Transport)
 	}
 	if cfg.Backup != nil {
-		if err := normalizeModelConfig(cfg.Backup, requireTransport); err != nil {
+		if err := normalizeModelConfig(cfg.Backup); err != nil {
 			return fmt.Errorf("backup: %w", err)
 		}
 	}

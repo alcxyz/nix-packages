@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-02
+**Amended:** 2026-10-09 by nix-config [ADR-0085](https://git.alc.xyz/alcxyz/nix-config/src/branch/dev/docs/adr/0085-one-role-vocabulary.md): devlog reads the `standard` role from the shared LLM config (`$XDG_CONFIG_HOME/llm/config.toml`), as role names replace the `fast`/`strong` tiers; `$XDG_CONFIG_HOME/devlog/config.toml` is no longer read, and the built-in default is Anthropic `opus` over the `cli` transport.
 **Applies to:** `tools/devlog/`
 
 ## Context

@@ -3,24 +3,25 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestLoadConfigPrefersSharedLLMConfig(t *testing.T) {
+func TestLoadConfigReadsStandardRole(t *testing.T) {
 	cfgDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
 
 	mustWriteFile(t, filepath.Join(cfgDir, "llm", "config.toml"), `
-[roles.strong]
+[roles.standard]
 provider = "openai"
 model = "gpt-5.4"
 transport = "cli"
 api_key_env = "OPENAI_API_KEY"
-`)
-	mustWriteFile(t, filepath.Join(cfgDir, "devlog", "config.toml"), `
-[model]
+
+[roles.light]
 provider = "anthropic"
-model = "claude-sonnet-4-6"
+model = "haiku"
+transport = "cli"
 `)
 
 	cfg, err := loadConfig()
@@ -28,11 +29,11 @@ model = "claude-sonnet-4-6"
 		t.Fatalf("loadConfig() error = %v", err)
 	}
 	if cfg.Model.Provider != "openai" || cfg.Model.Model != "gpt-5.4" || cfg.Model.Transport != "cli" {
-		t.Fatalf("loadConfig() = %+v, want shared OpenAI config", cfg.Model)
+		t.Fatalf("loadConfig() = %+v, want shared standard role", cfg.Model)
 	}
 }
 
-func TestLoadConfigFallsBackToToolConfig(t *testing.T) {
+func TestLoadConfigIgnoresToolConfig(t *testing.T) {
 	cfgDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
 
@@ -47,11 +48,29 @@ api_key_env = "OPENAI_API_KEY"
 	if err != nil {
 		t.Fatalf("loadConfig() error = %v", err)
 	}
-	if cfg.Model.Provider != "openai" || cfg.Model.Model != "gpt-5.4-mini" {
-		t.Fatalf("loadConfig() = %+v, want local OpenAI config", cfg.Model)
+	want := defaultConfig().Model
+	if cfg.Model.Provider != want.Provider || cfg.Model.Model != want.Model || cfg.Model.Transport != want.Transport || cfg.Model.Backup != nil {
+		t.Fatalf("loadConfig() = %+v, want built-in default %+v", cfg.Model, want)
 	}
-	if cfg.Model.Transport != "prefer-api" {
-		t.Fatalf("transport = %q, want prefer-api", cfg.Model.Transport)
+	if want.Provider != "anthropic" || want.Model != "opus" || want.Transport != "cli" {
+		t.Fatalf("defaultConfig() = %+v, want anthropic opus cli", want)
+	}
+}
+
+func TestLoadConfigErrorsOnMissingStandardRole(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	mustWriteFile(t, filepath.Join(cfgDir, "llm", "config.toml"), `
+[roles.strong]
+provider = "openai"
+model = "gpt-5.4"
+transport = "cli"
+`)
+
+	_, err := loadConfig()
+	if err == nil {
+		t.Fatal("loadConfig() error = nil, want missing roles.standard error")
 	}
 }
 
@@ -60,7 +79,7 @@ func TestLoadConfigErrorsOnInvalidSharedConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
 
 	mustWriteFile(t, filepath.Join(cfgDir, "llm", "config.toml"), `
-[roles.strong]
+[roles.standard]
 provider = "openai"
 model = "gpt-5.4"
 `)
@@ -68,6 +87,47 @@ model = "gpt-5.4"
 	_, err := loadConfig()
 	if err == nil {
 		t.Fatal("loadConfig() error = nil, want invalid shared config error")
+	}
+}
+
+func TestLoadConfigErrorsOnMissingModel(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{"role", `
+[roles.standard]
+provider = "anthropic"
+transport = "api"
+`},
+		{"backup", `
+[roles.standard]
+provider = "openai"
+model = "gpt-5.4"
+transport = "cli"
+
+[roles.standard.backup]
+provider = "anthropic"
+transport = "cli"
+`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgDir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", cfgDir)
+			path := filepath.Join(cfgDir, "llm", "config.toml")
+			mustWriteFile(t, path, tt.config)
+
+			_, err := loadConfig()
+			if err == nil {
+				t.Fatal("loadConfig() error = nil, want missing model error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "missing model") || !strings.Contains(msg, "role standard") || !strings.Contains(msg, path) {
+				t.Fatalf("loadConfig() error = %q, want missing model naming role standard and %s", msg, path)
+			}
+		})
 	}
 }
 
@@ -118,13 +178,13 @@ func TestLoadConfigReadsEffort(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
 
 	mustWriteFile(t, filepath.Join(cfgDir, "llm", "config.toml"), `
-[roles.strong]
+[roles.standard]
 provider = "openai"
 model = "gpt-5.4"
 transport = "cli"
 effort = "medium"
 
-[roles.strong.backup]
+[roles.standard.backup]
 provider = "anthropic"
 model = "opus"
 transport = "cli"
