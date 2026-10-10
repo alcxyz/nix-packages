@@ -1,4 +1,5 @@
 {
+  callPackage,
   cargoHash,
   changelog,
   claude-code,
@@ -31,6 +32,7 @@ let
     inherit version src cargoHash;
     sourceRoot = "${src.name}/native/resource-monitor";
   };
+  previewBrowser = callPackage ./preview-browser.nix { inherit src; };
 in
 (t3code.override {
   inherit claude-code;
@@ -110,10 +112,13 @@ in
               "$out/libexec/t3code/apps/desktop/prod-resources/browser-secret/t3-browser-secret"
           fi
           wrapProgram "$out/bin/t3code-desktop" --add-flags "--ozone-platform=x11"
+          # T3 never looks here itself; host modules link this into each base
+          # directory's tools/chrome-headless-shell so previews skip the download.
+          ln -s ${previewBrowser} "$out/libexec/t3code/preview-browser"
         '';
 
       passthru = (previousAttrs.passthru or { }) // {
-        inherit resourceMonitor sourceRevision;
+        inherit previewBrowser resourceMonitor sourceRevision;
         embeddedProviderVersions = {
           claudeCode = claude-code.version;
           codexCli = codex-cli.version;

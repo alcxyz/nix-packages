@@ -1,4 +1,5 @@
 {
+  callPackage,
   claude-code,
   codex-cli,
   fetchFromGitHub,
@@ -17,6 +18,7 @@ let
 in
 import ./build.nix {
   inherit
+    callPackage
     claude-code
     codex-cli
     fetchFromGitHub
