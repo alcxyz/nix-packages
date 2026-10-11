@@ -52,10 +52,6 @@
           k8s-node-reboot = pkgs.callPackage ./tools/k8s-node-reboot { };
           nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
           nix-gc-maintenance = pkgs.callPackage ./tools/nix-gc-maintenance { };
-          xonsh-direnv = pkgs.callPackage ./pkgs/xonsh-direnv { };
-          xonsh-with-direnv = pkgs.callPackage ./pkgs/xonsh-with-direnv {
-            inherit (allPackages) xonsh-direnv;
-          };
         }
         //
           lib.optionalAttrs

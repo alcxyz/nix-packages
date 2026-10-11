@@ -136,9 +136,6 @@ while IFS= read -r path; do
     pkgs/codex-cli/*)
       changed_attrs+=(codex-cli t3code)
       ;;
-    pkgs/xonsh-direnv/*)
-      changed_attrs+=(xonsh-direnv xonsh-with-direnv)
-      ;;
     pkgs/helium/*)
       # The default export aliases Helium on supported systems.
       changed_attrs+=(default helium)

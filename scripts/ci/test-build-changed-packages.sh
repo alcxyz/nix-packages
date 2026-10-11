@@ -303,15 +303,6 @@ for input in claude-code codex-cli; do
   assert_not_called 'widget'
 done
 
-new_case reverse-dependency-xonsh
-change_file pkgs/xonsh-direnv/default.nix
-printf '{"x86_64-linux":["xonsh-direnv","xonsh-with-direnv"],"aarch64-darwin":["xonsh-direnv","xonsh-with-direnv"]}\n' >exports
-run_case 0
-assert_called 'build .#packages.x86_64-linux.xonsh-direnv -L'
-assert_called 'build .#packages.x86_64-linux.xonsh-with-direnv -L'
-assert_called 'eval .#packages.aarch64-darwin.xonsh-with-direnv.drvPath'
-assert_not_called 'widget'
-
 new_case default-alias
 change_file pkgs/helium/default.nix
 printf '{"x86_64-linux":["default","helium"],"aarch64-darwin":["default","helium"]}\n' >exports
