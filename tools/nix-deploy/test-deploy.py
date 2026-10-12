@@ -261,6 +261,14 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
 
     calls, _ = run("--help", status=1)
     assert not actions(calls)
+    # --version needs no inventory or environment.
+    version = subprocess.run([str(deploy), "--version"], env={}, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    assert version.returncode == 0 and re.fullmatch(r"deploy \S+\n", version.stdout), version
+    version = version.stdout.split()[1]
+    # As the value of another option it is a file name, not --version.
+    calls, _ = run("--config", "--version", status=1)
+    calls, _ = run("--no-preflight", "node", "--json", "--version")
+    assert json.loads((root / "--version").read_text())["version"] == version
     calls, _ = run("unknown", status=1)
     assert not actions(calls)
     # Everything is built in one step before anything is activated.
@@ -546,6 +554,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     report = root / "report.json"
     calls, result = run("--all", "--no-preflight", "--json", str(report), MOCK_CURRENT="node")
     data = json.loads(report.read_text())
+    assert data["version"] == version
     hosts = {h["host"]: h for h in data["hosts"]}
     assert hosts["node"]["system"]["status"] == "unchanged" and hosts["solo"]["system"]["status"] == "ok"
     assert hosts["xyz"]["homeManager"]["status"] == "ok" and hosts["solo"]["homeManager"]["status"] == "-"
@@ -563,7 +572,8 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     # A run that cannot start, or stops early, still replaces the previous
     # report.
     calls, _ = run("--all", "--json", str(report), status=1, DEPLOY_EVAL_JOBS="0")
-    assert json.loads(report.read_text()) == {"buildSeconds": 0, "totalSeconds": 0, "failed": True, "hosts": []}
+    assert json.loads(report.read_text())["version"] == version
+    assert json.loads(report.read_text()) == {"version": version, "buildSeconds": 0, "totalSeconds": 0, "failed": True, "hosts": []}
     calls, _ = run("--all", "--no-preflight", "--json", str(report))
     calls, _ = run("--all", "--json", str(report), "--dryrun", status=1)
     assert json.loads(report.read_text())["failed"]

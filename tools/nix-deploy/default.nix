@@ -8,13 +8,16 @@
   openssh,
   python3,
 }:
-buildGoModule {
+buildGoModule (finalAttrs: {
   pname = "nix-deploy";
-  version = "0.5.0";
+  # Bump with every change to the tool and record it in CHANGELOG.md.
+  version = "0.6.0";
 
   src = ./.;
 
   vendorHash = null; # no external dependencies
+
+  ldflags = [ "-X main.version=${finalAttrs.version}" ];
 
   nativeBuildInputs = [ makeWrapper ];
   nativeCheckInputs = [
@@ -26,6 +29,7 @@ buildGoModule {
   # the unwrapped binary before the runtime PATH is added (ADR-0006).
   postCheck = ''
     python3 ${./test-deploy.py} "$GOPATH/bin/nix-deploy"
+    [ "$("$GOPATH/bin/nix-deploy" --version)" = "deploy ${finalAttrs.version}" ]
   '';
 
   postInstall = ''
@@ -46,4 +50,4 @@ buildGoModule {
     mainProgram = "deploy";
     platforms = platforms.unix;
   };
-}
+})

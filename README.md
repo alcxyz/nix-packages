@@ -83,3 +83,5 @@ inventory explicitly. `NIX_DEPLOY_CONFIG` supplies the same default for direct
 CLI use; a consumer may generate the JSON and provide a configured wrapper.
 The package supplies no built-in fleet. See [ADR-0006](docs/adr/0006-runtime-configured-nix-deploy.md)
 for the versioned JSON fields and runtime command requirements.
+`deploy --version` names the release; its
+[changelog](tools/nix-deploy/CHANGELOG.md) lists what each one changed.

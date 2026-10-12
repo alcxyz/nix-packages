@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// version is set by the package build (-X main.version); see CHANGELOG.md.
+var version = "dev"
+
 const defaultSSHOptions = "-o ServerAliveInterval=10 -o ServerAliveCountMax=30 -o TCPKeepAlive=yes -o ConnectTimeout=30"
 
 // settings are the environment tunables, validated before any work.
@@ -60,10 +63,21 @@ func main() {
 func run(args []string) int {
 	configFile := os.Getenv("NIX_DEPLOY_CONFIG")
 	jsonPath := ""
-	for i, arg := range args {
-		if arg == "--json" && i+1 < len(args) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		// Answered without an inventory, so any installed copy can say what
+		// it is.
+		case arg == "--version":
+			fmt.Println("deploy " + version)
+			return 0
+		case arg == "--json" && i+1 < len(args):
 			jsonPath = args[i+1]
-		} else if strings.HasPrefix(arg, "--json=") {
+			i++
+		case arg == "--config":
+			// Its value is a file name, not an option.
+			i++
+		case strings.HasPrefix(arg, "--json="):
 			jsonPath = strings.TrimPrefix(arg, "--json=")
 		}
 	}
@@ -295,7 +309,7 @@ func (d *deployer) usage() int {
        deploy [OPTIONS] --hm [<host>]
 
 Options: [--config FILE] [--here] [--no-preflight] [--dry-run] [--force]
-         [--json FILE]
+         [--json FILE] [--version]
 
 When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.

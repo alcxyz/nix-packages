@@ -105,6 +105,7 @@ type hostReport struct {
 }
 
 type runReport struct {
+	Version      string       `json:"version"`
 	BuildSeconds float64      `json:"buildSeconds"`
 	TotalSeconds float64      `json:"totalSeconds"`
 	Failed       bool         `json:"failed"`
@@ -126,7 +127,7 @@ func (d *deployer) saveReport(selected []string, r *report) bool {
 
 // writeFailedJSON replaces a report when a run fails before it has hosts.
 func writeFailedJSON(path string) {
-	data, _ := json.MarshalIndent(runReport{Failed: true, Hosts: []hostReport{}}, "", "  ")
+	data, _ := json.MarshalIndent(runReport{Version: version, Failed: true, Hosts: []hostReport{}}, "", "  ")
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "deploy: cannot write %s: %v\n", path, err)
 	}
@@ -136,6 +137,7 @@ func writeFailedJSON(path string) {
 // runs can be compared over time.
 func (d *deployer) writeJSON(path string, selected []string, r *report) error {
 	out := runReport{
+		Version:      version,
 		BuildSeconds: r.build.Seconds(),
 		TotalSeconds: time.Since(r.started).Seconds(),
 		Failed:       r.failed,
