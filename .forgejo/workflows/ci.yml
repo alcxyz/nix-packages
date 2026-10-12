@@ -89,7 +89,6 @@ jobs:
           scripts/ci/test-nix-build-cache.sh
           scripts/ci/test-run-current-pr.sh
           scripts/ci/test-require-package-validation.sh
-          scripts/ci/test-helium-updater.sh
           python3 scripts/ci/test-probe-ai-updates.py
           scripts/ci/test-ai-tools-updater.sh
           python3 scripts/ci/test-t3code-updater.py

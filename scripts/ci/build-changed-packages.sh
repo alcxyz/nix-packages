@@ -136,10 +136,6 @@ while IFS= read -r path; do
     pkgs/codex-cli/*)
       changed_attrs+=(codex-cli t3code)
       ;;
-    pkgs/helium/*)
-      # The default export aliases Helium on supported systems.
-      changed_attrs+=(default helium)
-      ;;
     pkgs/k3s-flannel-node-source/*)
       # This is a package function applied to the consumer's K3s pin, not a
       # standalone package export from this repository's nixpkgs lock.

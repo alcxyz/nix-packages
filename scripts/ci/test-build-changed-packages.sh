@@ -303,14 +303,6 @@ for input in claude-code codex-cli; do
   assert_not_called 'widget'
 done
 
-new_case default-alias
-change_file pkgs/helium/default.nix
-printf '{"x86_64-linux":["default","helium"],"aarch64-darwin":["default","helium"]}\n' >exports
-run_case 0
-assert_called 'build .#packages.x86_64-linux.default -L'
-assert_called 'build .#packages.x86_64-linux.helium -L'
-assert_called 'eval .#packages.aarch64-darwin.default.drvPath'
-
 new_case removed-package
 git rm -q pkgs/removed/default.nix
 git commit -qm remove

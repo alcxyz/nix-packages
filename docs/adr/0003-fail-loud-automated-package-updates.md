@@ -72,7 +72,7 @@ CI must:
 - preserve the required package-validation context through an aggregate job
   that succeeds only when Go tests, validation prerequisites, package builds,
   and provider verification succeed
-- keep unavailable optional assets out of named and default exports; required Helium asset download failures stop its updater before package edits
+- keep unavailable optional assets out of package exports; required asset download failures stop an updater before package edits
 - compare pull request heads against the target branch, and use a conservative promotion baseline when the runner does not expose a target branch variable
 - avoid stale references to deleted or retired packages
 
@@ -129,19 +129,17 @@ The flake explicitly exports the following combinations. "All four" means
 | `claude-code`, `codex-app-server`, `codex-cli`, `forge-mirror`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance` | All four |
 | `devlog`, `ndrop`, `openzfs_7_1`, `stash`, `zfs-auto-unlock` | Both Linux systems |
 | `herdr` | Both Linux systems, `aarch64-darwin` |
-| `helium`, `default` | `x86_64-linux`, both Darwin systems |
 | `ghostty` | Both Darwin systems |
 | `t3code`, `ai-stack-upstream` | `x86_64-linux` |
 | `omniwm` | `aarch64-darwin` |
 | `ledger-live`, `wcap`, `zen-browser` | `x86_64-linux` |
 
 Herdr's pinned unstable SDK dependency rejects Intel Darwin; that export is
-omitted until a supported dependency baseline is established. Helium's ARM
-Linux asset remains an explicit, unexported placeholder. Enabling it requires
-a verified artifact and an intentional matrix/test update. Every other Helium
-asset is required by the updater, and the package expression rejects placeholder
-hashes. The flake exposes Helium as `packages.<system>.default` only where it is
-supported; ARM Linux has no default, rather than an unrelated replacement.
+omitted until a supported dependency baseline is established.
+
+Helium, previously the `default` export, was removed on 2026-10-12 after its
+last consumer replaced it with Brave Origin (nix-config#628). The flake no
+longer has a default package.
 
 ## Alternatives Considered
 

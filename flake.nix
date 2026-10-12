@@ -64,17 +64,6 @@
               # The pinned unstable Darwin SDK dependency does not support Intel.
               herdr = unstablePkgs.callPackage ./pkgs/herdr { };
             }
-        //
-          lib.optionalAttrs
-            (builtins.elem system [
-              "x86_64-linux"
-              "aarch64-darwin"
-              "x86_64-darwin"
-            ])
-            {
-              # ARM Linux has no verified asset; do not advertise its placeholder.
-              helium = pkgs.callPackage ./pkgs/helium { };
-            }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
         }
@@ -113,11 +102,7 @@
         };
       in
       {
-        packages =
-          allPackages
-          // lib.optionalAttrs (allPackages ? helium) {
-            default = allPackages.helium;
-          };
+        packages = allPackages;
         checks.nix-gc-maintenance-contract =
           pkgs.runCommand "nix-gc-maintenance-contract"
             {

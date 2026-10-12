@@ -27,11 +27,6 @@ jobs:
             title_prefix: "chore(omniwm): update to"
             body_name: OmniWM
             upstream: "https://github.com/BarutSRB/OmniWM/releases/tag/v"
-          - package: helium
-            branch: update/helium
-            title_prefix: "chore(helium): update to"
-            body_name: helium
-            upstream: "https://github.com/imputnet/helium-linux/releases/tag/"
           - package: ghostty
             branch: update/ghostty
             title_prefix: "chore(ghostty): update to"
