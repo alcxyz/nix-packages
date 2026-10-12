@@ -3,4 +3,5 @@
 result
 result-*
 tools/devlog/devlog
+tools/nix-deploy/nix-deploy
 __pycache__/

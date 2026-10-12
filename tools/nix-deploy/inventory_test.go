@@ -52,8 +52,31 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	if inv.activationMode("node") != "boot" || inv.activationMode("xyz") != "switch" {
 		t.Errorf("unexpected activation modes")
 	}
-	if inv.SerialReadyTimeout != 30 || !inv.isSerial("node") {
-		t.Errorf("serial settings not loaded: %+v", inv)
+	group := inv.group("node")
+	if group == nil || group.ReadyTimeout != 30 || group.ReadyCommand != "true" || inv.group("xyz") != nil {
+		t.Errorf("serial shorthand not loaded: %+v", inv.SerialGroups)
+	}
+}
+
+func TestParseInventorySerialGroups(t *testing.T) {
+	fields := validFields()
+	fields["serialSystemHosts"] = []any{"node"}
+	fields["serialGroups"] = []any{
+		map[string]any{"hosts": []any{"xyz"}, "readyCommand": "dig @{host}", "readyTimeoutSeconds": 45},
+	}
+	inv, err := parseInventory(encode(t, fields))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.SerialGroups) != 2 || inv.group("node") != inv.SerialGroups[0] {
+		t.Fatalf("shorthand must come first: %+v", inv.SerialGroups)
+	}
+	dns := inv.group("xyz")
+	if dns == nil || dns.ReadyTimeout != 45 || dns.readyCommand("xyz") != "dig @xyz" {
+		t.Errorf("group not loaded: %+v", dns)
+	}
+	if inv.SerialGroups[0].ReadyCommand != "" || inv.SerialGroups[0].ReadyTimeout != 600 {
+		t.Errorf("shorthand defaults: %+v", inv.SerialGroups[0])
 	}
 }
 
@@ -62,8 +85,8 @@ func TestParseInventoryDefaultsSerialTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inv.SerialReadyTimeout != 600 || len(inv.SerialSystemHosts) != 0 || inv.SerialReadyCommand != "" {
-		t.Errorf("unexpected serial defaults: %+v", inv)
+	if len(inv.SerialGroups) != 0 {
+		t.Errorf("unexpected serial groups: %+v", inv.SerialGroups)
 	}
 }
 
@@ -91,6 +114,20 @@ func TestParseInventoryRejects(t *testing.T) {
 		{"fractional timeout", func(f map[string]any) { f["serialReadyTimeoutSeconds"] = 1.5 }, "does not satisfy"},
 		{"zero timeout", func(f map[string]any) { f["serialReadyTimeoutSeconds"] = 0 }, "does not satisfy"},
 		{"missing map", func(f map[string]any) { delete(f, "sshHosts") }, "does not satisfy"},
+		{"group without hosts", func(f map[string]any) { f["serialGroups"] = []any{map[string]any{"readyCommand": "true"}} }, "does not satisfy"},
+		{"group with empty hosts", func(f map[string]any) { f["serialGroups"] = []any{map[string]any{"hosts": []any{}}} }, "does not satisfy"},
+		{"group with unknown key", func(f map[string]any) {
+			f["serialGroups"] = []any{map[string]any{"hosts": []any{"node"}, "ready": "true"}}
+		}, "does not satisfy"},
+		{"group with unknown host", func(f map[string]any) { f["serialGroups"] = []any{map[string]any{"hosts": []any{"missing"}}} }, "does not satisfy"},
+		{"host in two groups", func(f map[string]any) {
+			f["serialSystemHosts"] = []any{"node"}
+			f["serialGroups"] = []any{map[string]any{"hosts": []any{"node"}}}
+		}, "does not satisfy"},
+		{"group with fractional timeout", func(f map[string]any) {
+			f["serialGroups"] = []any{map[string]any{"hosts": []any{"node"}, "readyTimeoutSeconds": 0.5}}
+		}, "does not satisfy"},
+		{"groups not a list", func(f map[string]any) { f["serialGroups"] = map[string]any{} }, "does not satisfy"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

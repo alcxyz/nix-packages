@@ -3,7 +3,9 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -36,12 +38,29 @@ SERIAL_DATA = {
     "serialReadyCommand": "ready-check {host} --node={host}",
     "serialReadyTimeoutSeconds": 25,
 }
+# Two independent serial groups: the quorum group above and a pair of DNS
+# servers with their own ready command.
+GROUP_DATA = {
+    **SERIAL_DATA,
+    "knownHosts": [*SERIAL_DATA["knownHosts"], "d1", "d2"],
+    "deployAllHosts": [*SERIAL_DATA["deployAllHosts"], "d1", "d2"],
+    "sshHosts": {**SERIAL_DATA["sshHosts"], "d1": "d1.invalid", "d2": "d2.invalid"},
+    "serialGroups": [{"hosts": ["d1", "d2"], "readyCommand": "ready-check {host} --dns", "readyTimeoutSeconds": 25}],
+}
 MOCK = r'''
-import json, os, pathlib, subprocess, sys, time
+import json, os, pathlib, re, sys, time
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
+store = pathlib.Path(os.environ["MOCK_STORE"])
 with open(os.environ["MOCK_LOG"], "a") as out:
     out.write(json.dumps([name, *args]) + "\n")
+
+def listed(variable, value):
+    return value in os.environ.get(variable, "").split(",")
+
+def endpoint_host(endpoint):
+    return endpoint.split("@")[-1].split(".")[0]
+
 if name == "hostname":
     print(os.environ["MOCK_HOST"])
 elif name == "uname":
@@ -49,18 +68,23 @@ elif name == "uname":
 elif name == "sudo":
     # Never execute the requested privileged command, including absolute paths.
     sys.exit(1 if args == ["-n", "-v"] else 0)
+elif name == "activate":
+    if os.environ.get("MOCK_HM_FAILURE"):
+        print("fixture home-manager failure", file=sys.stderr)
+        sys.exit(4)
 elif name == "ssh":
-    if args[-1] == "true":
+    remote = args[-1]
+    if remote == "true":
         if os.environ.get("MOCK_UNREACHABLE", "never.invalid") in args[-2]:
             print("fixture endpoint unavailable", file=sys.stderr)
             sys.exit(255)
-    elif args[-1].startswith("df -Pk"):
+    elif remote.startswith("df -Pk"):
         # Collection frees space only on the endpoint that ran it.
         logged = [json.loads(line) for line in open(os.environ["MOCK_LOG"])]
         collected = any(c[0] == "ssh" and "nix-gc.service" in c[-1] and c[-2] == args[-2] for c in logged)
         free = os.environ.get("MOCK_FREE_KIB", "99999999")
         print(os.environ.get("MOCK_FREE_KIB_AFTER_GC", free) if collected else free)
-    elif "nix-gc.service" in args[-1]:
+    elif "nix-gc.service" in remote:
         failure = os.environ.get("MOCK_GC_FAILURE")
         if failure == "hang":
             time.sleep(30)
@@ -69,31 +93,82 @@ elif name == "ssh":
         elif failure:
             print("fixture gc failure", file=sys.stderr)
             sys.exit(1)
+    elif "/run/current-system" in remote or "profiles/home-manager" in remote:
+        # Hosts listed in MOCK_CURRENT already run what the fixture builds.
+        # Both scripts print the running generation, then the profile. A Home
+        # Manager activation that stopped early moved the profile only.
+        host = endpoint_host(args[-2])
+        kind = "home" if "home-manager" in remote else "system"
+        current = store / (f"fixture-{host}-{kind}" if listed("MOCK_CURRENT", host) else f"old-{host}-{kind}")
+        profile = store / f"fixture-{host}-{kind}" if listed("MOCK_PROFILE_ONLY", host) else current
+        print(f"{current}\n{profile}")
 elif name == "nix":
-    if args and args[0] == "build":
-        print("/nix/store/fixture-home-activation")
-elif name == "home-manager":
-    if os.environ.get("MOCK_HM_FAILURE"):
-        print("fixture home-manager failure", file=sys.stderr)
-        sys.exit(4)
+    if args[0] == "eval":
+        match = re.match(r'\.#(nixos|darwin|home)Configurations\."(?:alc-)?([^"]+)"\.', args[-1])
+        kind = {"nixos": "system", "darwin": "darwin", "home": "home"}[match[1]]
+        derivation = f"{match[2]}-{kind}"
+        if listed("MOCK_EVAL_FAIL", derivation):
+            print(f"error: fixture evaluation failure in {derivation}", file=sys.stderr)
+            sys.exit(1)
+        # MOCK_VARIANT builds another generation of the same configuration.
+        print(f"{store}/fixture{os.environ.get('MOCK_VARIANT', '')}-{derivation}.drv")
+    elif args[0] == "build":
+        # A build of one derivation with an out-link roots a built target;
+        # MOCK_ROOT_FAIL refuses one.
+        targets = [a for a in args if a.endswith(".drv^out")]
+        if "--keep-going" not in args and len(targets) == 1 and listed("MOCK_ROOT_FAIL", re.sub(r"^fixture\d*-", "", pathlib.Path(targets[0][: -len(".drv^out")]).name)):
+            sys.exit(1)
+        failed = False
+        for arg in args:
+            if not arg.endswith(".drv^out"):
+                continue
+            output = pathlib.Path(arg[: -len(".drv^out")])
+            if listed("MOCK_BUILD_FAIL", re.sub(r"^fixture\d*-", "", output.name)):
+                print(f"error: fixture build failure in {output.name}", file=sys.stderr)
+                failed = True
+                continue
+            output.mkdir(parents=True, exist_ok=True)
+            if output.name.endswith("-home"):
+                (output / "gen-version").write_text("1")
+                activate = output / "activate"
+                activate.write_text(pathlib.Path(sys.argv[0]).read_text())
+                activate.chmod(0o755)
+        sys.exit(1 if failed else 0)
+    elif args[0] == "path-info":
+        output = pathlib.Path(args[1][: -len(".drv^out")])
+        if not output.is_dir():
+            print(f"error: path '{output}' is not valid", file=sys.stderr)
+            sys.exit(1)
+        print(output)
 elif name == "ready-check":
     logged = [json.loads(line) for line in open(os.environ["MOCK_LOG"])]
-    switch_at = next((i for i, c in enumerate(logged) if c[0] == "nixos-rebuild" and ".#" + args[0] in c), None)
-    switched = switch_at is not None
-    gate_attempt = switched and sum(c == ["ready-check", *args] for c in logged[switch_at:])
-    if args[0] in os.environ.get("MOCK_READY_HANG", "").split(","):
+    def switches(host):
+        return [i for i, c in enumerate(logged) if c[0] == "nixos-rebuild" and any(re.search(rf"fixture\d*-{host}-system", a) for a in c)]
+    switched = switches(args[0])
+    gate_attempt = switched and sum(c == ["ready-check", *args] for c in logged[switched[0]:])
+    if listed("MOCK_READY_HANG", args[0]):
         time.sleep(30)
-    if gate_attempt and gate_attempt > 1 and args[0] in os.environ.get("MOCK_READY_HANG_RETRY", "").split(","):
+    if gate_attempt and gate_attempt > 1 and listed("MOCK_READY_HANG_RETRY", args[0]):
         time.sleep(30)
     late = dict(item.split(":") for item in os.environ.get("MOCK_READY_FAIL_AFTER", "").split(",") if item)
-    late_failure = args[0] in late and any(c[0] == "nixos-rebuild" and ".#" + late[args[0]] in c for c in logged)
-    if late_failure or args[0] in os.environ.get("MOCK_READY_FAIL", "").split(",") or (
-        switched and args[0] in os.environ.get("MOCK_READY_FAIL_AFTER_SWITCH", "").split(",")
-    ):
+    late_failure = args[0] in late and switches(late[args[0]])
+    if late_failure or listed("MOCK_READY_FAIL", args[0]) or (switched and listed("MOCK_READY_FAIL_AFTER_SWITCH", args[0])):
         print("fixture node not ready", file=sys.stderr)
         sys.exit(1)
 elif name == "nixos-rebuild":
-    if os.environ.get("MOCK_FAIL_FLAKE") in args:
+    if args == ["--no-reexec", "--store-path", "/nonexistent"]:
+        # deploy's capability probe: a frontend that knows both options only
+        # reports the missing action; the classic one rejects an option.
+        if os.environ.get("MOCK_CLASSIC_REBUILD"):
+            print("nixos-rebuild: unknown option `--no-reexec'", file=sys.stderr)
+            sys.exit(1)
+        print("nixos-rebuild: error: No valid subcommands. Type nixos-rebuild --help for more information", file=sys.stderr)
+        sys.exit(2)
+    path = args[args.index("--store-path") + 1]
+    host = re.search(r"fixture\d*-([^-]+)-system", path)[1]
+    if listed("MOCK_REBUILD_HANG", host):
+        time.sleep(30)
+    if listed("MOCK_FAIL_HOST", host):
         print("fixture rebuild failure")
         sys.exit(7)
     failure = os.environ.get("MOCK_SWITCH_FAILURE")
@@ -104,13 +179,35 @@ elif name == "nixos-rebuild":
 
 
 def actions(calls):
-    return [c for c in calls if c[0] in {"nixos-rebuild", "home-manager", "nix"} or (c[0] == "sudo" and len(c) > 2 and c[1] not in {"-v", "-n"})]
+    """Calls that evaluate, build or change a host."""
+    return [
+        c for c in calls
+        if c[0] in {"nixos-rebuild", "home-manager", "nix", "activate"}
+        or (c[0] == "sudo" and len(c) > 2 and c[1] not in {"-v", "-n"})
+        or (c[0] == "ssh" and "/activate" in c[-1])
+    ]
+
+
+def activations(calls):
+    """Calls that change a host."""
+    return [
+        c for c in calls
+        if c[0] in {"nixos-rebuild", "activate"}
+        or (c[0] == "sudo" and len(c) > 2 and c[1] != "-v" and c[1:] != ["-n", "-v"])
+        or (c[0] == "nix" and c[1] == "copy")
+        or (c[0] == "ssh" and "/activate" in c[-1])
+    ]
+
+
+def evaluated(calls):
+    return [c[-1] for c in calls if c[0] == "nix" and c[1] == "eval"]
 
 
 with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     root = Path(directory)
     commands = root / "bin"
     commands.mkdir()
+    store = root / "store"
     deploy = Path(sys.argv[1]).resolve()
     # Keep the command search path closed; new operational commands cannot fall
     # through to an installed host tool. Mocks use an absolute Python shebang,
@@ -121,55 +218,96 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         (commands / name).symlink_to(target)
     config = root / "inventory with spaces.json"
     config.write_text(json.dumps(HOST_DATA))
-    for name in ["hostname", "uname", "sudo", "ssh", "nix", "nixos-rebuild", "home-manager", "ready-check"]:
+    for name in ["hostname", "uname", "sudo", "ssh", "nix", "nix-env", "nixos-rebuild", "home-manager", "ready-check"]:
         command = commands / name
         command.write_text("#!" + sys.executable + "\n" + MOCK)
         command.chmod(0o755)
 
-    def run(*args, host="xyz", system="Linux", status=0, **settings):
+    def system_path(host):
+        return str(store / f"fixture-{host}-system")
+
+    def home_path(host):
+        return str(store / f"fixture-{host}-home")
+
+    def run(*args, host="xyz", system="Linux", status=0, keep_state=False, **settings):
         log = root / "commands.jsonl"
         log.write_text("")
+        shutil.rmtree(store, ignore_errors=True)
+        store.mkdir()
+        if not keep_state:
+            # Each case starts without remembered failed activations.
+            shutil.rmtree(root / ".local/state/nix-deploy", ignore_errors=True)
         env = {
             "PATH": str(commands),
-            "HOME": str(root), "MOCK_LOG": str(log),
+            "HOME": str(root), "MOCK_LOG": str(log), "MOCK_STORE": str(store),
             "MOCK_HOST": host, "MOCK_SYSTEM": system,
             "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1",
             **settings,
         }
         # CI's pressure guard may freeze the runner longer than the old 15s
         # limit. This is only a hang bound; the assertions below check behavior.
-        result = subprocess.run([str(deploy), "--config", str(config), *args], cwd=root, env=env, capture_output=True, text=True, timeout=120)
+        # No inherited stdin: bash builds that detect SSH by a socket on stdin
+        # would read the system bashrc and reset the mocked PATH.
+        result = subprocess.run([str(deploy), "--config", str(config), *args], cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         assert result.returncode == status, (args, result.returncode, result.stdout, result.stderr)
         return calls, result
+
+    def rebuilt(calls):
+        return [m[1] for c in calls if c[0] == "nixos-rebuild" for a in c for m in [re.search(r"fixture\d*-([^-]+)-system", a)] if m]
+
+    def summary_rows(result):
+        return [line.split()[:3] for line in result.stdout.split("==> summary", 1)[1].splitlines()]
 
     calls, _ = run("--help", status=1)
     assert not actions(calls)
     calls, _ = run("unknown", status=1)
     assert not actions(calls)
+    # Everything is built in one step before anything is activated.
     calls, result = run()
-    assert ["sudo", "nixos-rebuild", "switch", "--flake", ".#xyz"] in calls
-    assert ["home-manager", "switch", "--flake", ".#alc-xyz"] in calls
+    # Evaluations run concurrently, so their order varies.
+    assert sorted(evaluated(calls)) == [
+        '.#homeConfigurations."alc-xyz".activationPackage.drvPath',
+        '.#nixosConfigurations."xyz".config.system.build.toplevel.drvPath',
+    ]
+    builds = [c for c in calls if c[0] == "nix" and c[1] == "build" and "--keep-going" in c]
+    assert len(builds) == 1 and builds[0][:3] == ["nix", "build", "--keep-going"] and builds[0][3] == "--out-link"
+    assert builds[0][5:] == [system_path("xyz") + ".drv^out", home_path("xyz") + ".drv^out"]
+    assert ["sudo", str(commands / "nixos-rebuild"), "switch", "--store-path", system_path("xyz"), "--no-reexec"] in calls
+    assert ["activate", "--driver-version", "1"] in calls
+    assert calls.index(builds[0]) < calls.index(["sudo", str(commands / "nixos-rebuild"), "switch", "--store-path", system_path("xyz"), "--no-reexec"])
+    # Built paths stay rooted until their activation: the shared build links
+    # every output, and each built target is rooted again on its own.
+    roots = [c for c in calls if c[0] == "nix" and c[1] == "build" and "--keep-going" not in c]
+    assert [c[-1] for c in roots] == [system_path("xyz") + ".drv^out", home_path("xyz") + ".drv^out"]
+    assert all(c[2] == "--out-link" for c in roots) and builds[0][4].endswith("/build")
+    assert max(calls.index(c) for c in roots) < calls.index(["sudo", str(commands / "nixos-rebuild"), "switch", "--store-path", system_path("xyz"), "--no-reexec"])
     assert "Home Manager NOT updated" not in result.stderr
     # A Home Manager failure after a successful system switch is called out,
     # with the command that brings the host back in step.
     calls, result = run(status=4, MOCK_HM_FAILURE="1")
-    assert ["sudo", "nixos-rebuild", "switch", "--flake", ".#xyz"] in calls
+    assert ["sudo", str(commands / "nixos-rebuild"), "switch", "--store-path", system_path("xyz"), "--no-reexec"] in calls
     assert "[xyz] system updated, Home Manager NOT updated" in result.stderr
     assert "run: deploy --hm xyz" in result.stderr
     # A Home Manager-only deployment leaves the system alone; no warning.
     calls, result = run("--hm", status=4, MOCK_HM_FAILURE="1")
     assert "Home Manager NOT updated" not in result.stderr
+    assert not any(c[0] == "sudo" for c in calls)
     calls, _ = run("--no-preflight", "--nixos", "edge")
-    assert ["nixos-rebuild", "switch", "--flake", ".#node", "--target-host", "root@node.invalid", "--use-substitutes"] in calls
-    assert not any(c[0] == "ssh" for c in calls)
+    assert ["nixos-rebuild", "switch", "--store-path", system_path("node"), "--no-reexec", "--target-host", "root@node.invalid", "--use-substitutes"] in calls
+    # Without preflight, SSH is only used to read the current generation.
+    assert all("/run/current-system" in c[-1] for c in calls if c[0] == "ssh")
     calls, _ = run("--hm", "node")
-    assert ["nix", "build", "--no-link", "--print-out-paths", ".#homeConfigurations.alc-node.activationPackage"] in calls
-    assert ["nix", "copy", "--substitute-on-destination", "--to", "ssh://alc@node.invalid", "/nix/store/fixture-home-activation"] in calls
-    assert any(c[0] == "ssh" and c[-2] == "alc@node.invalid" and "max-jobs = 1" in c[-1] for c in calls)
+    assert evaluated(calls) == ['.#homeConfigurations."alc-node".activationPackage.drvPath']
+    assert ["nix", "copy", "--substitute-on-destination", "--to", "ssh://alc@node.invalid", home_path("node")] in calls
+    # The profile is set before activation, as the home-manager command does.
+    # It runs under sh whatever the remote login shell is.
+    assert any(c[0] == "ssh" and c[-2] == "alc@node.invalid" and c[-1].startswith("sh -c '") and "max-jobs = 1" in c[-1]
+               and f'g="{home_path("node")}"' in c[-1] and 'nix-env --profile "$d/home-manager" --set "$g"' in c[-1]
+               and "--driver-version 1" in c[-1] for c in calls)
     calls, _ = run("--no-preflight", "solo")
-    assert ["nixos-rebuild", "boot", "--flake", ".#solo", "--target-host", "operator@solo.invalid", "--use-substitutes", "--ask-sudo-password"] in calls
-    assert not any(c[0] in {"home-manager", "nix"} for c in calls)
+    assert ["nixos-rebuild", "boot", "--store-path", system_path("solo"), "--no-reexec", "--target-host", "operator@solo.invalid", "--use-substitutes", "--ask-sudo-password"] in calls
+    assert not any("alc-solo" in arg or "solo-home" in arg for c in calls for arg in c)
     calls, _ = run("--hm", "solo", status=1)
     assert not actions(calls)
     calls, _ = run("--nixos", "node", status=1, MOCK_UNREACHABLE="node.invalid")
@@ -183,7 +321,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     # Low space runs the target's own GC once, then checks again.
     calls, result = run("--nixos", "node", MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999")
     assert remote_gc(calls) == ["root@node.invalid"]
-    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    assert rebuilt(calls) == ["node"]
     assert "running nix-gc.service on the host" in result.stdout
     calls, result = run("--nixos", "node", status=1, MOCK_FREE_KIB="1", MOCK_GC_FAILURE="1")
     assert not actions(calls)
@@ -193,7 +331,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert "no nix-gc.timer on the host" in result.stderr
     # A failed collection may still have freed enough space.
     calls, _ = run("--nixos", "node", MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999", MOCK_GC_FAILURE="1")
-    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    assert rebuilt(calls) == ["node"]
     # A stalled collection is abandoned at the deadline.
     started = time.monotonic()
     calls, result = run("--nixos", "node", status=1, MOCK_FREE_KIB="1", MOCK_GC_FAILURE="hang", DEPLOY_REMOTE_GC_TIMEOUT="1")
@@ -209,87 +347,232 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert not actions(calls)
     calls, _ = run("--nixos", "node", status=1, DEPLOY_REMOTE_GC_TIMEOUT="0")
     assert not actions(calls)
+    calls, _ = run("--nixos", "node", status=1, DEPLOY_EVAL_JOBS="0")
+    assert not actions(calls)
     # In a fleet, the root host is collected and deployed; the non-root host
     # gets no collection and is skipped.
     calls, result = run("--all", "--nixos", MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999")
     assert remote_gc(calls) == ["root@node.invalid"]
-    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
-    assert not any(c[0] == "nixos-rebuild" and ".#solo" in c for c in calls)
-    assert ["solo", "skipped", "-"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
+    assert rebuilt(calls) == ["node"]
+    assert ["solo", "skipped", "-"] in summary_rows(result)
     calls, _ = run("--nixos", "node", status=1, MOCK_FREE_KIB="invalid")
     assert not actions(calls)
     calls, _ = run("--no-preflight", "--nixos", "node", MOCK_UNREACHABLE="node.invalid")
-    assert any(c[0] == "nixos-rebuild" for c in calls)
+    assert rebuilt(calls) == ["node"]
     calls, _ = run("--all", "--nixos", host="mac", system="Darwin", status=1)
     assert not actions(calls)
     calls, _ = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
-    assert not any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
-    assert any(c[0] == "nixos-rebuild" and ".#solo" in c for c in calls)
+    assert rebuilt(calls) == ["solo"]
+    assert not any('nixosConfigurations."node"' in arg for arg in evaluated(calls))
     # The local sudo prompt comes before preflight, not after it.
     assert calls.index(["sudo", "-v"]) < min(i for i, c in enumerate(calls) if c[0] == "ssh")
     calls, _ = run("--all", "--nixos", "--fail-unreachable", status=1, MOCK_UNREACHABLE="node.invalid")
     assert not actions(calls)
     calls, _ = run("--all", MOCK_UNREACHABLE="root@node.invalid")
-    assert not any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
-    assert ["nix", "build", "--no-link", "--print-out-paths", ".#homeConfigurations.alc-node.activationPackage"] in calls
-    assert not any("alc-solo.activationPackage" in arg for c in calls for arg in c)
+    assert "node" not in rebuilt(calls)
+    assert '.#homeConfigurations."alc-node".activationPackage.drvPath' in evaluated(calls)
+    assert not any("alc-solo" in arg for arg in evaluated(calls))
     calls, _ = run("--all", "--fail-unreachable", status=1, MOCK_UNREACHABLE="root@node.invalid")
     assert not actions(calls)
+    # Both phases are checked before anything is built, so an unreachable Home
+    # Manager endpoint stops the run before any system switches.
     calls, _ = run("--all", "--fail-unreachable", status=1, MOCK_UNREACHABLE="alc@node.invalid")
-    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
-    assert not any(c[0] == "nix" and "alc-node.activationPackage" in c[-1] for c in calls)
-    # A failed system rebuild must not skip Home Manager for the fleet, and the
+    assert not actions(calls)
+    # A failed system switch must not skip Home Manager for the fleet, and the
     # run still fails with a per-host summary.
     calls, result = run("--all", "--no-preflight", status=1, MOCK_SWITCH_FAILURE="other")
-    assert any(c[0] == "nixos-rebuild" and c[1] == "switch" and ".#node" in c for c in calls)
-    assert ["home-manager", "switch", "--flake", ".#alc-xyz"] in calls
-    assert ["nix", "build", "--no-link", "--print-out-paths", ".#homeConfigurations.alc-node.activationPackage"] in calls
-    summary = result.stdout.split("summary", 1)[1].splitlines()
-    assert ["node", "failed", "ok"] in [line.split() for line in summary]
-    assert ["xyz", "ok", "ok"] in [line.split() for line in summary]
-    assert ["solo", "ok", "-"] in [line.split() for line in summary]
+    assert any(c[0] == "nixos-rebuild" and c[1] == "switch" and system_path("node") in c for c in calls)
+    assert ["activate", "--driver-version", "1"] in calls
+    assert ["nix", "copy", "--substitute-on-destination", "--to", "ssh://alc@node.invalid", home_path("node")] in calls
+    rows = summary_rows(result)
+    assert ["node", "failed", "ok"] in rows
+    assert ["xyz", "ok", "ok"] in rows
+    assert ["solo", "ok", "-"] in rows
     assert "not selected by --all: mac" in result.stdout
+    assert "shared build:" in result.stdout
     assert "one or more fleet jobs failed" in result.stderr
     assert "Home Manager NOT updated" not in result.stderr
     # The fleet summary is followed by an explicit warning for hosts whose
     # system switched while Home Manager failed.
     calls, result = run("--all", "--no-preflight", status=1, MOCK_HM_FAILURE="1")
-    assert ["xyz", "ok", "failed"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
+    assert ["xyz", "ok", "failed"] in summary_rows(result)
     assert "[xyz] system updated, Home Manager NOT updated" in result.stderr
     assert "[node] system updated" not in result.stderr
     # Output of parallel jobs carries the phase and host.
     assert "[hm] [xyz]\tfixture home-manager failure" in result.stderr.splitlines()
     # Preflight-skipped hosts are reported as skipped and do not fail the run.
     calls, result = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
-    assert ["node", "skipped", "-"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
+    assert ["node", "skipped", "-"] in summary_rows(result)
     calls, result = run("--all", "--hm", "--no-preflight")
-    assert ["nix", "build", "--no-link", "--print-out-paths", ".#homeConfigurations.alc-node.activationPackage"] in calls
-    assert not any("alc-solo" in arg for c in calls for arg in c)
-    assert ["home-manager", "switch", "--flake", ".#alc-xyz"] in calls
-    assert not any(c[0] == "nixos-rebuild" for c in calls)
+    assert '.#homeConfigurations."alc-node".activationPackage.drvPath' in evaluated(calls)
+    assert not any("alc-solo" in arg for arg in evaluated(calls))
+    assert ["activate", "--driver-version", "1"] in calls
+    assert not any(c[0] in {"nixos-rebuild", "home-manager"} for c in calls)
     calls, _ = run("--all", "--here", "--no-preflight", "--nixos", host="mac", system="Darwin")
-    assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
+    assert rebuilt(calls) == ["node", "solo"]
     assert not any("--build-host" in c for c in calls)
-    assert not any(".#xyz" in c for c in calls)
+    assert not any("xyz" in arg for arg in evaluated(calls))
     assert not any(c[0] == "sudo" for c in calls)
     config.write_text(json.dumps({**HOST_DATA, "deployAllHosts": ["solo"]}))
     calls, result = run("--all", "--hm")
     assert not actions(calls)
-    assert not any(c[0] in {"ssh", "sudo", "parallel"} for c in calls)
+    assert not any(c[0] in {"ssh", "sudo"} for c in calls)
     assert "no Home Manager-eligible hosts" in result.stdout
     config.write_text(json.dumps(HOST_DATA))
     calls, _ = run("--nixos", host="mac", system="Darwin")
+    assert evaluated(calls) == ['.#darwinConfigurations."mac".system.drvPath']
     assert ["sudo", "/run/current-system/sw/bin/darwin-rebuild", "switch", "--flake", ".#mac"] in calls
     calls, _ = run("--no-preflight", "--nixos", "node", MOCK_SWITCH_FAILURE="inhibited")
-    assert [c[1] for c in calls if c[0] == "nixos-rebuild"] == ["switch", "boot"]
+    assert [c[1] for c in calls if c[0] == "nixos-rebuild" and "/nonexistent" not in c] == ["switch", "boot"]
     calls, _ = run("--no-preflight", "--nixos", "node", status=7, MOCK_SWITCH_FAILURE="other")
-    assert [c[1] for c in calls if c[0] == "nixos-rebuild"] == ["switch"]
+    assert [c[1] for c in calls if c[0] == "nixos-rebuild" and "/nonexistent" not in c] == ["switch"]
+    # The switch-inhibitor fallback applies to fleet runs too.
+    calls, _ = run("--all", "--nixos", "--no-preflight", MOCK_SWITCH_FAILURE="inhibited")
+    assert [c[1] for c in calls if c[0] == "nixos-rebuild" and system_path("node") in c] == ["switch", "boot"]
 
-    def rebuilt(calls):
-        return [arg[2:] for c in calls if c[0] == "nixos-rebuild" for arg in c if arg.startswith(".#")]
-
-    def summary_rows(result):
-        return [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
+    # Hosts that already run what was built are left alone: no copy, no
+    # activation. The local host is compared with its own profile.
+    calls, result = run("--no-preflight", "--nixos", "node", MOCK_CURRENT="node")
+    assert not activations(calls)
+    assert "[system] [node] unchanged: fixture-node-system" in result.stdout
+    assert "node is up to date; nothing to activate" in result.stdout
+    calls, result = run("--hm", "node", MOCK_CURRENT="node")
+    assert not activations(calls)
+    calls, result = run("--no-preflight", "--nixos", "node")
+    assert "[system] [node] changed: old-node-system -> fixture-node-system" in result.stdout
+    # --force activates anyway.
+    calls, result = run("--no-preflight", "--nixos", "node", "--force", MOCK_CURRENT="node")
+    assert rebuilt(calls) == ["node"]
+    assert "activating anyway (--force)" in result.stdout
+    # A host staged with 'boot' is compared by its profile alone.
+    calls, _ = run("--no-preflight", "--nixos", "solo", MOCK_CURRENT="solo")
+    assert not activations(calls)
+    # Home Manager counts as unchanged only when its last activation finished,
+    # not when an interrupted one already moved the profile.
+    calls, result = run("--hm", "node", MOCK_PROFILE_ONLY="node")
+    assert any(c[0] == "ssh" and "/activate" in c[-1] for c in calls)
+    # A target that cannot be rooted is not activated.
+    calls, result = run("--all", "--nixos", "--no-preflight", status=1, MOCK_ROOT_FAIL="node-system")
+    assert rebuilt(calls) == ["solo"]
+    assert "[system] [node] cannot protect the build from garbage collection" in result.stderr
+    # A dry run never starts the remote garbage collection; it assumes the
+    # collection a real run would start frees enough space, and plans on.
+    calls, result = run("--nixos", "node", "--dry-run", MOCK_FREE_KIB="1", MOCK_FREE_KIB_AFTER_GC="99999999")
+    assert not remote_gc(calls) and not activations(calls)
+    assert "dry run: not starting nix-gc.service" in result.stdout and "[system] [node] changed:" in result.stdout
+    # A generation whose last activation from this machine failed is
+    # activated again even though the host's links already point to it.
+    calls, _ = run("--no-preflight", "--nixos", "node", status=7, MOCK_FAIL_HOST="node")
+    calls, result = run("--no-preflight", "--nixos", "node", keep_state=True, MOCK_CURRENT="node")
+    assert rebuilt(calls) == ["node"] and "last activation of fixture-node-system from this machine failed" in result.stdout
+    calls, result = run("--no-preflight", "--nixos", "node", keep_state=True, MOCK_CURRENT="node")
+    assert rebuilt(calls) == [] and "[system] [node] unchanged" in result.stdout
+    calls, _ = run("--all", "--no-preflight", status=1, MOCK_HM_FAILURE="1")
+    calls, result = run("--hm", keep_state=True)
+    assert ["activate", "--driver-version", "1"] in calls
+    # The local Home Manager activation sets the profile first.
+    assert any(c[0] == "nix-env" and c[-2:] == ["--set", home_path("xyz")] for c in calls)
+    # An operator whose nixos-rebuild cannot activate store paths switches
+    # nothing; the probe passes the options without an action.
+    calls, result = run("--no-preflight", "--nixos", "node", status=1, MOCK_CLASSIC_REBUILD="1")
+    assert rebuilt(calls) == [] and "cannot activate a built store path" in result.stderr
+    assert ["nixos-rebuild", "--no-reexec", "--store-path", "/nonexistent"] in calls
+    calls, result = run("--all", "--no-preflight", status=1, MOCK_CLASSIC_REBUILD="1")
+    assert rebuilt(calls) == [] and ["node", "failed", "ok"] in summary_rows(result)
+    # Nothing is activated unless its unfinished-activation entry is saved.
+    state = root / ".local/state/nix-deploy"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(state, ignore_errors=True)
+    state.write_text("not a directory")
+    calls, result = run("--no-preflight", "--nixos", "node", status=1, keep_state=True)
+    assert rebuilt(calls) == [] and "cannot lock system node for activation" in result.stderr
+    calls, result = run("--all", "--no-preflight", status=1, keep_state=True)
+    assert rebuilt(calls) == [] and not any(c[0] == "ssh" and "/activate" in c[-1] for c in calls)
+    state.unlink()
+    # A record that cannot be read counts as unfinished, so a target whose
+    # links match is not passed as unchanged; without a usable record it is
+    # not activated either, and the run fails.
+    state.mkdir()
+    (state / "failed-activations.json").write_text("{damaged")
+    calls, result = run("--no-preflight", "--nixos", "node", status=1, keep_state=True, MOCK_CURRENT="node")
+    assert rebuilt(calls) == [] and "unchanged" not in result.stdout and "cannot use the activation record" in result.stderr
+    shutil.rmtree(state)
+    # An activation that never returns, here interrupted, is retried too.
+    log = root / "commands.jsonl"
+    log.write_text("")
+    shutil.rmtree(root / ".local/state/nix-deploy", ignore_errors=True)
+    env = {"PATH": str(commands), "HOME": str(root), "MOCK_LOG": str(log), "MOCK_STORE": str(store), "MOCK_HOST": "xyz",
+           "MOCK_SYSTEM": "Linux", "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1", "MOCK_REBUILD_HANG": "node"}
+    report = root / "report.json"
+    report.write_text(json.dumps({"failed": False}))
+    interrupted = subprocess.Popen([str(deploy), "--config", str(config), "--no-preflight", "--nixos", "node", "--json", str(report)], cwd=root, env=env,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline = time.monotonic() + 60
+    while not any(json.loads(line)[0] == "nixos-rebuild" and "switch" in json.loads(line) for line in log.read_text().splitlines()):
+        assert time.monotonic() < deadline and interrupted.poll() is None
+        time.sleep(0.1)
+    os.killpg(interrupted.pid, signal.SIGINT)
+    assert interrupted.wait(timeout=30) == 130
+    assert json.loads(report.read_text())["failed"]
+    calls, result = run("--no-preflight", "--nixos", "node", keep_state=True, MOCK_CURRENT="node")
+    assert rebuilt(calls) == ["node"] and "from this machine failed" in result.stdout
+    # A later failure does not hide an earlier one the host may still run.
+    calls, _ = run("--no-preflight", "--nixos", "node", status=7, MOCK_FAIL_HOST="node")
+    calls, _ = run("--no-preflight", "--nixos", "node", keep_state=True, status=7, MOCK_FAIL_HOST="node", MOCK_VARIANT="2")
+    calls, result = run("--no-preflight", "--nixos", "node", keep_state=True, MOCK_CURRENT="node")
+    assert rebuilt(calls) == ["node"] and "from this machine failed" in result.stdout
+    # --dry-run stops after the plan.
+    calls, result = run("--no-preflight", "--dry-run")
+    assert not activations(calls) and any(c[0] == "nix" and c[1] == "build" for c in calls)
+    assert "[system] [xyz] changed:" in result.stdout or "[system] [xyz] current generation unknown" in result.stdout
+    calls, result = run("--all", "--dry-run", "--no-preflight", MOCK_CURRENT="node")
+    assert not activations(calls) and not any(c == ["sudo", "-v"] for c in calls)
+    rows = summary_rows(result)
+    assert ["node", "unchanged", "unchanged"] in rows and ["solo", "planned", "-"] in rows
+    # A build or evaluation failure stops only its own target in a fleet, and
+    # a single-host deploy activates nothing unless everything built.
+    calls, result = run("--all", "--no-preflight", status=1, MOCK_BUILD_FAIL="node-system")
+    assert rebuilt(calls) == ["solo"]
+    rows = summary_rows(result)
+    assert ["node", "failed", "ok"] in rows and ["solo", "ok", "-"] in rows
+    assert "[system] [node] build failed" in result.stderr
+    calls, result = run("--all", "--no-preflight", status=1, MOCK_EVAL_FAIL="node-system")
+    assert rebuilt(calls) == ["solo"] and ["node", "failed", "ok"] in summary_rows(result)
+    assert "[system] [node]\terror: fixture evaluation failure in node-system" in result.stderr.splitlines()
+    calls, result = run("--no-preflight", "node", status=1, MOCK_BUILD_FAIL="node-home")
+    assert not activations(calls)
+    assert "node did not build; nothing was activated" in result.stderr
+    # --json writes per-host results and timings.
+    report = root / "report.json"
+    calls, result = run("--all", "--no-preflight", "--json", str(report), MOCK_CURRENT="node")
+    data = json.loads(report.read_text())
+    hosts = {h["host"]: h for h in data["hosts"]}
+    assert hosts["node"]["system"]["status"] == "unchanged" and hosts["solo"]["system"]["status"] == "ok"
+    assert hosts["xyz"]["homeManager"]["status"] == "ok" and hosts["solo"]["homeManager"]["status"] == "-"
+    assert hosts["solo"]["system"]["evaluateSeconds"] > 0 and data["buildSeconds"] > 0 and not data["failed"]
+    calls, _ = run("--all", "--json", status=1)
+    calls, _ = run("--no-preflight", "--nixos", "node", "--json", str(report), status=7, MOCK_SWITCH_FAILURE="other")
+    data = json.loads(report.read_text())
+    assert data["failed"] and data["hosts"][0]["system"]["status"] == "failed"
+    calls, _ = run("--no-preflight", "node", "--json", str(report))
+    data = json.loads(report.read_text())
+    assert not data["failed"] and [data["hosts"][0][phase]["status"] for phase in ["system", "homeManager"]] == ["ok", "ok"]
+    calls, _ = run("--no-preflight", "node", "--dry-run", "--json", str(report), MOCK_CURRENT="node")
+    data = json.loads(report.read_text())
+    assert data["hosts"][0]["system"]["status"] == "unchanged"
+    # A run that cannot start, or stops early, still replaces the previous
+    # report.
+    calls, _ = run("--all", "--json", str(report), status=1, DEPLOY_EVAL_JOBS="0")
+    assert json.loads(report.read_text()) == {"buildSeconds": 0, "totalSeconds": 0, "failed": True, "hosts": []}
+    calls, _ = run("--all", "--no-preflight", "--json", str(report))
+    calls, _ = run("--all", "--json", str(report), "--dryrun", status=1)
+    assert json.loads(report.read_text())["failed"]
+    calls, _ = run("--all", "--no-preflight", "--json", str(report))
+    calls, _ = run("--all", "--json", str(report), "--json", status=1)
+    assert json.loads(report.read_text())["failed"]
+    calls, _ = run("--all", "--fail-unreachable", "--json", str(report), status=1, MOCK_UNREACHABLE="node.invalid")
+    data = json.loads(report.read_text())
+    assert data["failed"] and {h["host"] for h in data["hosts"]} == {"xyz", "node", "solo"}
 
     # Serial hosts leave the parallel batch. After a one-shot ready pre-check
     # of the whole group, they switch one at a time in serialSystemHosts
@@ -297,14 +580,14 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     config.write_text(json.dumps(SERIAL_DATA))
     calls, result = run("--all", "--nixos", "--no-preflight")
     assert rebuilt(calls) == ["node", "solo", "k1", "k2", "k3"]
-    sequence = [(c[0], c[1]) for c in calls if c[0] == "ready-check" or (c[0] == "nixos-rebuild" and c[-1] != "--ask-sudo-password" and ".#node" not in c)]
+    sequence = [(c[0], c[1]) if c[0] == "ready-check" else (c[0], rebuilt([c])[0]) for c in calls if c[0] == "ready-check" or rebuilt([c]) in (["k1"], ["k2"], ["k3"])]
     assert sequence == [
         ("ready-check", "k1"), ("ready-check", "k2"), ("ready-check", "k3"),
-        ("nixos-rebuild", "switch"), ("ready-check", "k1"),
+        ("nixos-rebuild", "k1"), ("ready-check", "k1"),
         ("ready-check", "k1"), ("ready-check", "k3"),
-        ("nixos-rebuild", "switch"), ("ready-check", "k2"),
+        ("nixos-rebuild", "k2"), ("ready-check", "k2"),
         ("ready-check", "k1"), ("ready-check", "k2"),
-        ("nixos-rebuild", "switch"), ("ready-check", "k3"),
+        ("nixos-rebuild", "k3"), ("ready-check", "k3"),
     ], sequence
     assert [c for c in calls if c[0] == "ready-check"][0] == ["ready-check", "k1", "--node=k1"]
     assert all(row in summary_rows(result) for row in [["k1", "ok", "-"], ["k2", "ok", "-"], ["k3", "ok", "-"]])
@@ -325,7 +608,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert "skipped serial hosts: k3" in result.stderr
     assert "one or more fleet jobs failed" in result.stderr
     # A failed serial switch skips its gate and the remaining serial hosts.
-    calls, result = run("--all", "--nixos", "--no-preflight", status=1, MOCK_FAIL_FLAKE=".#k1")
+    calls, result = run("--all", "--nixos", "--no-preflight", status=1, MOCK_FAIL_HOST="k1")
     assert rebuilt(calls) == ["node", "solo", "k1"]
     assert [c[1] for c in calls if c[0] == "ready-check"] == ["k1", "k2", "k3"]  # pre-check only
     rows = summary_rows(result)
@@ -359,6 +642,17 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert "serial rollout stopped: k3 not ready before switching k2" in result.stderr
     assert "skipped serial hosts: k2 k3" in result.stderr
     assert "one or more fleet jobs failed" in result.stderr
+    # Only changed members switch and wait on the gate; the whole group is
+    # still checked before the first switch.
+    calls, result = run("--all", "--nixos", "--no-preflight", MOCK_CURRENT="node,solo,k1,k3")
+    assert rebuilt(calls) == ["k2"]
+    assert [c[1] for c in calls if c[0] == "ready-check"] == ["k1", "k2", "k3", "k2"]
+    rows = summary_rows(result)
+    assert ["k1", "unchanged", "-"] in rows and ["k2", "ok", "-"] in rows and ["node", "unchanged", "-"] in rows
+    # A fleet with nothing changed activates nothing and runs no gates.
+    calls, result = run("--all", "--nixos", "--no-preflight", MOCK_CURRENT="node,solo,k1,k2,k3")
+    assert rebuilt(calls) == [] and not any(c[0] == "ready-check" for c in calls)
+    assert all(row in summary_rows(result) for row in [["k1", "unchanged", "-"], ["node", "unchanged", "-"], ["solo", "unchanged", "-"]])
     # Serial members outside this run's selection are pre-checked too.
     config.write_text(json.dumps({**SERIAL_DATA, "deployAllHosts": ["xyz", "node", "k1", "solo", "k2"]}))
     calls, result = run("--all", "--nixos", "--no-preflight", status=1, MOCK_READY_FAIL="k3")
@@ -376,6 +670,13 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, result = run("--no-preflight", "--nixos", "k2")
     assert rebuilt(calls) == ["k2"] and ["ready-check", "k2", "--node=k2"] in calls
     assert "ready gate passed" in result.stdout
+    # A member that switched but failed its gate is switched and gated again.
+    calls, _ = run("--no-preflight", "--nixos", "k2", status=1, MOCK_READY_FAIL_AFTER_SWITCH="k2", DEPLOY_SERIAL_READY_INTERVAL="30")
+    calls, result = run("--no-preflight", "--nixos", "k2", keep_state=True, MOCK_CURRENT="k2")
+    assert rebuilt(calls) == ["k2"] and ["ready-check", "k2", "--node=k2"] in calls
+    # An unchanged serial host is neither checked nor gated.
+    calls, result = run("--no-preflight", "--nixos", "k2", MOCK_CURRENT="k2")
+    assert rebuilt(calls) == [] and not any(c[0] == "ready-check" for c in calls)
     started = time.monotonic()
     calls, result = run("--no-preflight", "--nixos", "k2", status=1, MOCK_READY_FAIL_AFTER_SWITCH="k2", DEPLOY_SERIAL_READY_INTERVAL="30")
     # A pause as long as the remaining budget would leave no time to retry.
@@ -412,6 +713,28 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, _ = run("--all", "--nixos", "--no-preflight")
     assert rebuilt(calls) == ["node", "solo", "k1", "k2", "k3"]
     assert not any(c[0] == "ready-check" for c in calls)
+
+    # Serial groups are independent: a blocked quorum group leaves the DNS
+    # group's rollout alone, and groups switch one after another.
+    config.write_text(json.dumps(GROUP_DATA))
+    calls, result = run("--all", "--nixos", "--no-preflight", status=1, MOCK_READY_FAIL="k2")
+    assert rebuilt(calls) == ["node", "solo", "d1", "d2"]
+    assert [c[1:] for c in calls if c[0] == "ready-check"] == [
+        ["k1", "--node=k1"], ["k2", "--node=k2"],
+        ["d1", "--dns"], ["d2", "--dns"], ["d1", "--dns"],
+        ["d1", "--dns"], ["d2", "--dns"],
+    ]
+    rows = summary_rows(result)
+    assert ["d1", "ok", "-"] in rows and ["d2", "ok", "-"] in rows and ["k1", "skipped", "-"] in rows
+    assert "serial group blocked: k2 not ready before rollout" in result.stderr
+    # An unreachable DNS server blocks only its own group.
+    calls, result = run("--all", "--nixos", status=1, MOCK_UNREACHABLE="d2.invalid")
+    assert rebuilt(calls) == ["node", "solo", "k1", "k2", "k3"]
+    assert ["d1", "skipped", "-"] in summary_rows(result)
+    assert "serial group blocked: d2 failed preflight" in result.stderr
+    # A single-host deploy checks only its own group.
+    calls, result = run("--no-preflight", "--nixos", "d1")
+    assert [c[1:] for c in calls if c[0] == "ready-check"] == [["d2", "--dns"], ["d1", "--dns"]]
     config.write_text(json.dumps(HOST_DATA))
 
     def reject_inventory(data, expected):
@@ -421,7 +744,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         log.write_text("")
         env = {
             "PATH": str(commands),
-            "HOME": str(root), "MOCK_LOG": str(log),
+            "HOME": str(root), "MOCK_LOG": str(log), "MOCK_STORE": str(store),
             "MOCK_HOST": "xyz", "MOCK_SYSTEM": "Linux", "NO_COLOR": "1",
         }
         result = subprocess.run([str(deploy), "--config", str(candidate), "--help"], cwd=root, env=env, capture_output=True, text=True)
@@ -433,7 +756,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert missing.returncode == 1 and "no inventory configured" in missing.stderr
     configured = subprocess.run(
         [str(deploy), "--help"], cwd=root,
-        env={"PATH": str(commands), "NIX_DEPLOY_CONFIG": str(config), "MOCK_LOG": str(root / "commands.jsonl"), "MOCK_HOST": "xyz", "MOCK_SYSTEM": "Linux"},
+        env={"PATH": str(commands), "NIX_DEPLOY_CONFIG": str(config), "MOCK_LOG": str(root / "commands.jsonl"), "MOCK_STORE": str(store), "MOCK_HOST": "xyz", "MOCK_SYSTEM": "Linux"},
         capture_output=True, text=True,
     )
     assert configured.returncode == 1 and "Known hosts: xyz node solo mac" in configured.stdout
@@ -453,7 +776,11 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         {"serialReadyTimeoutSeconds": 0},
         {"serialReadyTimeoutSeconds": 1.5},
         *({key: value} for key in ["serialSystemHosts", "serialReadyCommand", "serialReadyTimeoutSeconds"] for value in [False, None]),
+        {"serialGroups": [{"hosts": ["k1"]}]},
+        {"serialGroups": [{"hosts": []}]},
+        {"serialGroups": [{"hosts": ["node"], "command": "true"}]},
+        {"serialGroups": {"hosts": ["node"]}},
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
-print("Deployment contract: 54 mocked CLI cases and 20 invalid inventories passed; no deployment commands executed")
+print("Deployment contract: 105 mocked CLI cases and 24 invalid inventories passed; no deployment commands executed")

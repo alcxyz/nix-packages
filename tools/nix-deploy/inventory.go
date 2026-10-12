@@ -26,10 +26,19 @@ type inventory struct {
 	SystemRemoteSudoHosts []string
 	SystemActivationModes map[string]string
 	HostColors            map[string]string
-	SerialSystemHosts     []string
-	SerialReadyCommand    string
-	SerialReadyTimeout    int
+	SerialGroups          []*serialGroup
 }
+
+// serialGroup is a set of hosts that must not switch together, such as the
+// members of a quorum cluster or the network's DNS servers. Members switch
+// one at a time, each followed by the group's ready gate.
+type serialGroup struct {
+	Hosts        []string
+	ReadyCommand string
+	ReadyTimeout int
+}
+
+const defaultReadyTimeout = 600
 
 // Names, users and prefixes become command arguments and flake attribute
 // names, and endpoints become SSH destinations, so both are restricted to the
@@ -91,7 +100,7 @@ func schemaVersion(raw json.RawMessage) (string, error) {
 }
 
 func validateInventory(fields map[string]json.RawMessage) (*inventory, bool) {
-	inv := &inventory{SerialReadyTimeout: 600}
+	inv := &inventory{}
 	ok := true
 	check := func(valid bool) {
 		if !valid {
@@ -156,25 +165,95 @@ func validateInventory(fields map[string]json.RawMessage) (*inventory, bool) {
 		check(valid)
 	}
 
+	// serialSystemHosts, serialReadyCommand and serialReadyTimeoutSeconds
+	// are shorthand for the first serial group.
+	shorthand := &serialGroup{ReadyTimeout: defaultReadyTimeout}
 	if raw, present := fields["serialSystemHosts"]; present {
-		inv.SerialSystemHosts, valid = knownList(raw, known)
+		shorthand.Hosts, valid = knownList(raw, known)
 		check(valid)
 	}
 	if raw, present := fields["serialReadyCommand"]; present {
-		check(json.Unmarshal(raw, &inv.SerialReadyCommand) == nil && isString(raw))
+		check(json.Unmarshal(raw, &shorthand.ReadyCommand) == nil && isString(raw))
 	}
 	if raw, present := fields["serialReadyTimeoutSeconds"]; present {
-		var number json.Number
-		valid = decodeNumber(raw, &number)
-		if valid {
-			seconds, err := number.Float64()
-			valid = err == nil && seconds == math.Floor(seconds) && seconds > 0 && seconds <= math.MaxInt32
-			inv.SerialReadyTimeout = int(seconds)
-		}
+		shorthand.ReadyTimeout, valid = positiveSeconds(raw)
 		check(valid)
+	}
+	if len(shorthand.Hosts) > 0 {
+		inv.SerialGroups = append(inv.SerialGroups, shorthand)
+	}
+	if raw, present := fields["serialGroups"]; present {
+		groups, valid := serialGroups(raw, known)
+		check(valid)
+		inv.SerialGroups = append(inv.SerialGroups, groups...)
+	}
+	// A host belongs to at most one group, so each switch has one gate.
+	var grouped []string
+	for _, group := range inv.SerialGroups {
+		for _, host := range group.Hosts {
+			check(!contains(grouped, host))
+			grouped = append(grouped, host)
+		}
 	}
 
 	return inv, ok
+}
+
+// serialGroups parses a list of {hosts, readyCommand, readyTimeoutSeconds}
+// objects. Only hosts is required, and it must not be empty.
+func serialGroups(raw json.RawMessage, known []string) ([]*serialGroup, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(string(raw)), "[") {
+		return nil, false
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return nil, false
+	}
+	var groups []*serialGroup
+	for _, item := range items {
+		if !strings.HasPrefix(strings.TrimSpace(string(item)), "{") {
+			return nil, false
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(item, &fields) != nil {
+			return nil, false
+		}
+		group := &serialGroup{ReadyTimeout: defaultReadyTimeout}
+		var ok bool
+		for key, value := range fields {
+			switch key {
+			case "hosts":
+				group.Hosts, ok = knownList(value, known)
+				ok = ok && len(group.Hosts) > 0
+			case "readyCommand":
+				ok = isString(value) && json.Unmarshal(value, &group.ReadyCommand) == nil
+			case "readyTimeoutSeconds":
+				group.ReadyTimeout, ok = positiveSeconds(value)
+			default:
+				ok = false
+			}
+			if !ok {
+				return nil, false
+			}
+		}
+		if len(group.Hosts) == 0 {
+			return nil, false
+		}
+		groups = append(groups, group)
+	}
+	return groups, true
+}
+
+func positiveSeconds(raw json.RawMessage) (int, bool) {
+	var number json.Number
+	if !decodeNumber(raw, &number) {
+		return 0, false
+	}
+	seconds, err := number.Float64()
+	if err != nil || seconds != math.Floor(seconds) || seconds <= 0 || seconds > math.MaxInt32 {
+		return 0, false
+	}
+	return int(seconds), true
 }
 
 func decodeNumber(raw json.RawMessage, number *json.Number) bool {
@@ -329,6 +408,12 @@ func (inv *inventory) usesHomeManager(host string) bool {
 	return contains(inv.HomeManagerHosts, host)
 }
 
-func (inv *inventory) isSerial(host string) bool {
-	return contains(inv.SerialSystemHosts, host)
+// group returns the serial group host belongs to, or nil.
+func (inv *inventory) group(host string) *serialGroup {
+	for _, group := range inv.SerialGroups {
+		if contains(group.Hosts, host) {
+			return group
+		}
+	}
+	return nil
 }

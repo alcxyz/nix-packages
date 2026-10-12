@@ -71,8 +71,15 @@ func (d *deployer) checkCapacity(host string) bool {
 		return false
 	}
 
-	// Only root can start the unit without an interactive sudo prompt.
-	if free < minimum && d.settings.remoteGC && d.inv.systemUser(host) == "root" {
+	// Only root can start the unit without an interactive sudo prompt. A dry
+	// run changes nothing on the host, so it assumes the collection a real run
+	// would start frees enough space.
+	collects := free < minimum && d.settings.remoteGC && d.inv.systemUser(host) == "root"
+	if collects && d.dryRun {
+		fmt.Printf("%s only %s free on /nix filesystem; dry run: not starting nix-gc.service, assuming a real run frees enough\n", label, formatGiB(free))
+		return true
+	}
+	if collects {
 		fmt.Printf("%s only %s free on /nix filesystem; running nix-gc.service on the host\n", label, formatGiB(free))
 		if message, ok := d.remoteGC(endpoint); !ok {
 			fmt.Fprintf(os.Stderr, "%s %s\n", label, message)

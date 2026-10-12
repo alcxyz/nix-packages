@@ -12,63 +12,52 @@ import (
 // sudoRefresh keeps cached local sudo credentials alive while fleet jobs run.
 const sudoRefresh = 60 * time.Second
 
-// fleet holds the per-host results of one --all run, keyed by phase and host.
-type fleet struct {
-	results map[string]string
-	failed  bool
-}
-
-func (f *fleet) record(phase, host, status string) {
-	f.results[phase+":"+host] = status
-	if status == "failed" {
-		f.failed = true
-	}
-}
-
-func (f *fleet) result(phase, host string) string {
-	if status, ok := f.results[phase+":"+host]; ok {
-		return status
-	}
-	return "-"
-}
-
-// job is one host's work in a parallel phase.
+// job is one host's activation in a parallel phase.
 type job struct {
-	host string
-	run  func(streams stdio) int
+	target target
+	path   string
+	run    func(streams stdio) int
 }
 
-// runJobs runs every job at once and records each result. Each output line
-// carries the phase and host. One failed host never hides the outcome of the
-// others or stops later phases.
-func (d *deployer) runJobs(phase string, jobs []job, f *fleet) {
+// runJobs runs every job at once and records each result and duration. Each
+// output line carries the phase and host. One failed host never hides the
+// outcome of the others or stops later phases.
+func (d *deployer) runJobs(jobs []job, r *report) {
 	var lock sync.Mutex
 	statuses := make([]int, len(jobs))
+	elapsed := make([]time.Duration, len(jobs))
 	var wait sync.WaitGroup
 	for i, j := range jobs {
 		wait.Add(1)
-		go func(i int, j job) {
+		go func() {
 			defer wait.Done()
-			tag := d.ui.phase(phase) + " " + d.ui.host(j.host)
+			tag := d.label(j.target)
 			out := &prefixWriter{lock: &lock, dst: os.Stdout, prefix: tag}
 			errOut := &prefixWriter{lock: &lock, dst: os.Stderr, prefix: tag}
-			statuses[i] = j.run(stdio{in: bytes.NewReader(nil), out: out, err: errOut})
+			started := time.Now()
+			// Recorded inside the job, so an interrupted run keeps the
+			// results of jobs that already ended.
+			if d.failed.begin(j.target, j.path) {
+				statuses[i] = j.run(stdio{in: bytes.NewReader(nil), out: out, err: errOut})
+				d.failed.finish(j.target, statuses[i] == 0)
+			} else {
+				// Without the record a failure could later pass as unchanged.
+				statuses[i] = 1
+			}
+			elapsed[i] = time.Since(started)
 			out.flush()
 			errOut.flush()
-		}(i, j)
+		}()
 	}
 	wait.Wait()
 	for i, j := range jobs {
-		if statuses[i] == 0 {
-			f.record(phase, j.host, "ok")
-		} else {
-			f.record(phase, j.host, "failed")
-		}
+		r.addTime(j.target, "activate", elapsed[i])
+		r.record(j.target.phase, j.target.host, outcome(statuses[i]))
 	}
 }
 
 // startSudoKeepalive asks for the local password before the slow preflight
-// and evaluation steps, so the prompt appears when the command starts, then
+// and build steps, so the prompt appears when the command starts, then
 // refreshes the credentials until stopped.
 func (d *deployer) startSudoKeepalive() (func(), bool) {
 	fmt.Printf("deploy: sudo is needed to switch %s locally\n", d.self)
@@ -94,180 +83,235 @@ func (d *deployer) startSudoKeepalive() (func(), bool) {
 }
 
 func (d *deployer) deployAll(mode string) int {
-	if d.self != d.inv.OperatorHost && !d.buildHere {
-		fmt.Fprintf(os.Stderr, "deploy --all must be run from %s, or pass --here to run from %s\n", d.inv.OperatorHost, d.self)
-		return 1
-	}
 	selected := d.inv.DeployAllHosts
 	if d.self != d.inv.OperatorHost {
 		selected = d.inv.RemoteHosts
 	}
-	var homeCandidates []string
-	for _, host := range selected {
-		if d.inv.usesHomeManager(host) {
-			homeCandidates = append(homeCandidates, host)
+	r := newReport()
+	status := d.deployFleet(mode, selected, r)
+	if status != 0 {
+		r.failed = true
+	}
+	if !d.saveReport(selected, r) && status == 0 {
+		status = 1
+	}
+	return status
+}
+
+func (d *deployer) deployFleet(mode string, selected []string, r *report) int {
+	if d.self != d.inv.OperatorHost && !d.buildHere {
+		fmt.Fprintf(os.Stderr, "deploy --all must be run from %s, or pass --here to run from %s\n", d.inv.OperatorHost, d.self)
+		return 1
+	}
+	systems := mode == "nixos" || mode == "full"
+	homes := mode == "hm" || mode == "full"
+
+	// Each serial group that cannot switch in this run, with the reason.
+	blocked := map[*serialGroup]string{}
+	var targets []target
+
+	if systems {
+		if contains(selected, d.self) && !d.dryRun {
+			stop, ok := d.startSudoKeepalive()
+			if !ok {
+				return 1
+			}
+			defer stop()
+		}
+		available, skipped, ok := d.filterReachable("nixos", selected)
+		if !ok {
+			if d.failUnreachable {
+				return 1
+			}
+			r.failed = true
+		}
+		for _, host := range skipped {
+			r.record("system", host, "skipped")
+			// One unreachable member already reduces a group; switching
+			// another could leave too few members, so the whole group waits.
+			if group := d.inv.group(host); group != nil && blocked[group] == "" {
+				blocked[group] = "serial group blocked: " + host + " failed preflight; switching the others could break quorum"
+				r.failed = true
+			}
+		}
+		for _, host := range available {
+			targets = append(targets, target{phase: "system", host: host})
 		}
 	}
 
-	f := &fleet{results: map[string]string{}}
-	if mode == "nixos" || mode == "full" {
-		if status := d.deploySystems(selected, f); status != 0 {
-			return status
+	if homes {
+		var candidates []string
+		for _, host := range selected {
+			if d.inv.usesHomeManager(host) {
+				candidates = append(candidates, host)
+			}
 		}
-	}
-
-	if mode == "hm" || mode == "full" {
-		if len(homeCandidates) == 0 {
+		if len(candidates) == 0 {
 			fmt.Println("deploy: no Home Manager-eligible hosts in selected fleet")
 		} else {
-			available, skipped, ok := d.filterReachable("hm", homeCandidates)
+			available, skipped, ok := d.filterReachable("hm", candidates)
 			if !ok {
 				if d.failUnreachable {
 					return 1
 				}
-				f.failed = true
+				r.failed = true
 			}
 			for _, host := range skipped {
-				f.record("hm", host, "skipped")
+				r.record("hm", host, "skipped")
 			}
-			d.ui.section("home-manager switches")
-			var jobs []job
 			for _, host := range available {
-				jobs = append(jobs, job{host: host, run: func(streams stdio) int { return d.activateHome(host, streams) }})
-			}
-			if len(jobs) > 0 {
-				d.runJobs("hm", jobs, f)
+				targets = append(targets, target{phase: "hm", host: host})
 			}
 		}
 	}
 
-	d.printSummary(selected, f)
-	var lagging []string
-	for _, host := range selected {
-		home := f.result("hm", host)
-		if f.result("system", host) == "ok" && (home == "failed" || home == "skipped") {
-			lagging = append(lagging, host)
+	built := d.buildTargets(targets, r)
+	changed := d.plan(targets, built, r)
+	if d.dryRun {
+		for _, t := range changed {
+			r.record(t.phase, t.host, "planned")
 		}
+	} else {
+		d.activateSystems(changed, built, blocked, r)
+		d.activateHomes(changed, built, r)
 	}
-	if len(lagging) > 0 {
-		d.ui.warnPartial(lagging)
-	}
-	if f.failed {
-		fmt.Fprintln(os.Stderr, "deploy: one or more fleet jobs failed; see the summary above")
-		return 1
-	}
-	return 0
+	return d.finish(selected, r)
 }
 
-// deploySystems runs the system phase of a fleet run. It returns a non-zero
-// status only when the run must stop before the Home Manager phase.
-func (d *deployer) deploySystems(candidates []string, f *fleet) int {
-	if contains(candidates, d.self) {
-		stop, ok := d.startSudoKeepalive()
-		if !ok {
-			return 1
-		}
-		defer stop()
-	}
-
-	available, skipped, ok := d.filterReachable("nixos", candidates)
-	if !ok {
-		if d.failUnreachable {
-			return 1
-		}
-		f.failed = true
-	}
-	serialFailure := ""
-	for _, host := range skipped {
-		f.record("system", host, "skipped")
-		// One unreachable member already reduces a quorum group; switching
-		// another could leave too few members, so the whole group waits.
-		if serialFailure == "" && d.inv.isSerial(host) {
-			serialFailure = "serial group blocked: " + host + " failed preflight; switching the others could break quorum"
-			f.failed = true
+// activateSystems switches the changed systems: independent hosts in one
+// parallel batch, hosts that prompt for a remote sudo password one at a time
+// with this terminal attached, then each serial group.
+func (d *deployer) activateSystems(changed []target, built map[string]string, blocked map[*serialGroup]string, r *report) {
+	for _, t := range changed {
+		if d.needsRebuild(t) && !d.rebuildSupportsStorePaths() {
+			for _, t := range changed {
+				if t.phase == "system" {
+					r.record(t.phase, t.host, "failed")
+				}
+			}
+			return
 		}
 	}
-
-	d.ui.section("system rebuilds")
 	var jobs []job
-	var interactive []string
-	serialSelected := map[string]bool{}
-	for _, host := range available {
-		switch {
-		case d.inv.isSerial(host):
-			serialSelected[host] = true
-		case host != d.self && d.inv.usesRemoteSudo(host):
-			interactive = append(interactive, host)
-		default:
-			jobs = append(jobs, job{host: host, run: func(streams stdio) int { return d.activateSystem(host, streams, true) }})
+	var interactive []target
+	members := map[*serialGroup]map[string]bool{}
+	for _, t := range changed {
+		if t.phase != "system" {
+			continue
 		}
+		path := built[t.key()]
+		switch group := d.inv.group(t.host); {
+		case group != nil:
+			if members[group] == nil {
+				members[group] = map[string]bool{}
+			}
+			members[group][t.host] = true
+		case t.host != d.self && d.inv.usesRemoteSudo(t.host):
+			interactive = append(interactive, t)
+		default:
+			jobs = append(jobs, job{target: t, path: path, run: func(streams stdio) int {
+				return d.activateSystem(t.host, path, streams, true)
+			}})
+		}
+	}
+
+	if len(jobs) > 0 || len(interactive) > 0 {
+		d.ui.section("system switches")
 	}
 	if len(jobs) > 0 {
-		d.runJobs("system", jobs, f)
+		d.runJobs(jobs, r)
 	}
-
-	// Hosts that prompt for a remote sudo password switch one at a time with
-	// this terminal attached.
-	for _, host := range interactive {
-		fmt.Printf("%s %s %s\n", d.ui.phase("system"), d.ui.host(host), strings.Join(d.systemCommand(host, d.inv.activationMode(host), true), " "))
-		if d.activateSystem(host, attached, true) == 0 {
-			f.record("system", host, "ok")
-		} else {
-			f.record("system", host, "failed")
+	for _, t := range interactive {
+		path := built[t.key()]
+		fmt.Printf("%s %s\n", d.label(t), strings.Join(d.systemCommand(t.host, d.systemAction(t.host), path, true), " "))
+		if !d.failed.begin(t, path) {
+			r.record("system", t.host, "failed")
+			continue
 		}
+		started := time.Now()
+		status := d.activateSystem(t.host, path, attached, true)
+		r.addTime(t, "activate", time.Since(started))
+		d.recordActivation(r, t, status)
 	}
 
-	d.deploySerial(serialSelected, serialFailure, f)
-	return 0
+	for _, group := range d.inv.SerialGroups {
+		failure := blocked[group]
+		if len(members[group]) == 0 {
+			// Nothing in this group changed; a blocked group still fails
+			// the run, which preflight already recorded.
+			if failure != "" {
+				fmt.Fprintln(os.Stderr, "deploy: "+failure)
+			}
+			continue
+		}
+		d.switchGroup(group, members[group], built, failure, r)
+	}
 }
 
-// deploySerial switches the selected serial hosts one at a time, in
-// inventory order, after the parallel batch. Every serial host, selected or
-// not, must be ready before the first switch, and the other members are
-// checked again before each later one. The first switch, gate or check
-// failure stops the rollout so the remaining members are left untouched.
-func (d *deployer) deploySerial(selected map[string]bool, failure string, f *fleet) {
-	if failure == "" && len(selected) > 0 && d.inv.SerialReadyCommand != "" {
+// switchGroup switches a serial group's changed members one at a time, in
+// inventory order. Every member, changed or not, must be ready before the
+// first switch, and the other members are checked again before each later
+// one. The first switch, gate or check failure stops the group's rollout so
+// its remaining members are left untouched.
+func (d *deployer) switchGroup(group *serialGroup, changed map[string]bool, built map[string]string, failure string, r *report) {
+	if failure == "" && group.ReadyCommand != "" {
 		d.ui.section("serial group pre-check")
-		if notReady, ok := d.precheckSerial(d.inv.SerialSystemHosts); !ok {
+		if notReady, ok := d.precheck(group, group.Hosts); !ok {
 			failure = "serial group blocked: " + notReady + " not ready before rollout; switching the others could break quorum"
-			f.failed = true
 		}
 	}
 
 	var skipped []string
 	switched := false
-	for _, host := range d.inv.SerialSystemHosts {
-		if !selected[host] {
+	for _, host := range group.Hosts {
+		if !changed[host] {
 			continue
 		}
-		if failure == "" && switched && d.inv.SerialReadyCommand != "" {
+		t := target{phase: "system", host: host}
+		if failure == "" && switched && group.ReadyCommand != "" {
 			d.ui.section("serial group check before " + host)
-			if notReady, ok := d.precheckSerial(d.otherSerialHosts(host)); !ok {
+			if notReady, ok := d.precheck(group, group.others(host)); !ok {
 				failure = "serial rollout stopped: " + notReady + " not ready before switching " + host + "; switching it could break quorum"
 			}
 		}
 		if failure != "" {
-			f.record("system", host, "skipped")
+			r.record("system", host, "skipped")
 			skipped = append(skipped, host)
 			continue
 		}
 		switched = true
-		d.ui.section(d.ui.phase("system") + " " + d.ui.host(host) + " serial rebuild")
-		fmt.Printf("%s %s %s\n", d.ui.phase("system"), d.ui.host(host), strings.Join(d.systemCommand(host, d.inv.activationMode(host), true), " "))
-		switch {
-		case d.activateSystem(host, attached, true) != 0:
-			f.record("system", host, "failed")
-			failure = "serial rollout stopped: " + host + " failed its system switch"
-		case !d.waitReady(host):
-			f.record("system", host, "failed")
-			failure = "serial rollout stopped: " + host + " failed the serial ready gate (serialReadyCommand)"
-		default:
-			f.record("system", host, "ok")
+		path := built[t.key()]
+		d.ui.section(d.label(t) + " serial switch")
+		fmt.Printf("%s %s\n", d.label(t), strings.Join(d.systemCommand(host, d.systemAction(host), path, true), " "))
+		if !d.failed.begin(t, path) {
+			r.record("system", host, "failed")
+			failure = "serial rollout stopped: cannot record the activation of " + host
+			continue
 		}
+		started := time.Now()
+		status := d.activateSystem(host, path, attached, true)
+		r.addTime(t, "activate", time.Since(started))
+		if status != 0 {
+			d.failed.finish(t, false)
+			r.record("system", host, "failed")
+			failure = "serial rollout stopped: " + host + " failed its system switch"
+			continue
+		}
+		// A member that switched but did not rejoin stays unfinished, so the
+		// next run switches and gates it again.
+		started = time.Now()
+		ready := d.waitReady(group, host)
+		r.addTime(t, "gate", time.Since(started))
+		d.failed.finish(t, ready)
+		if !ready {
+			r.record("system", host, "failed")
+			failure = "serial rollout stopped: " + host + " failed the serial ready gate (serialReadyCommand)"
+			continue
+		}
+		r.record("system", host, "ok")
 	}
 	if failure != "" {
-		f.failed = true
+		r.failed = true
 		fmt.Fprintln(os.Stderr, "deploy: "+failure)
 		if len(skipped) > 0 {
 			fmt.Fprintln(os.Stderr, "deploy: skipped serial hosts: "+joinHosts(skipped))
@@ -275,19 +319,40 @@ func (d *deployer) deploySerial(selected map[string]bool, failure string, f *fle
 	}
 }
 
-func (d *deployer) printSummary(selected []string, f *fleet) {
-	d.ui.section("summary")
-	fmt.Printf("%-12s %-10s %s\n", "host", "system", "home-manager")
-	for _, host := range selected {
-		fmt.Printf("%-12s %-10s %s\n", host, f.result("system", host), f.result("hm", host))
+func (d *deployer) activateHomes(changed []target, built map[string]string, r *report) {
+	var jobs []job
+	for _, t := range changed {
+		if t.phase != "hm" {
+			continue
+		}
+		path := built[t.key()]
+		jobs = append(jobs, job{target: t, path: path, run: func(streams stdio) int {
+			return d.activateHome(t.host, path, streams)
+		}})
 	}
-	var excluded []string
-	for _, host := range d.inv.KnownHosts {
-		if !contains(selected, host) {
-			excluded = append(excluded, host)
+	if len(jobs) > 0 {
+		d.ui.section("home-manager switches")
+		d.runJobs(jobs, r)
+	}
+}
+
+// finish prints the summary, warns about hosts whose system switched while
+// Home Manager did not, and returns the exit status.
+func (d *deployer) finish(selected []string, r *report) int {
+	d.printSummary(selected, r)
+	var lagging []string
+	for _, host := range selected {
+		home := r.result("hm", host)
+		if r.result("system", host) == "ok" && (home == "failed" || home == "skipped") {
+			lagging = append(lagging, host)
 		}
 	}
-	if len(excluded) > 0 {
-		fmt.Println("not selected by --all: " + joinHosts(excluded))
+	if len(lagging) > 0 {
+		d.ui.warnPartial(lagging)
 	}
+	if r.failed {
+		fmt.Fprintln(os.Stderr, "deploy: one or more fleet jobs failed; see the summary above")
+		return 1
+	}
+	return 0
 }

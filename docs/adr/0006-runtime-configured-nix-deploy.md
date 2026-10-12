@@ -54,6 +54,7 @@ The required fields are:
 | `serialSystemHosts` | unique string array, optional | Hosts whose system switch runs one at a time, in this order; default `[]` |
 | `serialReadyCommand` | string, optional | Operator-side shell command run after each serial host's switch; `{host}` is replaced by the host name; default empty (no gate) |
 | `serialReadyTimeoutSeconds` | positive integer, optional | Deadline for the post-switch ready gate, including attempts; default `600` |
+| `serialGroups` | list, optional | Further serial groups, each `{ hosts, readyCommand?, readyTimeoutSeconds? }` with the meanings above; `hosts` is a non-empty unique list of known hosts, and a host belongs to at most one group, including the `serialSystemHosts` group (ADR-0008) |
 
 Every host reference must resolve through `knownHosts`; aliases must not shadow
 canonical names. Validation and loading use one in-memory snapshot of the file. Names, users, prefixes,
@@ -114,7 +115,9 @@ interface; whitespace and shell metacharacters are rejected before planning.
   `ssh -o BatchMode=yes`) run in the foreground on the operator machine so
   interrupts reach it; only validated host names are substituted into it.
   Present serial keys must have the documented type; `null` is not treated as
-  absent. The Home Manager phase is unaffected.
+  absent. The Home Manager phase is unaffected. Each group in
+  `serialGroups` behaves the same way on its own, and only members whose
+  system changed are switched and gated (ADR-0008).
 - Fleet mode starts the local sudo keepalive only when the selected system
   phase contains the local host, and does so before preflight so the password
   prompt appears when the command starts. Remote-only orchestration does not
