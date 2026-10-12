@@ -145,25 +145,9 @@
               bash scripts/checks/test-k8s-node-network-audit.sh
               touch "$out"
             '';
-        checks.nix-deploy-contract =
-          pkgs.runCommand "nix-deploy-contract"
-            {
-              nativeBuildInputs = with pkgs; [
-                bash
-                coreutils
-                gawk
-                gnugrep
-                gnused
-                jq
-                python3
-                shellcheck
-              ];
-            }
-            ''
-              shellcheck ${./tools/nix-deploy/deploy}
-              python3 ${./tools/nix-deploy/test-deploy.py} ${./tools/nix-deploy/deploy}
-              touch "$out"
-            '';
+        # The package build runs the Go tests and the black-box contract
+        # against the unwrapped binary.
+        checks.nix-deploy-contract = allPackages.nix-deploy;
         checks.git-identity-guard-contract =
           pkgs.runCommand "git-identity-guard-contract"
             {

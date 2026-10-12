@@ -1,6 +1,6 @@
 # ADR-0006: Runtime-configured nix-deploy
 
-**Status:** Accepted
+**Status:** Accepted (implementation amended by [ADR-0008](0008-nix-deploy-in-go.md))
 **Date:** 2026-09-09
 **Applies to:** `tools/nix-deploy/`
 
@@ -19,16 +19,17 @@ contains the operator host, Home Manager user and output prefix, host sets,
 aliases, SSH endpoints and users, remote-sudo hosts, activation modes, and
 optional display colors.
 
-The command parses the document with `jq`, validates types and cross-references,
+The command parses the document, validates types and cross-references,
 and rejects values that could become shell command fragments. It does not ship
 personal host defaults. Consumer repositories generate their own inventory and
-may wrap the command with a default configuration path. Fleet child commands
-receive the selected path explicitly.
+may wrap the command with a default configuration path. Child commands
+receive the selected path in `NIX_DEPLOY_CONFIG`.
 
-The package supplies Bash, core utilities, hostname, jq, grep, sed, OpenSSH, and
-GNU parallel on `PATH`. Deployment front ends remain runtime requirements:
-`nix`, `nixos-rebuild` (or the existing `nix run` fallback), `home-manager`,
-`sudo`, and nix-darwin's system rebuild command.
+The implementation and its runtime dependencies are described in
+[ADR-0008](0008-nix-deploy-in-go.md), which replaced the Bash script with a Go
+program and keeps this interface. Deployment front ends remain runtime
+requirements: `nix`, `nixos-rebuild` (or the existing `nix run` fallback),
+`home-manager`, `sudo`, and nix-darwin's system rebuild command.
 
 ### JSON interface version 1
 

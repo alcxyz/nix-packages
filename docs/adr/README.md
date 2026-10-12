@@ -11,3 +11,4 @@ Non-obvious decisions in this repo are documented here. Before changing tool des
 | [ADR-0005](0005-patched-t3code-source-builds.md) | T3 Code Source Builds | `pkgs/t3code/`, `pkgs/codex-cli/` |
 | [ADR-0006](0006-runtime-configured-nix-deploy.md) | Runtime-configured nix-deploy | `tools/nix-deploy/` |
 | [ADR-0007](0007-continuous-provider-updates.md) | Continuous grouped provider updates | AI provider automation |
+| [ADR-0008](0008-nix-deploy-in-go.md) | nix-deploy in Go, with build, plan and activate phases | `tools/nix-deploy/` |

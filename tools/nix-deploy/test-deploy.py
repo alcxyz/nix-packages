@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -47,8 +46,6 @@ if name == "hostname":
     print(os.environ["MOCK_HOST"])
 elif name == "uname":
     print(os.environ["MOCK_SYSTEM"])
-elif name == "sleep":
-    time.sleep(0.01)
 elif name == "sudo":
     # Never execute the requested privileged command, including absolute paths.
     sys.exit(1 if args == ["-n", "-v"] else 0)
@@ -103,20 +100,6 @@ elif name == "nixos-rebuild":
     if args and args[0] == "switch" and failure:
         print("Pre-switch check 'switchInhibitors' failed" if failure == "inhibited" else "fixture rebuild failure")
         sys.exit(7)
-elif name == "parallel":
-    # Like GNU parallel: run every job, log each exit value, and exit with the
-    # number of failed jobs.
-    joblog = args[args.index("--joblog") + 1] if "--joblog" in args else None
-    rows = ["Seq\tHost\tStarttime\tJobRuntime\tSend\tReceive\tExitval\tSignal\tCommand"]
-    failed = 0
-    for seq, job in enumerate(args[args.index(":::") + 1:], start=1):
-        command = job.split("\t", 2)[2]
-        result = subprocess.run([os.environ["MOCK_BASH"], "-c", command])
-        failed += result.returncode != 0
-        rows.append(f"{seq}\t:\t0\t0\t0\t0\t{result.returncode}\t0\t{command}")
-    if joblog:
-        pathlib.Path(joblog).write_text("\n".join(rows) + "\n")
-    sys.exit(min(failed, 101))
 '''
 
 
@@ -128,19 +111,17 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     root = Path(directory)
     commands = root / "bin"
     commands.mkdir()
-    deploy = commands / "deploy"
-    source = Path(sys.argv[1]).read_text()
-    deploy.write_text(source.replace("#!/usr/bin/env bash", "#!" + shutil.which("bash"), 1))
-    deploy.chmod(0o755)
+    deploy = Path(sys.argv[1]).resolve()
     # Keep the command search path closed; new operational commands cannot fall
-    # through to an installed host tool. Mocks use an absolute Python shebang.
-    for name in ["bash", "cat", "jq", "tr", "sed", "tail", "grep", "mktemp", "rm", "timeout"]:
+    # through to an installed host tool. Mocks use an absolute Python shebang,
+    # and the ready command runs through bash.
+    for name in ["bash"]:
         target = shutil.which(name)
         assert target, name
         (commands / name).symlink_to(target)
     config = root / "inventory with spaces.json"
     config.write_text(json.dumps(HOST_DATA))
-    for name in ["hostname", "uname", "sleep", "sudo", "ssh", "nix", "nixos-rebuild", "home-manager", "parallel", "ready-check"]:
+    for name in ["hostname", "uname", "sudo", "ssh", "nix", "nixos-rebuild", "home-manager", "ready-check"]:
         command = commands / name
         command.write_text("#!" + sys.executable + "\n" + MOCK)
         command.chmod(0o755)
@@ -150,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         log.write_text("")
         env = {
             "PATH": str(commands),
-            "HOME": str(root), "MOCK_LOG": str(log), "MOCK_BASH": shutil.which("bash"),
+            "HOME": str(root), "MOCK_LOG": str(log),
             "MOCK_HOST": host, "MOCK_SYSTEM": system,
             "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1",
             **settings,
@@ -276,15 +257,16 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert ["xyz", "ok", "failed"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
     assert "[xyz] system updated, Home Manager NOT updated" in result.stderr
     assert "[node] system updated" not in result.stderr
+    # Output of parallel jobs carries the phase and host.
+    assert "[hm] [xyz]\tfixture home-manager failure" in result.stderr.splitlines()
     # Preflight-skipped hosts are reported as skipped and do not fail the run.
     calls, result = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
     assert ["node", "skipped", "-"] in [line.split() for line in result.stdout.split("summary", 1)[1].splitlines()]
-    calls, _ = run("--all", "--hm", "--no-preflight")
-    parallel = next(c for c in calls if c[0] == "parallel")
-    recursive_jobs = [job for job in parallel[parallel.index(":::") + 1:] if "deploy --config" in job]
-    assert recursive_jobs and all(shlex.split(job.split("\t", 2)[2])[2] == str(config) for job in recursive_jobs)
-    assert all(" solo" not in job for job in recursive_jobs)
+    calls, result = run("--all", "--hm", "--no-preflight")
+    assert ["nix", "build", "--no-link", "--print-out-paths", ".#homeConfigurations.alc-node.activationPackage"] in calls
+    assert not any("alc-solo" in arg for c in calls for arg in c)
     assert ["home-manager", "switch", "--flake", ".#alc-xyz"] in calls
+    assert not any(c[0] == "nixos-rebuild" for c in calls)
     calls, _ = run("--all", "--here", "--no-preflight", "--nixos", host="mac", system="Darwin")
     assert any(c[0] == "nixos-rebuild" and ".#node" in c for c in calls)
     assert not any("--build-host" in c for c in calls)
@@ -314,8 +296,6 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     # order, each followed by its ready gate.
     config.write_text(json.dumps(SERIAL_DATA))
     calls, result = run("--all", "--nixos", "--no-preflight")
-    parallel = next(c for c in calls if c[0] == "parallel")
-    assert not any(f".#{h}" in job for job in parallel for h in ["k1", "k2", "k3"])
     assert rebuilt(calls) == ["node", "solo", "k1", "k2", "k3"]
     sequence = [(c[0], c[1]) for c in calls if c[0] == "ready-check" or (c[0] == "nixos-rebuild" and c[-1] != "--ask-sudo-password" and ".#node" not in c)]
     assert sequence == [
@@ -331,11 +311,12 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert "ready gate passed after 1 attempt(s)" in result.stdout
     # A gate that never passes is retried every interval until the timeout,
     # then the rest of the serial group is skipped and the run fails.
+    started = time.monotonic()
     calls, result = run("--all", "--nixos", "--no-preflight", status=1, MOCK_READY_FAIL_AFTER_SWITCH="k2")
+    # Two pauses of DEPLOY_SERIAL_READY_INTERVAL (10s) separate the attempts.
+    assert 20 <= time.monotonic() - started < 60
     assert rebuilt(calls) == ["node", "solo", "k1", "k2"]
     assert [c[1] for c in calls if c[0] == "ready-check"] == ["k1", "k2", "k3", "k1", "k1", "k3", "k2", "k2", "k2"]
-    # The local sudo keepalive also sleeps; it is not part of the gate.
-    assert [c[1:] for c in calls if c[0] == "sleep" and c[1:] != ["60"]] == [["10"], ["10"]]
     rows = summary_rows(result)
     assert ["k1", "ok", "-"] in rows and ["k2", "failed", "-"] in rows and ["k3", "skipped", "-"] in rows
     assert ["node", "ok", "-"] in rows and ["solo", "ok", "-"] in rows
@@ -395,10 +376,11 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, result = run("--no-preflight", "--nixos", "k2")
     assert rebuilt(calls) == ["k2"] and ["ready-check", "k2", "--node=k2"] in calls
     assert "ready gate passed" in result.stdout
+    started = time.monotonic()
     calls, result = run("--no-preflight", "--nixos", "k2", status=1, MOCK_READY_FAIL_AFTER_SWITCH="k2", DEPLOY_SERIAL_READY_INTERVAL="30")
     # A pause as long as the remaining budget would leave no time to retry.
     assert [c[1] for c in calls if c[0] == "ready-check"] == ["k1", "k3", "k2"]
-    assert not any(c[0] == "sleep" for c in calls)
+    assert time.monotonic() - started < 15
     assert "k2 switched but failed the serial ready gate" in result.stderr
     # A single-host deploy is refused before switching if another member of
     # the serial group is not ready.
@@ -421,7 +403,6 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, result = run("--no-preflight", "--nixos", "k2", status=1, MOCK_READY_FAIL_AFTER_SWITCH="k2", MOCK_READY_HANG_RETRY="k2")
     assert time.monotonic() - started < 15
     assert [c[1] for c in calls if c[0] == "ready-check"] == ["k1", "k3", "k2"]
-    assert not any(c[0] == "sleep" for c in calls)
     assert "ready gate did not pass within 10s (1 attempt(s))" in result.stderr
     config.write_text(json.dumps(SERIAL_DATA))
     calls, _ = run("--no-preflight", "--nixos", "k2", status=1, DEPLOY_SERIAL_READY_INTERVAL="0")
@@ -440,7 +421,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         log.write_text("")
         env = {
             "PATH": str(commands),
-            "HOME": str(root), "MOCK_LOG": str(log), "MOCK_BASH": shutil.which("bash"),
+            "HOME": str(root), "MOCK_LOG": str(log),
             "MOCK_HOST": "xyz", "MOCK_SYSTEM": "Linux", "NO_COLOR": "1",
         }
         result = subprocess.run([str(deploy), "--config", str(candidate), "--help"], cwd=root, env=env, capture_output=True, text=True)
