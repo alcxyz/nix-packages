@@ -165,16 +165,23 @@ func (d *deployer) deployFleet(mode string, selected []string, r *report) int {
 		}
 	}
 
-	built := d.buildTargets(targets, r)
-	changed := d.plan(targets, built, r)
+	evaluated := d.evaluate(targets, r)
+	changed := d.plan(targets, evaluated, r)
 	if d.dryRun {
 		for _, t := range changed {
 			r.record(t.phase, t.host, "planned")
 		}
-	} else {
-		d.activateSystems(changed, built, blocked, r)
-		d.activateHomes(changed, built, r)
+		return d.finish(selected, r)
 	}
+	built := d.buildTargets(changed, evaluated, r)
+	var ready []target
+	for _, t := range changed {
+		if _, ok := built[t.key()]; ok {
+			ready = append(ready, t)
+		}
+	}
+	d.activateSystems(ready, built, blocked, r)
+	d.activateHomes(ready, built, r)
 	return d.finish(selected, r)
 }
 

@@ -315,18 +315,19 @@ When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.
 Known hosts: %s
 
-A run has three steps. Build evaluates every selected system and Home Manager
-configuration, up to DEPLOY_EVAL_JOBS (default 4) at a time, and builds them
-all in one Nix invocation on this machine. Plan compares each result with what
-the host runs: a system is unchanged when its running system and system profile
-already point to the built path (only the profile for hosts staged with
-'boot'), Home Manager when its profile and its current-home root (moved only
-by a completed activation) do. A generation whose last activation from this
-machine failed counts as changed. Activate switches only changed targets;
-unchanged hosts are neither copied to, activated nor gated. --dry-run stops
-after the plan and never starts a host's garbage collection, --force
-activates unchanged targets too, and --json FILE writes the results and
-per-host timings.
+A run has four steps. Evaluate finds the store path of every selected system
+and Home Manager configuration, up to DEPLOY_EVAL_JOBS (default 4) at a time,
+without building it. Plan compares each path with what the host runs: a system
+is unchanged when its running system and system profile already point to it
+(only the profile for hosts staged with 'boot'), Home Manager when its profile
+and its current-home root (moved only by a completed activation) do. A
+generation whose last activation from this machine failed counts as changed.
+Build builds only the changed targets, in one Nix invocation on this machine.
+Activate switches them; unchanged hosts are neither built, copied to,
+activated nor gated. --dry-run stops after the plan, before building, and
+never starts a host's garbage collection, --force builds and activates
+unchanged targets too, and --json FILE writes the results and per-host
+timings.
 
 Remote phases are checked over SSH before building. A single failed preflight
 phase fails early. For --all, hosts that fail preflight are skipped for that

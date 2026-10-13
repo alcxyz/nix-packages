@@ -7,8 +7,8 @@ import (
 )
 
 // deployHost deploys one host. mode is "full" (system, then Home Manager),
-// "nixos" or "hm". Everything is built before anything is activated, so a
-// build failure leaves the host untouched. A failed activation ends the run
+// "nixos" or "hm". Every changed target is built before anything is
+// activated, so a build failure leaves the host untouched. A failed activation ends the run
 // with that step's status.
 func (d *deployer) deployHost(name, mode string) int {
 	host := d.inv.canonical(name)
@@ -62,12 +62,12 @@ func (d *deployer) deploySingle(host, mode string, r *report) int {
 }
 
 func (d *deployer) activateHost(host, mode string, targets []target, r *report) int {
-	built := d.buildTargets(targets, r)
+	evaluated := d.evaluate(targets, r)
 	if r.failed {
-		fmt.Fprintf(os.Stderr, "deploy: %s did not build; nothing was activated\n", host)
+		fmt.Fprintf(os.Stderr, "deploy: %s did not evaluate; nothing was activated\n", host)
 		return 1
 	}
-	changed := d.plan(targets, built, r)
+	changed := d.plan(targets, evaluated, r)
 	if d.dryRun {
 		for _, t := range changed {
 			r.record(t.phase, t.host, "planned")
@@ -77,6 +77,11 @@ func (d *deployer) activateHost(host, mode string, targets []target, r *report) 
 	if len(changed) == 0 {
 		fmt.Printf("deploy: %s is up to date; nothing to activate (use --force to activate anyway)\n", host)
 		return 0
+	}
+	built := d.buildTargets(changed, evaluated, r)
+	if r.failed {
+		fmt.Fprintf(os.Stderr, "deploy: %s did not build; nothing was activated\n", host)
+		return 1
 	}
 
 	systemSwitched := false

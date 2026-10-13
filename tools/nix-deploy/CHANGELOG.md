@@ -9,6 +9,15 @@ and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.7.0 (2026-10-13)
+
+- Plan before building: each target's store path is compared with what its
+  host runs straight after evaluation, and only changed targets are built. An
+  unchanged host is no longer rebuilt on this machine, which recompiled its
+  packages (under emulation for other architectures) whenever they had left
+  the local store (ADR-0008).
+- `--dry-run` stops after the plan and skips the build phase.
+
 ## 0.6.0 (2026-10-13)
 
 - `deploy --version` prints the release, and the JSON report gains a

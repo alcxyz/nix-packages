@@ -1,6 +1,6 @@
-# ADR-0008: nix-deploy in Go, with build, plan and activate phases
+# ADR-0008: nix-deploy in Go, with evaluate, plan, build and activate phases
 
-**Status:** Accepted
+**Status:** Accepted; phase order amended 2026-10-13
 **Date:** 2026-10-12
 **Applies to:** `tools/nix-deploy/`
 
@@ -29,19 +29,15 @@ the package build, next to Go unit tests. The code follows the repository's
 Go conventions: concrete types, explicit control flow, standard library
 only.
 
-Every run, single-host or fleet, has three phases (#522):
+Every run, single-host or fleet, has four phases (#522):
 
-1. **Build.** Each selected system and Home Manager configuration is
+1. **Evaluate.** Each selected system and Home Manager configuration is
    evaluated on its own, up to `DEPLOY_EVAL_JOBS` (default 4) at a time, so an
-   evaluation error is attributed to its host. All derivations are then built
-   in one `nix build --keep-going` on this machine, so Nix schedules and
-   deduplicates the work across hosts, and `nix path-info` tells which
-   targets built. Built paths stay rooted for the rest of the run, since
-   activation can come minutes later behind ready gates: the shared build
-   links every output when all succeed, and each built target is rooted
-   again through its derivation, which rebuilds an output a collection
-   removed in between.
-2. **Plan.** Each built path is compared with what the host runs, read over
+   evaluation error is attributed to its host. Evaluation yields the
+   derivation and the store path it builds, without building the target
+   itself (an input read during evaluation, import from derivation, is still
+   realised).
+2. **Plan.** Each evaluated path is compared with what the host runs, read over
    SSH (or locally for this machine): a system is unchanged when both
    `/run/current-system` and the system profile point to it (only the profile
    for hosts staged with `boot`), Home Manager when both its profile and its
@@ -60,7 +56,14 @@ Every run, single-host or fleet, has three phases (#522):
    as unfinished, which then fails the target instead of skipping it. A
    serial member stays unfinished until its ready gate passes, so one that
    switched but did not rejoin is switched and gated again.
-3. **Activate.** Only changed targets are activated: remote systems through
+3. **Build.** Only changed targets are built, in one `nix build --keep-going`
+   on this machine, so Nix schedules and deduplicates the work across hosts,
+   and `nix path-info` tells which targets built. Built paths stay rooted for
+   the rest of the run, since activation can come minutes later behind ready
+   gates: the shared build links every output when all succeed, and each
+   built target is rooted again through its derivation, which rebuilds an
+   output a collection removed in between.
+4. **Activate.** Only changed targets are activated: remote systems through
    `nixos-rebuild <switch|boot> --store-path P --no-reexec --target-host ...
    --use-substitutes`, which copies the closure and keeps the
    switch-inhibitor fallback; `--no-reexec` stops it from rebuilding itself
@@ -78,10 +81,11 @@ Every run, single-host or fleet, has three phases (#522):
    hosts. Serial groups switch only their changed members, but still check
    the whole group before the first switch.
 
-`--dry-run` stops after the plan and never starts a host's garbage
+`--dry-run` stops after the plan, before building, and never starts a host's garbage
 collection (it assumes a collection a real run would start frees enough
-space), and `--force` activates unchanged targets too. A single-host deploy builds all its targets before activating any, so a
-build failure leaves the host untouched.
+space), and `--force` builds and activates unchanged targets too. A single-host
+deploy builds all its changed targets before activating any, so a build
+failure leaves the host untouched.
 
 Serial groups (#504) are listed in `serialGroups`, each with its own hosts,
 ready command and timeout; the older `serialSystemHosts` fields are a
@@ -120,11 +124,25 @@ same results and timings for comparison across runs.
   only to single-host deploys.
 - Ready-gate pauses are real waits in the contract test, which therefore
   takes about half a minute.
-- A run that changes nothing evaluates and builds (from cache) every target,
-  reads one generation per target over SSH, and activates nothing; quorum
-  members are not gated.
+- A run that changes nothing evaluates every target, reads one generation per
+  target over SSH, and builds and activates nothing; quorum members are not
+  gated.
 - Both preflight phases run before the build, so `--fail-unreachable` stops
   the run before any host switches, instead of after the system phase.
 - Hosts are compared by store path, so a configuration that embeds a
   changing input (for example a whole private flake source) still changes
   every time; consumers keep such inputs out of their closures.
+
+## Amendment (2026-10-13)
+
+The first implementation built every target before the plan, on the
+assumption that unchanged targets would come from the local store or a
+cache. Neither held: the operator's garbage collection removes outputs that
+only remote hosts use, and nothing in a binary cache matches packages built
+for another architecture, so a fleet run recompiled up-to-date Raspberry Pi
+hosts under emulation on the operator. Evaluation already gives each
+target's store path, which is all the plan compares, so the plan now runs
+between evaluation and the build, and only changed targets are built
+(release 0.7.0). Comparing against the host itself, not a previous
+evaluation, is unchanged. A dry run now skips the build phase, so it no
+longer shows that changed targets build.

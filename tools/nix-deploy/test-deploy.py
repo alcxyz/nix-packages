@@ -104,14 +104,16 @@ elif name == "ssh":
         print(f"{current}\n{profile}")
 elif name == "nix":
     if args[0] == "eval":
-        match = re.match(r'\.#(nixos|darwin|home)Configurations\."(?:alc-)?([^"]+)"\.', args[-1])
+        attribute = next(a for a in args if a.startswith(".#"))
+        match = re.match(r'\.#(nixos|darwin|home)Configurations\."(?:alc-)?([^"]+)"\.', attribute)
         kind = {"nixos": "system", "darwin": "darwin", "home": "home"}[match[1]]
         derivation = f"{match[2]}-{kind}"
         if listed("MOCK_EVAL_FAIL", derivation):
             print(f"error: fixture evaluation failure in {derivation}", file=sys.stderr)
             sys.exit(1)
         # MOCK_VARIANT builds another generation of the same configuration.
-        print(f"{store}/fixture{os.environ.get('MOCK_VARIANT', '')}-{derivation}.drv")
+        output = f"{store}/fixture{os.environ.get('MOCK_VARIANT', '')}-{derivation}"
+        print(json.dumps({"drv": output + ".drv", "out": output}))
     elif args[0] == "build":
         # A build of one derivation with an out-link roots a built target;
         # MOCK_ROOT_FAIL refuses one.
@@ -200,7 +202,12 @@ def activations(calls):
 
 
 def evaluated(calls):
-    return [c[-1] for c in calls if c[0] == "nix" and c[1] == "eval"]
+    return [next(a for a in c if a.startswith(".#")) for c in calls if c[0] == "nix" and c[1] == "eval"]
+
+
+def built(calls):
+    """Derivations passed to the shared build."""
+    return [Path(a[: -len(".drv^out")]).name for c in calls if c[0] == "nix" and c[1] == "build" and "--keep-going" in c for a in c if a.endswith(".drv^out")]
 
 
 with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
@@ -275,8 +282,8 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, result = run()
     # Evaluations run concurrently, so their order varies.
     assert sorted(evaluated(calls)) == [
-        '.#homeConfigurations."alc-xyz".activationPackage.drvPath',
-        '.#nixosConfigurations."xyz".config.system.build.toplevel.drvPath',
+        '.#homeConfigurations."alc-xyz".activationPackage',
+        '.#nixosConfigurations."xyz".config.system.build.toplevel',
     ]
     builds = [c for c in calls if c[0] == "nix" and c[1] == "build" and "--keep-going" in c]
     assert len(builds) == 1 and builds[0][:3] == ["nix", "build", "--keep-going"] and builds[0][3] == "--out-link"
@@ -306,7 +313,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     # Without preflight, SSH is only used to read the current generation.
     assert all("/run/current-system" in c[-1] for c in calls if c[0] == "ssh")
     calls, _ = run("--hm", "node")
-    assert evaluated(calls) == ['.#homeConfigurations."alc-node".activationPackage.drvPath']
+    assert evaluated(calls) == ['.#homeConfigurations."alc-node".activationPackage']
     assert ["nix", "copy", "--substitute-on-destination", "--to", "ssh://alc@node.invalid", home_path("node")] in calls
     # The profile is set before activation, as the home-manager command does.
     # It runs under sh whatever the remote login shell is.
@@ -378,7 +385,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert not actions(calls)
     calls, _ = run("--all", MOCK_UNREACHABLE="root@node.invalid")
     assert "node" not in rebuilt(calls)
-    assert '.#homeConfigurations."alc-node".activationPackage.drvPath' in evaluated(calls)
+    assert '.#homeConfigurations."alc-node".activationPackage' in evaluated(calls)
     assert not any("alc-solo" in arg for arg in evaluated(calls))
     calls, _ = run("--all", "--fail-unreachable", status=1, MOCK_UNREACHABLE="root@node.invalid")
     assert not actions(calls)
@@ -412,7 +419,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, result = run("--all", "--nixos", MOCK_UNREACHABLE="node.invalid")
     assert ["node", "skipped", "-"] in summary_rows(result)
     calls, result = run("--all", "--hm", "--no-preflight")
-    assert '.#homeConfigurations."alc-node".activationPackage.drvPath' in evaluated(calls)
+    assert '.#homeConfigurations."alc-node".activationPackage' in evaluated(calls)
     assert not any("alc-solo" in arg for arg in evaluated(calls))
     assert ["activate", "--driver-version", "1"] in calls
     assert not any(c[0] in {"nixos-rebuild", "home-manager"} for c in calls)
@@ -428,7 +435,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert "no Home Manager-eligible hosts" in result.stdout
     config.write_text(json.dumps(HOST_DATA))
     calls, _ = run("--nixos", host="mac", system="Darwin")
-    assert evaluated(calls) == ['.#darwinConfigurations."mac".system.drvPath']
+    assert evaluated(calls) == ['.#darwinConfigurations."mac".system']
     assert ["sudo", "/run/current-system/sw/bin/darwin-rebuild", "switch", "--flake", ".#mac"] in calls
     calls, _ = run("--no-preflight", "--nixos", "node", MOCK_SWITCH_FAILURE="inhibited")
     assert [c[1] for c in calls if c[0] == "nixos-rebuild" and "/nonexistent" not in c] == ["switch", "boot"]
@@ -529,9 +536,9 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, _ = run("--no-preflight", "--nixos", "node", keep_state=True, status=7, MOCK_FAIL_HOST="node", MOCK_VARIANT="2")
     calls, result = run("--no-preflight", "--nixos", "node", keep_state=True, MOCK_CURRENT="node")
     assert rebuilt(calls) == ["node"] and "from this machine failed" in result.stdout
-    # --dry-run stops after the plan.
+    # --dry-run stops after the plan, before anything is built.
     calls, result = run("--no-preflight", "--dry-run")
-    assert not activations(calls) and any(c[0] == "nix" and c[1] == "build" for c in calls)
+    assert not activations(calls) and not any(c[0] == "nix" and c[1] == "build" for c in calls)
     assert "[system] [xyz] changed:" in result.stdout or "[system] [xyz] current generation unknown" in result.stdout
     calls, result = run("--all", "--dry-run", "--no-preflight", MOCK_CURRENT="node")
     assert not activations(calls) and not any(c == ["sudo", "-v"] for c in calls)
@@ -550,6 +557,20 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, result = run("--no-preflight", "node", status=1, MOCK_BUILD_FAIL="node-home")
     assert not activations(calls)
     assert "node did not build; nothing was activated" in result.stderr
+    calls, result = run("--no-preflight", "node", status=1, MOCK_EVAL_FAIL="node-home")
+    assert not activations(calls) and not built(calls)
+    assert "node did not evaluate; nothing was activated" in result.stderr
+    # Only changed targets are built: a host compares with what it already
+    # runs, which this machine may no longer hold (or could only build slowly,
+    # under emulation).
+    calls, result = run("--no-preflight", "node", MOCK_CURRENT="node")
+    assert not any(c[0] == "nix" and c[1] == "build" for c in calls) and not activations(calls)
+    assert "node is up to date" in result.stdout
+    calls, result = run("--all", "--no-preflight", MOCK_CURRENT="node")
+    assert sorted(built(calls)) == ["fixture-solo-system", "fixture-xyz-home", "fixture-xyz-system"]
+    assert rebuilt(calls) == ["solo"]
+    calls, result = run("--all", "--no-preflight", "--force", MOCK_CURRENT="node")
+    assert "fixture-node-system" in built(calls) and "node" in rebuilt(calls)
     # --json writes per-host results and timings.
     report = root / "report.json"
     calls, result = run("--all", "--no-preflight", "--json", str(report), MOCK_CURRENT="node")

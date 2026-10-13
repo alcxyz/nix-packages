@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,25 +38,19 @@ func (d *deployer) label(t target) string {
 	return d.ui.phase(t.phase) + " " + d.ui.host(t.host)
 }
 
-// buildTargets evaluates every target, builds them in one Nix invocation so
-// Nix schedules and deduplicates the work across hosts, and returns the
-// output path of each target that built. Failures are recorded per target.
-func (d *deployer) buildTargets(targets []target, r *report) map[string]string {
+// buildTargets builds the given targets in one Nix invocation, so Nix
+// schedules and deduplicates the work across hosts, and returns the output
+// path of each target that built. Failures are recorded per target.
+func (d *deployer) buildTargets(targets []target, evaluated map[string]evaluation, r *report) map[string]string {
 	built := map[string]string{}
 	if len(targets) == 0 {
-		return built
-	}
-	derivations := d.evaluate(targets, r)
-	if len(derivations) == 0 {
 		return built
 	}
 
 	d.ui.section("build")
 	if !d.makeRootDir() {
 		for _, t := range targets {
-			if _, ok := derivations[t.key()]; ok {
-				r.record(t.phase, t.host, "failed")
-			}
+			r.record(t.phase, t.host, "failed")
 		}
 		return built
 	}
@@ -64,9 +59,7 @@ func (d *deployer) buildTargets(targets []target, r *report) map[string]string {
 	// below.
 	argv := []string{"nix", "build", "--keep-going", "--out-link", filepath.Join(d.rootDir, "build")}
 	for _, t := range targets {
-		if drv, ok := derivations[t.key()]; ok {
-			argv = append(argv, drv+"^out")
-		}
+		argv = append(argv, evaluated[t.key()].Drv+"^out")
 	}
 	started := time.Now()
 	// A failed derivation fails only the targets that need it; the
@@ -75,10 +68,7 @@ func (d *deployer) buildTargets(targets []target, r *report) map[string]string {
 	r.build += time.Since(started)
 
 	for _, t := range targets {
-		drv, ok := derivations[t.key()]
-		if !ok {
-			continue
-		}
+		drv := evaluated[t.key()].Drv
 		output, status := capture(0, "nix", "path-info", drv+"^out")
 		if status != 0 {
 			fmt.Fprintf(os.Stderr, "%s build failed\n", d.label(t))
@@ -126,13 +116,30 @@ func (d *deployer) releaseRoots() {
 	}
 }
 
-// evaluate returns the derivation of every target, evaluating up to
+// evaluation is what a target evaluates to without building it: its
+// derivation and the output path that derivation builds. (Inputs read during
+// evaluation are still realised, and a content-addressed derivation would
+// have no output path yet, so it would always plan as changed.)
+type evaluation struct {
+	Drv string `json:"drv"`
+	Out string `json:"out"`
+}
+
+// evaluateOutputs is applied to each target's derivation. Its keys are not
+// drvPath and outPath because Nix prints an attribute set with an outPath as
+// that path alone.
+const evaluateOutputs = "d: { drv = d.drvPath; out = d.outPath; }"
+
+// evaluate returns the evaluation of every target, evaluating up to
 // DEPLOY_EVAL_JOBS targets at once. Each evaluation is separate, so an error
 // is attributed to its host instead of stopping the others.
-func (d *deployer) evaluate(targets []target, r *report) map[string]string {
+func (d *deployer) evaluate(targets []target, r *report) map[string]evaluation {
+	evaluated := map[string]evaluation{}
+	if len(targets) == 0 {
+		return evaluated
+	}
 	d.ui.section("evaluate")
 	var lock sync.Mutex
-	derivations := map[string]string{}
 	statuses := make([]int, len(targets))
 	elapsed := make([]time.Duration, len(targets))
 	slots := make(chan struct{}, d.settings.evalJobs)
@@ -144,22 +151,29 @@ func (d *deployer) evaluate(targets []target, r *report) map[string]string {
 			slots <- struct{}{}
 			defer func() { <-slots }()
 
-			var drv bytes.Buffer
+			var out bytes.Buffer
 			errOut := &prefixWriter{lock: &lock, dst: os.Stderr, prefix: d.label(t)}
 			started := time.Now()
 			statuses[i] = command{
 				// The evaluation cache does not keep derivation paths, and
 				// parallel evaluations would only contend for it.
-				argv:   []string{"nix", "eval", "--no-eval-cache", "--raw", d.attribute(t) + ".drvPath"},
+				argv:   []string{"nix", "eval", "--no-eval-cache", "--json", d.attribute(t), "--apply", evaluateOutputs},
 				stdin:  bytes.NewReader(nil),
-				stdout: &drv,
+				stdout: &out,
 				stderr: errOut,
 			}.run()
 			elapsed[i] = time.Since(started)
+			var e evaluation
+			if statuses[i] == 0 {
+				if err := json.Unmarshal(out.Bytes(), &e); err != nil || e.Drv == "" || e.Out == "" {
+					fmt.Fprintf(errOut, "deploy: unexpected evaluation result: %s\n", strings.TrimSpace(out.String()))
+					statuses[i] = 1
+				}
+			}
 			errOut.flush()
 			if statuses[i] == 0 {
 				lock.Lock()
-				derivations[t.key()] = strings.TrimSpace(drv.String())
+				evaluated[t.key()] = e
 				lock.Unlock()
 			}
 		}()
@@ -173,7 +187,7 @@ func (d *deployer) evaluate(targets []target, r *report) map[string]string {
 			r.record(t.phase, t.host, "failed")
 		}
 	}
-	return derivations
+	return evaluated
 }
 
 // Remote scripts print two store paths, one per line, or "-" for a missing
@@ -235,17 +249,20 @@ func resolve(path string) string {
 	return target
 }
 
-// plan decides which built targets need activation and prints the decision.
-// A target is unchanged when the host already runs the built path and its
-// profile points to it; a host staged with 'boot' only needs its profile.
-func (d *deployer) plan(targets []target, built map[string]string, r *report) []target {
+// plan decides which evaluated targets need building and activation, and
+// prints the decision. A target is unchanged when the host already runs the
+// path it evaluates to and its profile points to it; a host staged with 'boot'
+// only needs its profile. Unchanged targets are not built: their output may
+// no longer be in this machine's store, and the host already has it.
+func (d *deployer) plan(targets []target, evaluated map[string]evaluation, r *report) []target {
 	d.ui.section("plan")
 	var changed []target
 	for _, t := range targets {
-		path, ok := built[t.key()]
+		e, ok := evaluated[t.key()]
 		if !ok {
 			continue
 		}
+		path := e.Out
 		running, profile := d.generation(t)
 		boot := t.phase == "system" && t.host != d.self && d.inv.activationMode(t.host) == "boot"
 		current := running
