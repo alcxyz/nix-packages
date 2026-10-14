@@ -132,6 +132,7 @@ The flake explicitly exports the following combinations. "All four" means
 | `ghostty` | Both Darwin systems |
 | `t3code`, `ai-stack-upstream` | `x86_64-linux` |
 | `omniwm` | `aarch64-darwin` |
+| `workspace-sync` | `x86_64-linux`, `aarch64-darwin` |
 | `ledger-live`, `wcap`, `zen-browser` | `x86_64-linux` |
 
 Herdr's pinned unstable SDK dependency rejects Intel Darwin; that export is

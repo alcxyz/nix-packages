@@ -64,6 +64,15 @@
               # The pinned unstable Darwin SDK dependency does not support Intel.
               herdr = unstablePkgs.callPackage ./pkgs/herdr { };
             }
+        //
+          lib.optionalAttrs
+            (builtins.elem system [
+              "x86_64-linux"
+              "aarch64-darwin"
+            ])
+            {
+              workspace-sync = pkgs.callPackage ./tools/workspace-sync { };
+            }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           ghostty = pkgs.callPackage ./pkgs/ghostty { };
         }
@@ -148,6 +157,8 @@
         # The package build runs the Go tests and the black-box contract
         # against the unwrapped binary.
         checks.nix-deploy-contract = allPackages.nix-deploy;
+        checks.${if allPackages ? workspace-sync then "workspace-sync-contract" else null} =
+          allPackages.workspace-sync;
         checks.git-identity-guard-contract =
           pkgs.runCommand "git-identity-guard-contract"
             {
