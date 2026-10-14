@@ -126,11 +126,12 @@ func (b *lockedBuffer) String() string {
 
 // prefixWriter writes each complete line to its destination with a tag, so
 // output from parallel jobs stays attributable. Lines from different writers
-// sharing one lock never interleave.
+// sharing one lock never interleave. Lines starting with skip are dropped.
 type prefixWriter struct {
 	lock    *sync.Mutex
 	dst     io.Writer
 	prefix  string
+	skip    string
 	pending []byte
 }
 
@@ -155,6 +156,9 @@ func (w *prefixWriter) flush() {
 }
 
 func (w *prefixWriter) emit(line []byte) {
+	if w.skip != "" && bytes.HasPrefix(line, []byte(w.skip)) {
+		return
+	}
 	w.lock.Lock()
 	defer w.lock.Unlock()
 	fmt.Fprintf(w.dst, "%s\t%s", w.prefix, line)

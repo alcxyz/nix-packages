@@ -9,6 +9,13 @@ and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.7.1 (2026-10-14)
+
+- Drop Nix's "waiting for another Nix process to finish fetching input" lines
+  from the evaluate phase. Nix takes a lock to fetch the flake for every
+  evaluation, even one already in the store, so parallel evaluations always
+  queue briefly and report it; the wait is expected and short.
+
 ## 0.7.0 (2026-10-13)
 
 - Plan before building: each target's store path is compared with what its

@@ -130,6 +130,12 @@ type evaluation struct {
 // that path alone.
 const evaluateOutputs = "d: { drv = d.drvPath; out = d.outPath; }"
 
+// fetchLockWait starts the line Nix prints while another process fetches the
+// same input. Nix takes that lock for every evaluation, even of a flake
+// already in the store, so parallel evaluations queue briefly and report each
+// wait; the evaluate phase drops the line.
+const fetchLockWait = "waiting for another Nix process to finish fetching input"
+
 // evaluate returns the evaluation of every target, evaluating up to
 // DEPLOY_EVAL_JOBS targets at once. Each evaluation is separate, so an error
 // is attributed to its host instead of stopping the others.
@@ -152,7 +158,7 @@ func (d *deployer) evaluate(targets []target, r *report) map[string]evaluation {
 			defer func() { <-slots }()
 
 			var out bytes.Buffer
-			errOut := &prefixWriter{lock: &lock, dst: os.Stderr, prefix: d.label(t)}
+			errOut := &prefixWriter{lock: &lock, dst: os.Stderr, prefix: d.label(t), skip: fetchLockWait}
 			started := time.Now()
 			statuses[i] = command{
 				// The evaluation cache does not keep derivation paths, and

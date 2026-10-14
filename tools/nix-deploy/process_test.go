@@ -21,6 +21,18 @@ func TestPrefixWriterTagsCompleteLines(t *testing.T) {
 	}
 }
 
+func TestPrefixWriterSkipsLines(t *testing.T) {
+	var out bytes.Buffer
+	w := &prefixWriter{lock: &sync.Mutex{}, dst: &out, prefix: "[hm] [node]", skip: fetchLockWait}
+	w.Write([]byte(fetchLockWait + " 'git+file:///src'...\nevaluation warning: kept\n"))
+	w.Write([]byte(fetchLockWait + " 'git+file:///src'..."))
+	w.flush()
+	want := "[hm] [node]\tevaluation warning: kept\n"
+	if out.String() != want {
+		t.Errorf("got %q, want %q", out.String(), want)
+	}
+}
+
 func TestCommandStatus(t *testing.T) {
 	if _, status := capture(0, "sh", "-c", "exit 7"); status != 7 {
 		t.Errorf("exit status: got %d", status)
