@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -134,6 +135,74 @@ func TestFetchPushCommits(t *testing.T) {
 	commits, err = client.fetchPushCommits("o/r", "", "head", 3)
 	if err != nil || len(commits) != 3 || commits[2].SHA != "c1" {
 		t.Errorf("history: commits = %+v, err = %v", commits, err)
+	}
+}
+
+func TestExpandedPushAttribution(t *testing.T) {
+	for _, mode := range []string{"compare", "history"} {
+		for _, onlyOthers := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/onlyOthers=%v", mode, onlyOthers), func(t *testing.T) {
+				own := `{"sha":"own","author":{"login":"USER"},"committer":{"login":"other"},"commit":{"message":"own work"}}`
+				other := `{"sha":"other","author":{"login":"other"},"committer":{"login":"user"},"commit":{"message":"other work"}}`
+				bot := `{"sha":"bot","author":{"login":"update-bot"},"commit":{"message":"update"}}`
+				unlinked := `{"sha":"unlinked","author":null,"commit":{"message":"unlinked email"}}`
+				missing := `{"sha":"missing","commit":{"message":"no linked author"}}`
+				list := []string{own, other, bot, unlinked, missing}
+				want := []string{"own", "unlinked", "missing"}
+				if onlyOthers {
+					list = []string{other, bot, other, bot, other}
+					want = nil
+				}
+				requests := 0
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests++
+					switch r.URL.Path {
+					case "/repos/o/r/compare/base...head":
+						fmt.Fprintf(w, `{"commits":[%s]}`, strings.Join(list, ","))
+					case "/repos/o/r/commits":
+						// The server caps pages at two. The final page includes an
+						// older own commit outside the push, which must be trimmed
+						// before filtering, even when all pushed commits are dropped.
+						page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+						switch page {
+						case 1:
+							fmt.Fprintf(w, `[%s]`, strings.Join(list[:2], ","))
+						case 2:
+							fmt.Fprintf(w, `[%s]`, strings.Join(list[2:4], ","))
+						case 3:
+							fmt.Fprintf(w, `[%s,%s]`, list[4], own)
+						default:
+							t.Errorf("unexpected history page %d", page)
+							fmt.Fprint(w, `[]`)
+						}
+					default:
+						t.Errorf("unexpected request %s", r.URL)
+						w.WriteHeader(http.StatusNotFound)
+					}
+				}))
+				defer srv.Close()
+				client := &forgejoClient{baseURL: srv.URL, user: "user", http: srv.Client()}
+				push := `{"Commits":[{"Sha1":"other","Message":"feed fallback"}],"Len":5,"HeadCommit":{"Sha1":"head"}`
+				wantRequests := 3
+				if mode == "compare" {
+					push += `,"CompareURL":"o/r/compare/base...head"`
+					wantRequests = 1
+				}
+				push += `}`
+				event := feedEvent(1, "commit_repo", "o/r", push, time.Now())
+				commits, _, _, err := summarizeForgejoEvents([]forgejoEvent{event}, client.fetchPushCommits)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got []string
+				for _, commit := range commits {
+					got = append(got, commit.SHA)
+				}
+				if !slices.Equal(got, want) || requests != wantRequests {
+					t.Errorf("commits = %v, requests = %d; want %v, %d", got, requests, want, wantRequests)
+				}
+			})
+		}
 	}
 }
 

@@ -143,14 +143,24 @@ func (c *forgejoClient) fetchEvents(start, end time.Time) ([]forgejoEvent, error
 
 type forgejoCommit struct {
 	SHA    string `json:"sha"`
+	Author *struct {
+		Login string `json:"login"`
+	} `json:"author"`
 	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
 }
 
-func toCommitRefs(repo string, list []forgejoCommit) []commitRef {
-	var commits []commitRef
+func toCommitRefs(repo, user string, list []forgejoCommit) []commitRef {
+	// An empty successful expansion must stay non-nil: nil tells expandPush's
+	// caller to fall back to the unfiltered feed commits after a pruned base.
+	commits := make([]commitRef, 0, len(list))
 	for _, rc := range list {
+		// Unlinked authors are retained because the user's email may not be
+		// associated with an account. The committer does not establish authorship.
+		if rc.Author != nil && !strings.EqualFold(rc.Author.Login, user) {
+			continue
+		}
 		commits = append(commits, commitRef{
 			Source:  "forgejo",
 			Repo:    repo,
@@ -161,7 +171,7 @@ func toCommitRefs(repo string, list []forgejoCommit) []commitRef {
 	return commits
 }
 
-// fetchPushCommits lists every commit of a push the feed truncated: the
+// fetchPushCommits lists attributable commits of a push the feed truncated: the
 // compare range "base...head", or for an initial push, which has none, the
 // newest total commits from head. Commits are not filtered by date: work
 // committed earlier and pushed now is first visible in this push, and work
@@ -178,7 +188,7 @@ func (c *forgejoClient) fetchPushCommits(repo, baseHead, head string, total int)
 		if err := json.Unmarshal(body, &result); err != nil {
 			return nil, fmt.Errorf("parse Forgejo compare: %w", err)
 		}
-		return toCommitRefs(repo, result.Commits), nil
+		return toCommitRefs(repo, c.user, result.Commits), nil
 	}
 
 	var list []forgejoCommit
@@ -209,7 +219,7 @@ func (c *forgejoClient) fetchPushCommits(repo, baseHead, head string, total int)
 	if len(list) > total {
 		list = list[:total]
 	}
-	return toCommitRefs(repo, list), nil
+	return toCommitRefs(repo, c.user, list), nil
 }
 
 func (c *forgejoClient) fetchDiff(repo, sha string) (string, error) {

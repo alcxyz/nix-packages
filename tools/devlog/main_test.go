@@ -158,6 +158,41 @@ func TestBuildDailyPrompt(t *testing.T) {
 	}
 }
 
+func TestWeeklyCompletenessBoundary(t *testing.T) {
+	monday, _ := time.Parse("2006-01-02", "2026-09-28")
+	for _, offset := range []int{-7, 0, 2, 14} {
+		t.Run(fmt.Sprintf("UTC%+d", offset), func(t *testing.T) {
+			originalLocal := time.Local
+			time.Local = time.FixedZone("TEST", offset*60*60)
+			t.Cleanup(func() { time.Local = originalLocal })
+			for _, tt := range []struct {
+				now             string
+				completeThrough string
+				want            bool
+			}{
+				{"2026-10-04 23:00:00", "2026-10-03", false},
+				{"2026-10-05 02:11:00", "2026-10-03", false},
+				{"2026-10-05 04:59:59", "2026-10-03", false},
+				{"2026-10-05 05:00:00", "2026-10-04", true},
+				{"2026-10-05 05:01:00", "2026-10-04", true},
+				{"2026-10-06 02:11:00", "2026-10-04", true},
+			} {
+				now, err := time.ParseInLocation("2006-01-02 15:04:05", tt.now, time.Local)
+				if err != nil {
+					t.Fatal(err)
+				}
+				completeThrough := lastCompleteDevlogDateAt(now)
+				if got := completeThrough.Format("2006-01-02"); got != tt.completeThrough {
+					t.Errorf("at %s: last complete date = %s, want %s", tt.now, got, tt.completeThrough)
+				}
+				if got := weekIsComplete(monday, completeThrough); got != tt.want {
+					t.Errorf("at %s: week complete = %v, want %v", tt.now, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestDevlogWindow(t *testing.T) {
 	originalLocal := time.Local
 	time.Local = time.FixedZone("TEST", 2*60*60)

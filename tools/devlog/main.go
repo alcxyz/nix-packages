@@ -365,6 +365,7 @@ Rules:
 - Merge related commits into a single description when they're part of the same logical change
 - Be specific about what code/features were added or modified
 - Keep it concise but informative
+- Refer to local files using repository-relative paths in inline code spans, or use forge URLs. Never link to local filesystem paths (including absolute paths, /tmp paths, or file:// URLs).
 
 COMMIT DIFFS:
 %s
@@ -459,10 +460,9 @@ func runCatchUp(args []string) int {
 				affectedWeeks[isoWeekString(d)] = d
 			}
 		}
-		today, _ := time.Parse("2006-01-02", time.Now().Format("2006-01-02"))
+		completeThrough := lastCompleteDevlogDate()
 		for weekStr, monday := range affectedWeeks {
-			sunday := monday.AddDate(0, 0, 6)
-			if !sunday.Before(today) {
+			if !weekIsComplete(monday, completeThrough) {
 				fmt.Printf("Skipping weekly %s; week is not complete yet\n", weekStr)
 				continue
 			}
@@ -722,6 +722,7 @@ Rules:
 - Focus on outcomes and progress, not activity
 - Keep the total length under 400 words
 - The tags line in frontmatter is mandatory
+- Refer to local files using repository-relative paths in inline code spans, or use forge URLs. Never link to local filesystem paths (including absolute paths, /tmp paths, or file:// URLs).
 
 WEEKDAY ENTRIES (Mon-Fri):
 %s
@@ -1122,7 +1123,17 @@ func sevenDaysAgo() string {
 }
 
 func lastCompleteDevlogDate() time.Time {
-	return dateOnly(time.Now().Add(-5*time.Hour)).AddDate(0, 0, -1)
+	return lastCompleteDevlogDateAt(time.Now())
+}
+
+func lastCompleteDevlogDateAt(now time.Time) time.Time {
+	return dateOnly(now.Add(-5*time.Hour)).AddDate(0, 0, -1)
+}
+
+func weekIsComplete(monday, completeThrough time.Time) bool {
+	// CLI dates are parsed in UTC, while the completion boundary is local.
+	// Compare calendar labels so Sunday is eligible at Monday 05:00 locally.
+	return monday.AddDate(0, 0, 6).Format("2006-01-02") <= completeThrough.Format("2006-01-02")
 }
 
 func devlogWindow(date time.Time) (time.Time, time.Time) {

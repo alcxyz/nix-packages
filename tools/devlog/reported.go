@@ -11,7 +11,9 @@ import (
 // Each daily entry records the commits it reported on a final comment line,
 // invisible when rendered. A push can carry commits reported on earlier days,
 // such as a promotion moving a branch over existing work, so later entries
-// skip them. Commits first pushed now are kept whenever they were committed.
+// skip them. Gap fills also skip commits recorded by any later entry, leaving
+// them in the first entry written. Commits first pushed now are kept whenever
+// they were committed.
 
 const (
 	reportedPrefix = "<!-- devlog-commits:"
@@ -29,13 +31,26 @@ func reportedLine(commits []commitRef) string {
 	return reportedPrefix + " " + strings.Join(shas, " ") + " " + reportedSuffix + "\n"
 }
 
-// reportedCommits returns the SHAs recorded by the entries for the days
-// before date.
+// reportedCommits returns SHAs recorded within the backward window or by any
+// later daily entry. The date being generated never deduplicates against itself.
 func reportedCommits(repoPath string, date time.Time) map[string]bool {
 	seen := make(map[string]bool)
-	for i := 1; i <= reportedLookback; i++ {
-		ds := date.AddDate(0, 0, -i).Format("2006-01-02")
-		data, err := os.ReadFile(filepath.Join(repoPath, "devlog", ds+".md"))
+	dir := filepath.Join(repoPath, "devlog")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return seen
+	}
+	current := date.Format("2006-01-02")
+	earliest := date.AddDate(0, 0, -reportedLookback).Format("2006-01-02")
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		ds := strings.TrimSuffix(entry.Name(), ".md")
+		if _, err := time.Parse("2006-01-02", ds); err != nil || ds == current || ds < earliest {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			continue
 		}

@@ -36,6 +36,50 @@ func TestStripReported(t *testing.T) {
 	}
 }
 
+func TestReportedCommitsGapFill(t *testing.T) {
+	repo := t.TempDir()
+	dir := filepath.Join(repo, "devlog")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Entries already written keep their commits, even when the gap is filled
+	// much later. The old backward window stays inclusive at 30 days.
+	entries := map[string]string{
+		"2026-09-02.md":  "too-old",
+		"2026-09-03.md":  "boundary",
+		"2026-10-02.md":  "earlier",
+		"2026-10-03.md":  "same-day",
+		"2026-10-04.md":  "later",
+		"2027-01-01.md":  "much-later",
+		"2026-W41.md":    "weekly",
+		"2026-10-05.txt": "text",
+		"2026-11-31.md":  "invalid-date",
+	}
+	for name, sha := range entries {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("Work.\n"+reportedLine([]commitRef{{SHA: sha}})), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "2027-01-02.md"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	date, _ := time.Parse("2006-01-02", "2026-10-03")
+	reported := reportedCommits(repo, date)
+	want := map[string]bool{"boundary": true, "earlier": true, "later": true, "much-later": true}
+	if len(reported) != len(want) {
+		t.Errorf("reported = %v, want %v", reported, want)
+	}
+	for sha := range want {
+		if !reported[sha] {
+			t.Errorf("missing reported commit %s", sha)
+		}
+	}
+	fresh := withoutReported([]commitRef{{SHA: "earlier"}, {SHA: "later"}, {SHA: "much-later"}, {SHA: "new"}}, reported)
+	if len(fresh) != 1 || fresh[0].SHA != "new" {
+		t.Errorf("gap-fill commits = %+v, want only new", fresh)
+	}
+}
+
 func TestWeeklyMissesDaily(t *testing.T) {
 	repo := t.TempDir()
 	os.MkdirAll(filepath.Join(repo, "devlog"), 0755)
