@@ -9,6 +9,19 @@ and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.8.0 (2026-10-15)
+
+- Build profiles (#548): before the shared build, count the derivations it
+  would build (`nix build --dry-run`). From `DEPLOY_HEAVY_BUILDS` (default 50)
+  the run is heavy and builds with `max-jobs` `DEPLOY_HEAVY_MAX_JOBS` (default
+  6) and `cores` `DEPLOY_HEAVY_CORES` (default 8), each capped at this
+  machine's own setting (one that cannot be read is left alone); below it, light keeps this machine's Nix settings. A
+  count that fails or cannot be read picks heavy.
+- `--heavy` / `--light`, or `DEPLOY_BUILD_PROFILE=auto|light|heavy`, choose
+  the profile without counting.
+- `--dry-run` prints the profile a run would use, and the JSON report gains
+  `buildProfile` and `pendingBuilds`.
+
 ## 0.7.1 (2026-10-14)
 
 - Drop Nix's "waiting for another Nix process to finish fetching input" lines

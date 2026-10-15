@@ -1,6 +1,6 @@
 # ADR-0008: nix-deploy in Go, with evaluate, plan, build and activate phases
 
-**Status:** Accepted; phase order amended 2026-10-13
+**Status:** Accepted; phase order amended 2026-10-13, build profiles added 2026-10-15
 **Date:** 2026-10-12
 **Applies to:** `tools/nix-deploy/`
 
@@ -146,3 +146,42 @@ between evaluation and the build, and only changed targets are built
 (release 0.7.0). Comparing against the host itself, not a previous
 evaluation, is unchanged. A dry run now skips the build phase, so it no
 longer shows that changed targets build.
+
+## Amendment (2026-10-15): build profiles
+
+One shared build lets Nix schedule the whole fleet at once, under the
+operator's own `max-jobs` and `cores`. Those suit a workstation building one
+thing at a time (every core for each build), not a run after a flake update,
+when many large derivations compile from source at once: the first such fleet
+run overlapped kernel modules, a compositor, a Rust toolchain and builds under
+emulation until the operator froze (#548). A memory cap on the Nix daemon
+alone would turn that into a killed build rather than a finished one.
+
+Before the build, the run now counts the derivations it would build (`nix
+build --dry-run` over the changed targets; downloads do not count, while
+work a remote builder would take does) and picks a profile. Light, below `DEPLOY_HEAVY_BUILDS` (default 50),
+leaves the settings alone, so a single large build keeps every core. Heavy
+passes `--option max-jobs 6 --option cores 8` (`DEPLOY_HEAVY_MAX_JOBS`,
+`DEPLOY_HEAVY_CORES`), each capped at the machine's own setting so heavy never
+loads a smaller host more than its defaults (a setting that cannot be read is
+left to the host rather than raised), to the shared build and to the
+roots built after it.
+Nix sends both settings to the daemon with the connection, so they bound this
+run's builds only. A count that fails, or lists paths under a heading it does not
+know, picks heavy, the safe side of a wrong guess. `--heavy` / `--light` or `DEPLOY_BUILD_PROFILE` skip the count, and
+`--dry-run` prints the profile a run would use.
+
+On the operator's fleet, a configuration change that touches every host
+added about 3 to 4 derivations per host (about 23 in all), while the first run
+after a flake update had more than 400 to build, so the threshold separates
+them with room on both sides.
+
+Considered and rejected:
+
+- **Lower the operator's `max-jobs` and `cores` permanently**: slows every
+  single large build the workstation does outside deployments.
+- **Weigh derivations, for example skipping `preferLocalBuild` ones**: a
+  better estimate of the work, but the plain count already separates the
+  two cases above by an order of magnitude.
+- **Lower `DEPLOY_EVAL_JOBS` under heavy**: evaluation ends before the count
+  and the build start, so it never overlaps the builds the profile bounds.

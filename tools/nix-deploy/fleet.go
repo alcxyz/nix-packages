@@ -171,6 +171,7 @@ func (d *deployer) deployFleet(mode string, selected []string, r *report) int {
 		for _, t := range changed {
 			r.record(t.phase, t.host, "planned")
 		}
+		d.previewProfile(changed, evaluated, r)
 		return d.finish(selected, r)
 	}
 	built := d.buildTargets(changed, evaluated, r)

@@ -16,6 +16,10 @@ type report struct {
 	failed  bool
 	started time.Time
 	build   time.Duration
+	// profile is the build profile the run used or, for a dry run, would
+	// use; pendingBuilds is how many derivations it counted to choose it.
+	profile       string
+	pendingBuilds *int
 }
 
 func newReport() *report {
@@ -105,11 +109,13 @@ type hostReport struct {
 }
 
 type runReport struct {
-	Version      string       `json:"version"`
-	BuildSeconds float64      `json:"buildSeconds"`
-	TotalSeconds float64      `json:"totalSeconds"`
-	Failed       bool         `json:"failed"`
-	Hosts        []hostReport `json:"hosts"`
+	Version       string       `json:"version"`
+	BuildProfile  string       `json:"buildProfile,omitempty"`
+	PendingBuilds *int         `json:"pendingBuilds,omitempty"`
+	BuildSeconds  float64      `json:"buildSeconds"`
+	TotalSeconds  float64      `json:"totalSeconds"`
+	Failed        bool         `json:"failed"`
+	Hosts         []hostReport `json:"hosts"`
 }
 
 // saveReport writes the JSON report when one was requested, on every exit
@@ -137,10 +143,12 @@ func writeFailedJSON(path string) {
 // runs can be compared over time.
 func (d *deployer) writeJSON(path string, selected []string, r *report) error {
 	out := runReport{
-		Version:      version,
-		BuildSeconds: r.build.Seconds(),
-		TotalSeconds: time.Since(r.started).Seconds(),
-		Failed:       r.failed,
+		Version:       version,
+		BuildProfile:  r.profile,
+		PendingBuilds: r.pendingBuilds,
+		BuildSeconds:  r.build.Seconds(),
+		TotalSeconds:  time.Since(r.started).Seconds(),
+		Failed:        r.failed,
 	}
 	for _, host := range selected {
 		phase := func(name string) phaseReport {

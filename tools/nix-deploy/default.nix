@@ -11,7 +11,7 @@
 buildGoModule (finalAttrs: {
   pname = "nix-deploy";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.7.1";
+  version = "0.8.0";
 
   src = ./.;
 

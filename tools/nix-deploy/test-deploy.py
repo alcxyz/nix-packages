@@ -103,7 +103,19 @@ elif name == "ssh":
         profile = store / f"fixture-{host}-{kind}" if listed("MOCK_PROFILE_ONLY", host) else current
         print(f"{current}\n{profile}")
 elif name == "nix":
-    if args[0] == "eval":
+    if args[:2] == ["config", "show"] or args == ["show-config"]:
+        # This machine's settings, which cap the heavy build profile. Nix
+        # before 2.20 has only show-config; MOCK_NIX_CONFIG=none has neither.
+        settings = {"max-jobs": os.environ.get("MOCK_MAX_JOBS", "32"), "cores": os.environ.get("MOCK_CORES", "16")}
+        old = os.environ.get("MOCK_NIX_CONFIG")
+        if args[0] == "config" and old in {"old", "none"} or args[0] == "show-config" and old == "none":
+            print("error: 'config' is not a recognised command", file=sys.stderr)
+            sys.exit(1)
+        if args[0] == "config":
+            print(settings[args[2]])
+        else:
+            print("\n".join(f"{key} = {value}" for key, value in settings.items()))
+    elif args[0] == "eval":
         attribute = next(a for a in args if a.startswith(".#"))
         match = re.match(r'\.#(nixos|darwin|home)Configurations\."(?:alc-)?([^"]+)"\.', attribute)
         kind = {"nixos": "system", "darwin": "darwin", "home": "home"}[match[1]]
@@ -114,6 +126,22 @@ elif name == "nix":
         # MOCK_VARIANT builds another generation of the same configuration.
         output = f"{store}/fixture{os.environ.get('MOCK_VARIANT', '')}-{derivation}"
         print(json.dumps({"drv": output + ".drv", "out": output}))
+    elif args[0] == "build" and "--dry-run" in args:
+        # The count before the build: MOCK_LOCAL_BUILDS derivations would be
+        # built here, and one path fetched.
+        if os.environ.get("MOCK_DRY_RUN_FAIL"):
+            print("error: fixture dry-run failure", file=sys.stderr)
+            sys.exit(1)
+        count = int(os.environ.get("MOCK_LOCAL_BUILDS", "0"))
+        if os.environ.get("MOCK_DRY_RUN_RENAMED"):
+            print(f"these {count} derivations are queued:", file=sys.stderr)
+            print(f"  {store}/queued.drv", file=sys.stderr)
+        elif count:
+            print(f"these {count} derivations will be built:" if count > 1 else "this derivation will be built:", file=sys.stderr)
+            for i in range(count):
+                print(f"  {store}/local-{i}.drv", file=sys.stderr)
+        print("this path will be fetched (1.0 KiB download, 1.0 KiB unpacked):", file=sys.stderr)
+        print(f"  {store}/fetched", file=sys.stderr)
     elif args[0] == "build":
         # A build of one derivation with an out-link roots a built target;
         # MOCK_ROOT_FAIL refuses one.
@@ -205,6 +233,11 @@ def evaluated(calls):
     return [next(a for a in c if a.startswith(".#")) for c in calls if c[0] == "nix" and c[1] == "eval"]
 
 
+def counted(calls):
+    """Derivations passed to the dry run that counts local builds."""
+    return [Path(a[: -len(".drv^out")]).name for c in calls if c[:3] == ["nix", "build", "--dry-run"] for a in c if a.endswith(".drv^out")]
+
+
 def built(calls):
     """Derivations passed to the shared build."""
     return [Path(a[: -len(".drv^out")]).name for c in calls if c[0] == "nix" and c[1] == "build" and "--keep-going" in c for a in c if a.endswith(".drv^out")]
@@ -293,11 +326,14 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert calls.index(builds[0]) < calls.index(["sudo", str(commands / "nixos-rebuild"), "switch", "--store-path", system_path("xyz"), "--no-reexec"])
     # Built paths stay rooted until their activation: the shared build links
     # every output, and each built target is rooted again on its own.
-    roots = [c for c in calls if c[0] == "nix" and c[1] == "build" and "--keep-going" not in c]
+    roots = [c for c in calls if c[0] == "nix" and c[1] == "build" and "--keep-going" not in c and "--dry-run" not in c]
     assert [c[-1] for c in roots] == [system_path("xyz") + ".drv^out", home_path("xyz") + ".drv^out"]
     assert all(c[2] == "--out-link" for c in roots) and builds[0][4].endswith("/build")
     assert max(calls.index(c) for c in roots) < calls.index(["sudo", str(commands / "nixos-rebuild"), "switch", "--store-path", system_path("xyz"), "--no-reexec"])
     assert "Home Manager NOT updated" not in result.stderr
+    # A run that builds little here keeps the host's Nix settings.
+    assert counted(calls) == ["fixture-xyz-system", "fixture-xyz-home"]
+    assert "deploy: 0 derivations to build (heavy from 50); light build profile: host defaults" in result.stdout
     # A Home Manager failure after a successful system switch is called out,
     # with the command that brings the host back in step.
     calls, result = run(status=4, MOCK_HM_FAILURE="1")
@@ -538,7 +574,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert rebuilt(calls) == ["node"] and "from this machine failed" in result.stdout
     # --dry-run stops after the plan, before anything is built.
     calls, result = run("--no-preflight", "--dry-run")
-    assert not activations(calls) and not any(c[0] == "nix" and c[1] == "build" for c in calls)
+    assert not activations(calls) and not built(calls) and not any(c[0] == "nix" and c[1] == "build" and "--dry-run" not in c for c in calls)
     assert "[system] [xyz] changed:" in result.stdout or "[system] [xyz] current generation unknown" in result.stdout
     calls, result = run("--all", "--dry-run", "--no-preflight", MOCK_CURRENT="node")
     assert not activations(calls) and not any(c == ["sudo", "-v"] for c in calls)
@@ -590,6 +626,65 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, _ = run("--no-preflight", "node", "--dry-run", "--json", str(report), MOCK_CURRENT="node")
     data = json.loads(report.read_text())
     assert data["hosts"][0]["system"]["status"] == "unchanged"
+    # Nothing to build is not counted.
+    assert not counted(calls) and "buildProfile" not in data and "pendingBuilds" not in data
+
+    # Build profiles: a run that would build many derivations here bounds the
+    # shared build, and the roots built after it.
+    def build_options(calls):
+        """The options of the shared build and of each root, in call order."""
+        return [[a for a in c[c.index("--out-link") + 2:] if not a.endswith(".drv^out")]
+                for c in calls if c[:2] == ["nix", "build"] and "--dry-run" not in c]
+    heavy = ["--option", "max-jobs", "6", "--option", "cores", "8"]
+    calls, result = run("--all", "--no-preflight", "--json", str(report), MOCK_CURRENT="node", MOCK_LOCAL_BUILDS="50")
+    assert sorted(counted(calls)) == ["fixture-solo-system", "fixture-xyz-home", "fixture-xyz-system"]
+    assert calls.index(next(c for c in calls if c[:3] == ["nix", "build", "--dry-run"])) < calls.index(next(c for c in calls if "--keep-going" in c))
+    assert "deploy: 50 derivations to build (heavy from 50); heavy build profile: max-jobs 6, cores 8" in result.stdout
+    options = build_options(calls)
+    assert len(options) == 4 and all(o == heavy for o in options), options
+    data = json.loads(report.read_text())
+    assert data["buildProfile"] == "heavy" and data["pendingBuilds"] == 50
+    calls, result = run("--all", "--no-preflight", "--json", str(report), MOCK_CURRENT="node", MOCK_LOCAL_BUILDS="49")
+    assert "light build profile: host defaults" in result.stdout and all(o == [] for o in build_options(calls))
+    data = json.loads(report.read_text())
+    assert data["buildProfile"] == "light" and data["pendingBuilds"] == 49
+    calls, result = run("--no-preflight", "node", MOCK_LOCAL_BUILDS="1", DEPLOY_HEAVY_BUILDS="1", DEPLOY_HEAVY_MAX_JOBS="3", DEPLOY_HEAVY_CORES="4")
+    assert "1 derivations to build (heavy from 1); heavy build profile: max-jobs 3, cores 4" in result.stdout
+    assert all(o == ["--option", "max-jobs", "3", "--option", "cores", "4"] for o in build_options(calls))
+    # A count that fails builds anyway, under the heavy profile.
+    calls, result = run("--no-preflight", "node", MOCK_DRY_RUN_FAIL="1")
+    assert "cannot count pending builds" in result.stderr and "fixture dry-run failure" in result.stderr
+    assert all(o == heavy for o in build_options(calls)) and rebuilt(calls) == ["node"]
+    calls, result = run("--no-preflight", "node", MOCK_DRY_RUN_RENAMED="1")
+    assert "cannot count pending builds" in result.stderr and "derivations are queued" in result.stderr
+    assert all(o == heavy for o in build_options(calls))
+    # Heavy never loads this machine beyond its own settings.
+    calls, result = run("--no-preflight", "node", "--heavy", MOCK_MAX_JOBS="2", MOCK_CORES="4")
+    assert "heavy build profile (--heavy): max-jobs 2, cores 4" in result.stdout
+    assert all(o == ["--option", "max-jobs", "2", "--option", "cores", "4"] for o in build_options(calls))
+    calls, result = run("--no-preflight", "node", "--heavy", MOCK_MAX_JOBS="0", MOCK_CORES="4", MOCK_NIX_CONFIG="old")
+    assert all(o == ["--option", "max-jobs", "0", "--option", "cores", "4"] for o in build_options(calls))
+    # Settings that cannot be read are left to the host, never raised.
+    calls, result = run("--no-preflight", "node", "--heavy", MOCK_NIX_CONFIG="none")
+    assert "max-jobs unchanged (host setting unknown), cores unchanged (host setting unknown)" in result.stdout
+    assert all(o == [] for o in build_options(calls))
+    # An explicit profile skips the count; the option outranks the environment.
+    calls, result = run("--no-preflight", "node", "--heavy", MOCK_LOCAL_BUILDS="1")
+    assert not counted(calls) and all(o == heavy for o in build_options(calls))
+    assert "deploy: heavy build profile (--heavy): max-jobs 6, cores 8" in result.stdout
+    calls, result = run("--no-preflight", "node", "--light", MOCK_LOCAL_BUILDS="99", DEPLOY_BUILD_PROFILE="heavy")
+    assert not counted(calls) and all(o == [] for o in build_options(calls))
+    assert "deploy: light build profile (--light): host defaults" in result.stdout
+    calls, result = run("--no-preflight", "node", MOCK_LOCAL_BUILDS="1", DEPLOY_BUILD_PROFILE="heavy")
+    assert not counted(calls) and "heavy build profile (DEPLOY_BUILD_PROFILE)" in result.stdout
+    # A dry run reports the profile without building.
+    calls, result = run("--all", "--no-preflight", "--dry-run", "--json", str(report), MOCK_LOCAL_BUILDS="60")
+    assert counted(calls) and not built(calls) and not activations(calls)
+    assert "60 derivations to build (heavy from 50); heavy build profile" in result.stdout
+    assert json.loads(report.read_text())["buildProfile"] == "heavy"
+    for name, value in [("DEPLOY_BUILD_PROFILE", "fast"), ("DEPLOY_HEAVY_BUILDS", "0"), ("DEPLOY_HEAVY_MAX_JOBS", "x"), ("DEPLOY_HEAVY_CORES", "-1")]:
+        calls, result = run("--no-preflight", "node", status=1, **{name: value})
+        assert name in result.stderr and not actions(calls)
     # A run that cannot start, or stops early, still replaces the previous
     # report.
     calls, _ = run("--all", "--json", str(report), status=1, DEPLOY_EVAL_JOBS="0")
@@ -814,4 +909,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
-print("Deployment contract: 105 mocked CLI cases and 24 invalid inventories passed; no deployment commands executed")
+print("Deployment contract: 122 mocked CLI cases and 24 invalid inventories passed; no deployment commands executed")

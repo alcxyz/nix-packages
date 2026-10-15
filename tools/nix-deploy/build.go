@@ -54,10 +54,12 @@ func (d *deployer) buildTargets(targets []target, evaluated map[string]evaluatio
 		}
 		return built
 	}
+	options := d.buildOptions(d.chooseProfile(targets, evaluated, r))
 	// When every target builds, these links root all outputs as the build
 	// ends; Nix creates none when one fails, so each target is rooted again
 	// below.
 	argv := []string{"nix", "build", "--keep-going", "--out-link", filepath.Join(d.rootDir, "build")}
+	argv = append(argv, options...)
 	for _, t := range targets {
 		argv = append(argv, evaluated[t.key()].Drv+"^out")
 	}
@@ -76,7 +78,7 @@ func (d *deployer) buildTargets(targets []target, evaluated map[string]evaluatio
 			continue
 		}
 		path := strings.TrimSpace(lastLine(output))
-		if !d.addRoot(t, drv) {
+		if !d.addRoot(t, drv, options) {
 			fmt.Fprintf(os.Stderr, "%s cannot protect the build from garbage collection\n", d.label(t))
 			r.record(t.phase, t.host, "failed")
 			continue
@@ -89,10 +91,12 @@ func (d *deployer) buildTargets(targets []target, evaluated map[string]evaluatio
 // addRoot keeps a built path from garbage collection until the run ends.
 // Activation can come minutes after the build, behind serial ready gates.
 // Rooting goes through the derivation, so an output a collection removed
-// after the build is built again instead of being lost.
-func (d *deployer) addRoot(t target, drv string) bool {
+// after the build is built again, under the run's build profile, instead of
+// being lost.
+func (d *deployer) addRoot(t target, drv string, options []string) bool {
 	link := filepath.Join(d.rootDir, t.phase+"-"+t.host)
-	_, status := capture(0, "nix", "build", "--out-link", link, drv+"^out")
+	argv := append([]string{"nix", "build", "--out-link", link}, options...)
+	_, status := capture(0, append(argv, drv+"^out")...)
 	return status == 0
 }
 

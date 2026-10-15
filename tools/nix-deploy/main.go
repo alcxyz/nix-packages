@@ -29,6 +29,13 @@ type settings struct {
 	remoteGCTimeout  time.Duration
 	readyInterval    time.Duration
 	evalJobs         int
+	// buildProfile is auto, light or heavy; profileSource says who chose an
+	// explicit one.
+	buildProfile  string
+	profileSource string
+	heavyBuilds   int
+	heavyMaxJobs  int
+	heavyCores    int
 }
 
 type deployer struct {
@@ -54,6 +61,9 @@ type deployer struct {
 	// rebuildChecked caches whether nixos-rebuild can activate store paths.
 	rebuildChecked bool
 	rebuildOK      bool
+	// hostLimits caches this machine's Nix max-jobs and cores, which cap the
+	// heavy build profile.
+	hostLimits *hostLimits
 }
 
 func main() {
@@ -177,6 +187,9 @@ func run(args []string) int {
 			d.dryRun = true
 		case arg == "--force":
 			d.force = true
+		case arg == "--heavy" || arg == "--light":
+			d.settings.buildProfile = strings.TrimPrefix(arg, "--")
+			d.settings.profileSource = arg
 		case arg == "--json":
 			if i+1 >= len(rest) {
 				return failEarly("--json requires a file")
@@ -273,7 +286,34 @@ func loadSettings() (settings, error) {
 		return values, fmt.Errorf("DEPLOY_EVAL_JOBS must be a positive integer")
 	}
 	values.evalJobs, _ = strconv.Atoi(evalJobs)
+
+	values.buildProfile = envOr("DEPLOY_BUILD_PROFILE", profileAuto)
+	values.profileSource = "DEPLOY_BUILD_PROFILE"
+	switch values.buildProfile {
+	case profileAuto, profileLight, profileHeavy:
+	default:
+		return values, fmt.Errorf("DEPLOY_BUILD_PROFILE must be auto, light or heavy")
+	}
+	var err error
+	if values.heavyBuilds, err = positiveSetting("DEPLOY_HEAVY_BUILDS", "50"); err != nil {
+		return values, err
+	}
+	if values.heavyMaxJobs, err = positiveSetting("DEPLOY_HEAVY_MAX_JOBS", "6"); err != nil {
+		return values, err
+	}
+	if values.heavyCores, err = positiveSetting("DEPLOY_HEAVY_CORES", "8"); err != nil {
+		return values, err
+	}
 	return values, nil
+}
+
+func positiveSetting(name, fallback string) (int, error) {
+	value := envOr(name, fallback)
+	if !positiveNumber.MatchString(value) {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	n, _ := strconv.Atoi(value)
+	return n, nil
 }
 
 func envOr(name, fallback string) string {
@@ -309,7 +349,7 @@ func (d *deployer) usage() int {
        deploy [OPTIONS] --hm [<host>]
 
 Options: [--config FILE] [--here] [--no-preflight] [--dry-run] [--force]
-         [--json FILE] [--version]
+         [--heavy | --light] [--json FILE] [--version]
 
 When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.
@@ -328,6 +368,17 @@ activated nor gated. --dry-run stops after the plan, before building, and
 never starts a host's garbage collection, --force builds and activates
 unchanged targets too, and --json FILE writes the results and per-host
 timings.
+
+Before the build, the run counts the derivations it would build (nix build
+--dry-run; downloads do not count) and picks a build profile. Light keeps this
+machine's Nix settings. Heavy, from DEPLOY_HEAVY_BUILDS (default 50)
+derivations, passes max-jobs DEPLOY_HEAVY_MAX_JOBS (default 6) and cores
+DEPLOY_HEAVY_CORES (default 8), each capped at this machine's own setting (one
+that cannot be read is left to the host), so
+many large builds, typically after a flake update, cannot overlap until the
+machine runs out of memory. A count that fails picks heavy. --heavy or
+--light, or DEPLOY_BUILD_PROFILE=heavy|light, skips the count; --dry-run
+prints the profile a run would use.
 
 Remote phases are checked over SSH before building. A single failed preflight
 phase fails early. For --all, hosts that fail preflight are skipped for that

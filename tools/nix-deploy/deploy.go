@@ -72,6 +72,7 @@ func (d *deployer) activateHost(host, mode string, targets []target, r *report) 
 		for _, t := range changed {
 			r.record(t.phase, t.host, "planned")
 		}
+		d.previewProfile(changed, evaluated, r)
 		return 0
 	}
 	if len(changed) == 0 {
