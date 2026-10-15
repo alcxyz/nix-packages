@@ -85,3 +85,7 @@ The package supplies no built-in fleet. See [ADR-0006](docs/adr/0006-runtime-con
 for the versioned JSON fields and runtime command requirements.
 `deploy --version` names the release; its
 [changelog](tools/nix-deploy/CHANGELOG.md) lists what each one changed.
+
+The package also installs `k8s-node-power reboot|off|on`, a Go port of the
+`k8s-node-reboot` helpers under qualification; `kreboot`, `koff` and `kon`
+remain the supported commands until it replaces them.

@@ -9,6 +9,18 @@ and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.9.0 (2026-10-16)
+
+- `k8s-node-power reboot|off|on` (#548, phase 1): a Go port of the
+  k8s-node-reboot Bash tool (`kreboot`, `koff`, `kon`) with the same options,
+  gates and messages (nix-config ADR-0068 and ADR-0082). It ships beside
+  `deploy` for qualification runs; the Bash tool stays the supported command
+  until then. kubectl JSON is decoded in Go instead of jq, and output that
+  does not decode fails the gate rather than taking a fallback. Durations are
+  validated before any cluster change and bare seconds reach kubectl as `Ns`.
+  An interrupt stops new commands, restores a raised Longhorn rebuild limit
+  and reports a stopped self-fence agent.
+
 ## 0.8.0 (2026-10-15)
 
 - Build profiles (#548): before the shared build, count the derivations it
