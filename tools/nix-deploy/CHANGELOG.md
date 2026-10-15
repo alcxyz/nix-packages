@@ -1,13 +1,35 @@
-# nix-deploy changelog
+# nixfleet (nix-deploy) changelog
 
-`deploy --version` and the `version` field of the `--json` report name the
-running release. Bump `version` in `default.nix` with every change to the tool
-and add an entry here:
+`nixfleet --version` (or `deploy --version`) and the `version` field of the
+`--json` reports name the running release. Bump `version` in `default.nix`
+with every change to the tool and add an entry here:
 
 - major: an incompatible change to the command line, the inventory schema or
   the JSON report;
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
+
+## 0.10.0 (2026-10-16)
+
+- One program, `nixfleet` (#548, phase 2), with the subcommands `deploy`,
+  `reboot`, `off`, `on` and `status`. Installed as `deploy` and
+  `k8s-node-power` it is those commands with their command lines unchanged,
+  and `nix run .#nix-deploy` still runs `deploy`. The package is also exported
+  as `.#nixfleet`, whose main program is `nixfleet`. `kreboot`, `koff` and
+  `kon` stay with the k8s-node-reboot package.
+- `nixfleet status [--all | <host>...] [--json FILE]`: reads, over SSH with
+  BatchMode or locally for this machine, each host's booted, current and
+  next-boot systems, whether it needs a reboot, its Kubernetes node's cordon
+  state (one `kubectl get nodes`) and its Forgejo or Gitea runner units.
+  Unreachable hosts and clusters are reported, and the exit status is 0 unless
+  the arguments, the inventory or the report fail.
+- `reboot --needed` (also `k8s-node-power reboot --needed`): skips the reboot,
+  before any cluster or host change, when the booted kernel, initrd, kernel
+  modules and kernel parameters match those of the current and next-boot
+  systems and the node is not cordoned. A host that cannot be read or compared
+  is rebooted, and a cordoned node goes through the normal gates.
+- `k8s-node-power` now uses the same search path as `deploy` and `nixfleet`,
+  so all three run the same ssh.
 
 ## 0.9.0 (2026-10-16)
 

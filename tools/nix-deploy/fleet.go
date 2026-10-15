@@ -83,10 +83,7 @@ func (d *deployer) startSudoKeepalive() (func(), bool) {
 }
 
 func (d *deployer) deployAll(mode string) int {
-	selected := d.inv.DeployAllHosts
-	if d.self != d.inv.OperatorHost {
-		selected = d.inv.RemoteHosts
-	}
+	selected := d.inv.fleet(d.self)
 	r := newReport()
 	status := d.deployFleet(mode, selected, r)
 	if status != 0 {

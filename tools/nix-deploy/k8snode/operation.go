@@ -100,6 +100,20 @@ func (o *Operation) Run() (status int) {
 }
 
 func (o *Operation) run() error {
+	// Before any change, so a skipped reboot changes nothing. A cordoned
+	// node is never skipped: it is in unfinished maintenance, which the
+	// normal gates report or resume.
+	if o.opts.Needed && !o.rebootNeeded() {
+		cordoned, err := o.nodeIsCordoned()
+		if err != nil {
+			return err
+		}
+		if !cordoned {
+			o.log("skipping the reboot of %s (--needed); nothing was changed", o.opts.Node)
+			return nil
+		}
+		o.log("%s is cordoned; not skipping it, so its maintenance state is checked", o.opts.Node)
+	}
 	if o.opts.CheckOnly {
 		return o.checkOnly()
 	}

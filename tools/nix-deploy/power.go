@@ -1,6 +1,3 @@
-// Command k8s-node-power reboots, powers off or powers on a Kubernetes node
-// behind the cluster, storage, database and self-fence gates of nix-config
-// ADR-0068 and ADR-0082 (package k8snode).
 package main
 
 import (
@@ -9,39 +6,38 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"nix-deploy/k8snode"
 )
 
-// version is set by the package build (-X main.version); see CHANGELOG.md.
-var version = "dev"
-
-func main() {
-	os.Exit(run(os.Args[1:]))
-}
-
-func run(args []string) int {
+// runPower reboots, powers off or powers on a Kubernetes node behind the
+// cluster, storage, database and self-fence gates of nix-config ADR-0068 and
+// ADR-0082 (package k8snode). name is the command the operator typed,
+// k8s-node-power or nixfleet, and args start with the action.
+func runPower(name string, args []string) int {
+	usage := strings.ReplaceAll(k8snode.Usage, "k8s-node-power", name)
 	if len(args) == 0 {
-		fmt.Fprint(os.Stderr, k8snode.Usage)
+		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
 	switch args[0] {
 	case "-h", "--help":
-		fmt.Print(k8snode.Usage)
+		fmt.Print(usage)
 		return 0
 	case "--version":
-		fmt.Println("k8s-node-power " + version)
+		fmt.Println(name + " " + version)
 		return 0
 	}
 
 	opts, err := k8snode.ParseArgs(args[0], args[1:])
 	switch {
 	case errors.Is(err, k8snode.ErrHelp):
-		fmt.Print(k8snode.Usage)
+		fmt.Print(usage)
 		return 0
 	case errors.Is(err, k8snode.ErrUsage):
-		fmt.Fprint(os.Stderr, k8snode.Usage)
+		fmt.Fprint(os.Stderr, usage)
 		return 2
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -49,9 +45,9 @@ func run(args []string) int {
 	}
 
 	runner := &k8snode.Runner{Stdout: os.Stdout, Stderr: os.Stderr}
-	for _, name := range []string{"kubectl", "ssh"} {
-		if !runner.Has(name) {
-			fmt.Fprintf(os.Stderr, "error: missing required command: %s\n", name)
+	for _, program := range []string{"kubectl", "ssh"} {
+		if !runner.Has(program) {
+			fmt.Fprintf(os.Stderr, "error: missing required command: %s\n", program)
 			return 1
 		}
 	}

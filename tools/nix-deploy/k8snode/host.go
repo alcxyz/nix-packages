@@ -3,6 +3,9 @@ package k8snode
 import (
 	"fmt"
 	"strings"
+	"time"
+
+	"nix-deploy/bootcheck"
 )
 
 // The host side of the power action: root access, the power command, and
@@ -31,6 +34,37 @@ const powerOffCommand = `
 
 // sshDownAttempts bounds the wait for SSH to drop after the power command.
 const sshDownAttempts = 30
+
+// rebootCheckTimeout bounds the --needed read, which only reads links.
+const rebootCheckTimeout = 60 * time.Second
+
+// rebootNeeded reads, for --needed, whether the target booted the kernel,
+// initrd and kernel modules its current and next-boot systems use. Only a
+// clear "not needed" skips the reboot; a host that cannot be read or
+// compared is rebooted.
+func (o *Operation) rebootNeeded() bool {
+	target := o.opts.SSHTarget
+	r := o.ssh(Command{
+		Argv:    []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target, bootcheck.RemoteCommand(bootcheck.Script)},
+		Quiet:   true,
+		Timeout: rebootCheckTimeout,
+	})
+	if r.Status != 0 {
+		o.log("cannot read whether %s needs a reboot (ssh exited with status %d); rebooting", target, r.Status)
+		return true
+	}
+	state := bootcheck.Parse(r.Stdout)
+	switch state.Reboot {
+	case bootcheck.NotNeeded:
+		o.log("%s does not need a reboot: %s", o.opts.Host, state.Reason())
+		return false
+	case bootcheck.Needed:
+		o.log("%s needs a reboot: %s", o.opts.Host, state.Reason())
+	default:
+		o.log("cannot tell whether %s needs a reboot (%s); rebooting", o.opts.Host, state.Reason())
+	}
+	return true
+}
 
 func (o *Operation) verifyRemotePrivilege() error {
 	target := o.opts.SSHTarget

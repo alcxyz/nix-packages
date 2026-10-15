@@ -47,7 +47,10 @@ func TestParseArgsErrors(t *testing.T) {
 		want   string
 	}{
 		{"reboot", []string{"--resume-maintenance", "--skip-drain", "h"}, "--resume-maintenance and --skip-drain cannot be combined"},
+		{"reboot", []string{"--needed", "--resume-maintenance", "h"}, "--needed and --resume-maintenance cannot be combined"},
 		{"on", []string{"--resume-maintenance", "h"}, "--resume-maintenance is for reboot/off cycles"},
+		{"off", []string{"--needed", "h"}, "--needed applies only to reboot"},
+		{"on", []string{"--needed", "h"}, "--needed applies only to reboot"},
 		{"reboot", []string{"a", "b"}, "only one host can be supplied"},
 		{"reboot", []string{"--bogus", "h"}, "unknown option: --bogus"},
 		{"reboot", []string{"-oProxyCommand=x"}, "unknown option: -oProxyCommand=x"},

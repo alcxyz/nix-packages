@@ -83,9 +83,32 @@ inventory explicitly. `NIX_DEPLOY_CONFIG` supplies the same default for direct
 CLI use; a consumer may generate the JSON and provide a configured wrapper.
 The package supplies no built-in fleet. See [ADR-0006](docs/adr/0006-runtime-configured-nix-deploy.md)
 for the versioned JSON fields and runtime command requirements.
-`deploy --version` names the release; its
+`nixfleet --version` names the release; its
 [changelog](tools/nix-deploy/CHANGELOG.md) lists what each one changed.
 
-The package also installs `k8s-node-power reboot|off|on`, a Go port of the
-`k8s-node-reboot` helpers under qualification; `kreboot`, `koff` and `kon`
-remain the supported commands until it replaces them.
+The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
+`nixfleet`, with these subcommands:
+
+- `nixfleet deploy`: the deploy command. It is also installed as `deploy`,
+  which takes the same options without the subcommand, and `nix run
+  .#nix-deploy` still runs it.
+- `nixfleet reboot|off|on <host>`: the Go port of the `k8s-node-reboot`
+  helpers under qualification, also installed as `k8s-node-power`;
+  `kreboot`, `koff` and `kon` remain the supported commands until it replaces
+  them. `nixfleet reboot --needed <host>` first reads whether the host's booted
+  kernel, initrd, kernel modules or kernel parameters differ from its current
+  or next-boot system, and skips a reboot it does not need (unless the node is
+  cordoned) before changing anything; when that cannot be told, it reboots.
+- `nixfleet status [--all | <host>...] [--json FILE]`: reads, without changing
+  anything, each host's booted and current system, whether it needs a reboot,
+  its Kubernetes cordon state and its Forgejo or Gitea runner units, and prints
+  them as a table. Unreachable hosts and an unreachable cluster are reported,
+  not errors. `--json` writes a `version`, a `cluster` object
+  (`reachable`, `error`, `nodes`) and one entry per host with `host`,
+  `reachable`, `error`, `os`, `bootedSystem`, `currentSystem`,
+  `nextBootSystem`, `rebootNeeded` (`true`, `false` or `null` when it cannot be
+  told), `rebootReason`, `rebootDiffers`, `node` (`name`, `cordoned`, `ready`,
+  or `null`) and `runners` (`active`, `total`, `units`, or `null`).
+
+The program chooses its command by the name it is invoked as, so each
+installed name is a wrapper that sets it.

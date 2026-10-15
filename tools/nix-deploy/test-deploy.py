@@ -93,6 +93,23 @@ elif name == "ssh":
         elif failure:
             print("fixture gc failure", file=sys.stderr)
             sys.exit(1)
+    elif "/run/booted-system" in remote:
+        # nixfleet status reads the boot check, then the runner units. Linux
+        # hosts booted kernel k1 and switched to k2; mac is nix-darwin.
+        host = endpoint_host(args[-2])
+        if listed("MOCK_STATUS_UNREACHABLE", host):
+            print("fixture endpoint unavailable", file=sys.stderr)
+            sys.exit(255)
+        if host == "mac":
+            print("os=Darwin")
+            sys.exit(0)
+        print("os=Linux")
+        for side, system, kernel in [("booted", "old", "k1"), ("current", "new", "k2"), ("profile", "new", "k2")]:
+            print(f"{side}={store}/{system}-system")
+            print(f"{side}-kernel={store}/{kernel}-linux/bzImage")
+            print(f"{side}-initrd={store}/i1-initrd/initrd")
+            print(f"{side}-kernel-modules={store}/m1-modules")
+        print("runner=forgejo-actions-runner.service loaded active running fixture runner")
     elif "/run/current-system" in remote or "profiles/home-manager" in remote:
         # Hosts listed in MOCK_CURRENT already run what the fixture builds.
         # Both scripts print the running generation, then the profile. A Home
@@ -248,7 +265,9 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     commands = root / "bin"
     commands.mkdir()
     store = root / "store"
-    deploy = Path(sys.argv[1]).resolve()
+    # The program is chosen by the name it is invoked as, so the path is not
+    # resolved through a symbolic link named deploy.
+    deploy = Path(sys.argv[1]).absolute()
     # Keep the command search path closed; new operational commands cannot fall
     # through to an installed host tool. Mocks use an absolute Python shebang,
     # and the ready command runs through bash.
@@ -909,4 +928,74 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
-print("Deployment contract: 122 mocked CLI cases and 24 invalid inventories passed; no deployment commands executed")
+    # One program under three names (#548): deploy and k8s-node-power keep
+    # their command lines, and nixfleet names a subcommand.
+    names = root / "names"
+    names.mkdir()
+    for name in ["nixfleet", "deploy", "k8s-node-power"]:
+        (names / name).symlink_to(deploy.resolve())
+
+    def invoke(name, *args, status=0, **settings):
+        log = root / "commands.jsonl"
+        log.write_text("")
+        env = {
+            "PATH": str(commands), "HOME": str(root), "MOCK_LOG": str(log), "MOCK_STORE": str(store),
+            "MOCK_HOST": "xyz", "MOCK_SYSTEM": "Linux", "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1",
+            **settings,
+        }
+        result = subprocess.run([str(names / name), *args], cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        assert result.returncode == status, (name, args, result.returncode, result.stdout, result.stderr)
+        return [json.loads(line) for line in log.read_text().splitlines()], result
+
+    for name, args, expected in [
+        ("nixfleet", ["--version"], "nixfleet"),
+        ("deploy", ["--version"], "deploy"),
+        ("k8s-node-power", ["--version"], "k8s-node-power"),
+        ("nixfleet", ["deploy", "--version"], "deploy"),
+    ]:
+        _, result = invoke(name, *args)
+        assert result.stdout == f"{expected} {version}\n", (name, args, result.stdout)
+    _, result = invoke("nixfleet", "--help")
+    for usage in ["nixfleet deploy", "nixfleet reboot|off|on", "nixfleet status", "Subcommands:"]:
+        assert usage in result.stdout, result.stdout
+    _, result = invoke("nixfleet", status=2)
+    assert result.stdout == "" and "Subcommands:" in result.stderr
+    _, result = invoke("nixfleet", "bogus", status=2)
+    assert "nixfleet: unknown subcommand 'bogus'" in result.stderr
+    # deploy as a subcommand is the deploy command line.
+    calls, result = invoke("nixfleet", "deploy", "--config", str(config), "--help", status=1)
+    assert "Usage: deploy" in result.stdout and "Known hosts: xyz node solo mac" in result.stdout and not actions(calls)
+    calls, result = invoke("nixfleet", "deploy", "--config", str(config), "--no-preflight", "--dry-run", "--nixos", "node")
+    assert "[system] [node] changed:" in result.stdout and not activations(calls)
+    # reboot, off and on are k8s-node-power's, named for the command typed.
+    _, result = invoke("nixfleet", "reboot", "--help")
+    assert result.stdout.startswith("Usage: nixfleet reboot [options] <host>") and "--needed" in result.stdout
+    _, result = invoke("k8s-node-power", "reboot", "--help")
+    assert result.stdout.startswith("Usage: k8s-node-power reboot [options] <host>")
+    calls, result = invoke("nixfleet", "off", "--needed", "node", status=1)
+    assert "--needed applies only to reboot" in result.stderr and calls == []
+    calls, result = invoke("nixfleet", "reboot", "--needed", "node", status=1)
+    assert "missing required command: kubectl" in result.stderr and calls == []
+    # status only reads: one boot check per host over SSH. kubectl is not on
+    # the search path, so the cluster is reported, not an error.
+    report = root / "status.json"
+    calls, result = invoke("nixfleet", "status", "--config", str(config), "edge", "solo", "mac", "--json", str(report), MOCK_STATUS_UNREACHABLE="solo")
+    rows = [line.split() for line in result.stdout.splitlines()]
+    assert rows[0] == ["host", "ssh", "system", "reboot", "node", "runners"], rows
+    assert rows[1] == ["node", "ok", "switched", "yes", "-", "1/1"], rows
+    assert rows[2] == ["solo", "unreachable", "-", "-", "-", "-"], rows
+    assert rows[3] == ["mac", "ok", "darwin", "-", "-", "-"], rows
+    assert "node: reboot needed: kernel differs" in result.stdout and "solo: unreachable: fixture endpoint unavailable" in result.stdout
+    assert "cluster: not read: kubectl is not available" in result.stdout
+    assert sorted(c[-2] for c in calls if c[0] == "ssh") == ["operator@solo.invalid", "root@mac", "root@node.invalid"]
+    assert all(c[0] in {"hostname", "ssh"} for c in calls) and all("BatchMode=yes" in c for c in calls if c[0] == "ssh"), calls
+    data = json.loads(report.read_text())
+    assert data["version"] == version and data["cluster"] == {"reachable": False, "error": "kubectl is not available", "nodes": 0}
+    assert [(h["host"], h["reachable"], h["rebootNeeded"]) for h in data["hosts"]] == [("node", True, True), ("solo", False, None), ("mac", True, None)]
+    assert data["hosts"][0]["rebootDiffers"] == ["kernel"] and data["hosts"][0]["runners"]["active"] == 1
+    _, result = invoke("nixfleet", "status", "--config", str(config), "--all", "node", status=2)
+    assert "--all and host names cannot be combined" in result.stderr
+    _, result = invoke("nixfleet", "status", "--config", str(config), "nope", status=2)
+    assert "unknown host 'nope'" in result.stderr
+
+print("Deployment contract: 122 mocked CLI cases and 24 invalid inventories passed, and 16 nixfleet dispatch and status cases; no deployment commands executed")

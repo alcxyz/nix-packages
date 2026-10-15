@@ -50,7 +50,10 @@
           codex-app-server = pkgs.callPackage ./pkgs/codex-app-server { };
           codex-cli = pkgs.callPackage ./pkgs/codex-cli { };
           k8s-node-reboot = pkgs.callPackage ./tools/k8s-node-reboot { };
-          nix-deploy = pkgs.callPackage ./tools/nix-deploy { };
+          nixfleet = pkgs.callPackage ./tools/nix-deploy { };
+          # The same package under its earlier name, whose main program stays
+          # deploy, so `nix run .#nix-deploy` keeps its command line.
+          nix-deploy = lib.addMetaAttrs { mainProgram = "deploy"; } allPackages.nixfleet;
           nix-gc-maintenance = pkgs.callPackage ./tools/nix-gc-maintenance { };
         }
         //

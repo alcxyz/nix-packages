@@ -36,6 +36,13 @@ Options:
                            maintenance-state gates do not pass.
   --check-only             Validate preflight or resumed-maintenance gates and
                            report planned database switchovers without changes.
+  --needed                 reboot only: first read whether the host needs a
+                           reboot (its booted kernel, initrd, kernel modules or
+                           kernel parameters differ from the current or
+                           next-boot system's) and, when it does not and the
+                           node is not cordoned, skip it without changing
+                           anything. When that cannot be told, the reboot goes
+                           ahead. Not with --resume-maintenance.
   --drain-timeout <dur>    kubectl drain duration. Default: 10m.
   --ready-timeout <dur>    kubectl wait duration. Default: 10m.
   --fence-timeout <dur>    Agent recovery/heartbeat wait duration. Default: 10m.
@@ -86,6 +93,8 @@ type Options struct {
 	LeaveCordoned     bool
 	ResumeMaintenance bool
 	CheckOnly         bool
+	// Needed skips a reboot the host does not need.
+	Needed bool
 
 	// Durations keep the operator's spelling, except that ParseArgs adds "s"
 	// to a bare number of seconds: kubectl rejects --timeout=30, and every
@@ -164,6 +173,8 @@ func ParseArgs(action string, args []string) (Options, error) {
 			opts.ResumeMaintenance = true
 		case "--check-only":
 			opts.CheckOnly = true
+		case "--needed":
+			opts.Needed = true
 		case "--drain-timeout":
 			opts.DrainTimeout, err = value()
 		case "--ready-timeout":
@@ -245,6 +256,13 @@ func ParseArgs(action string, args []string) (Options, error) {
 	}
 	if opts.ResumeMaintenance && opts.Action == "on" {
 		return opts, fmt.Errorf("--resume-maintenance is for reboot/off cycles; use k8s-node-power on to finalize maintenance")
+	}
+	if opts.Needed && opts.Action != "reboot" {
+		return opts, fmt.Errorf("--needed applies only to reboot")
+	}
+	// A resumed maintenance is a deliberate power cycle of a cordoned node.
+	if opts.Needed && opts.ResumeMaintenance {
+		return opts, fmt.Errorf("--needed and --resume-maintenance cannot be combined")
 	}
 	if opts.ResumeMaintenance && opts.SkipDrain {
 		return opts, fmt.Errorf("--resume-maintenance and --skip-drain cannot be combined")

@@ -1,6 +1,9 @@
-// Command deploy switches NixOS, nix-darwin and Home Manager configurations
-// from a flake, for one host or the fleet described by an inventory
-// (ADR-0006, ADR-0008).
+// Command nixfleet deploys and inspects the fleet described by an inventory:
+// its deploy subcommand switches NixOS, nix-darwin and Home Manager
+// configurations from a flake, for one host or the fleet (ADR-0006,
+// ADR-0008); reboot, off and on power-cycle a Kubernetes node behind the
+// cluster gates; status reads what each host runs. Installed as deploy or
+// k8s-node-power, it is that command.
 package main
 
 import (
@@ -66,11 +69,71 @@ type deployer struct {
 	hostLimits *hostLimits
 }
 
+const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
+       nixfleet reboot|off|on [OPTIONS] <host>
+       nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
+
+Subcommands:
+  deploy   Evaluate, plan, build and activate the NixOS, nix-darwin and Home
+           Manager configurations of one host or the fleet. The same as the
+           deploy command; see nixfleet deploy --help.
+  reboot   Reboot a Kubernetes node behind the cluster, storage, database and
+           self-fence gates. With --needed, only when the host needs it.
+  off      Power off a Kubernetes node behind the same gates, leaving it
+           cordoned.
+  on       Wait for a node to return, uncordon it and let the cluster settle.
+           reboot, off and on are the k8s-node-power command; see
+           nixfleet reboot --help.
+  status   Read, without changing anything, what each host booted and runs,
+           whether it needs a reboot, its Kubernetes cordon state and its CI
+           runner units; see nixfleet status --help.
+
+Options:
+  -h, --help   Show this help.
+  --version    Print the version.
+
+Installed as deploy or k8s-node-power, this program is that command.
+`
+
 func main() {
-	os.Exit(run(os.Args[1:]))
+	os.Exit(dispatch(filepath.Base(os.Args[0]), os.Args[1:]))
 }
 
-func run(args []string) int {
+// dispatch runs the command the program was invoked as: deploy and
+// k8s-node-power keep their own command lines, and any other name is
+// nixfleet, whose first argument names the subcommand.
+func dispatch(name string, args []string) int {
+	switch name {
+	case "deploy":
+		return runDeploy(args)
+	case "k8s-node-power":
+		return runPower(name, args)
+	}
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, nixfleetUsage)
+		return 2
+	}
+	switch args[0] {
+	case "-h", "--help":
+		fmt.Print(nixfleetUsage)
+		return 0
+	case "--version":
+		fmt.Println("nixfleet " + version)
+		return 0
+	case "deploy":
+		return runDeploy(args[1:])
+	case "reboot", "off", "on":
+		return runPower("nixfleet", args)
+	case "status":
+		return runStatus(args[1:])
+	}
+	fmt.Fprintf(os.Stderr, "nixfleet: unknown subcommand '%s'\n", args[0])
+	fmt.Fprint(os.Stderr, nixfleetUsage)
+	return 2
+}
+
+// runDeploy is the deploy command.
+func runDeploy(args []string) int {
 	configFile := os.Getenv("NIX_DEPLOY_CONFIG")
 	jsonPath := ""
 	for i := 0; i < len(args); i++ {
@@ -124,12 +187,7 @@ func run(args []string) int {
 	if configFile == "" {
 		return failEarly("no inventory configured; pass --config FILE or set NIX_DEPLOY_CONFIG")
 	}
-	// Read once so validation and loading use the same inventory snapshot.
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return failEarly(fmt.Sprintf("cannot read inventory '%s'", configFile))
-	}
-	inv, err := parseInventory(data)
+	inv, err := loadInventory(configFile)
 	if err != nil {
 		return failEarly(err.Error())
 	}
@@ -240,6 +298,16 @@ func run(args []string) int {
 		target = d.self
 	}
 	return d.deployHost(target, mode)
+}
+
+// loadInventory reads the inventory once, so validation and loading use the
+// same snapshot.
+func loadInventory(path string) (*inventory, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read inventory '%s'", path)
+	}
+	return parseInventory(data)
 }
 
 func fail(message string) int {

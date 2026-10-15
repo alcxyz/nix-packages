@@ -408,6 +408,15 @@ func (inv *inventory) usesHomeManager(host string) bool {
 	return contains(inv.HomeManagerHosts, host)
 }
 
+// fleet is the hosts --all selects when run from self: deployAllHosts on the
+// operator host, remoteHosts elsewhere.
+func (inv *inventory) fleet(self string) []string {
+	if self != inv.OperatorHost {
+		return inv.RemoteHosts
+	}
+	return inv.DeployAllHosts
+}
+
 // group returns the serial group host belongs to, or nil.
 func (inv *inventory) group(host string) *serialGroup {
 	for _, group := range inv.SerialGroups {
