@@ -9,6 +9,31 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.11.0 (2026-10-16)
+
+- `nixfleet reboot [--all | <host>...]` reboots the fleet by policy and
+  constraint group (#548, phase 3, ADR-0010). Kubernetes nodes, listed in the
+  new optional inventory field `kubernetesNodes`, reboot behind every gate of
+  `k8s-node-power reboot`, with its node options; members of a serial group
+  wait for the others' ready command before they go down and pass it
+  themselves after they return; active Forgejo or Gitea runner units are
+  stopped first, so admitted jobs finish, and must be active again after the
+  reboot. Every rebooted host must come back with a new boot ID and run the
+  system it was meant to boot.
+- Each serial group is a constraint group and every other host a group of
+  its own. Groups run concurrently and members one at a time, nodes with fewer
+  database primaries first; node reboots never overlap, even across groups.
+  A failure stops its own group and leaves the host as it is; a summary of
+  every host ends the run, which exits 1 when one failed.
+- The run prints its plan first. `--dry-run` stops there; otherwise a
+  terminal confirms, or `--yes`. `--needed` skips hosts whose verdict is a
+  clear "no" (a node only when it is not cordoned). The operator host and this
+  machine are not rebooted, hosts that are not NixOS are reported, and a host
+  the cluster lists as a node but `kubernetesNodes` does not is refused, as is
+  every host when the cluster's nodes cannot be read.
+- `k8s-node-power reboot` stays the single-node reboot; `nixfleet off` and
+  `nixfleet on` are unchanged.
+
 ## 0.10.0 (2026-10-16)
 
 - One program, `nixfleet` (#548, phase 2), with the subcommands `deploy`,

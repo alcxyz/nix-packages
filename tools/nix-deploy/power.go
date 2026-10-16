@@ -15,9 +15,17 @@ import (
 // runPower reboots, powers off or powers on a Kubernetes node behind the
 // cluster, storage, database and self-fence gates of nix-config ADR-0068 and
 // ADR-0082 (package k8snode). name is the command the operator typed,
-// k8s-node-power or nixfleet, and args start with the action.
+// k8s-node-power, or nixfleet for off and on, and args start with the
+// action.
 func runPower(name string, args []string) int {
 	usage := strings.ReplaceAll(k8snode.Usage, "k8s-node-power", name)
+	if name == "nixfleet" {
+		// nixfleet reboot is the fleet reboot (ADR-0010), with its own help.
+		usage = strings.Replace(usage, "Usage: nixfleet reboot [options] <host>\n       nixfleet off",
+			"Usage: nixfleet off", 1)
+		usage = strings.Replace(usage, "\nKubernetes-aware node power helpers.\n",
+			"\nKubernetes-aware node power helpers. nixfleet reboot reboots the fleet\ninstead; see nixfleet reboot --help.\n", 1)
+	}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
 		return 2

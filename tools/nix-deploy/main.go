@@ -1,7 +1,8 @@
 // Command nixfleet deploys and inspects the fleet described by an inventory:
 // its deploy subcommand switches NixOS, nix-darwin and Home Manager
 // configurations from a flake, for one host or the fleet (ADR-0006,
-// ADR-0008); reboot, off and on power-cycle a Kubernetes node behind the
+// ADR-0008); reboot reboots hosts of the fleet by policy and constraint
+// group (ADR-0010); off and on power-cycle a Kubernetes node behind the
 // cluster gates; status reads what each host runs. Installed as deploy or
 // k8s-node-power, it is that command.
 package main
@@ -70,20 +71,25 @@ type deployer struct {
 }
 
 const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
-       nixfleet reboot|off|on [OPTIONS] <host>
+       nixfleet reboot [OPTIONS] [--all | <host>...]
+       nixfleet off|on [OPTIONS] <host>
        nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
 
 Subcommands:
   deploy   Evaluate, plan, build and activate the NixOS, nix-darwin and Home
            Manager configurations of one host or the fleet. The same as the
            deploy command; see nixfleet deploy --help.
-  reboot   Reboot a Kubernetes node behind the cluster, storage, database and
-           self-fence gates. With --needed, only when the host needs it.
+  reboot   Reboot hosts of the fleet, each under the policies the inventory
+           gives it: a Kubernetes node behind the cluster, storage, database
+           and self-fence gates, serial group members behind their ready
+           command, runner hosts after their jobs. Constraint groups run
+           concurrently. With --needed, only hosts that need it; see
+           nixfleet reboot --help. k8s-node-power reboot reboots one node.
   off      Power off a Kubernetes node behind the same gates, leaving it
            cordoned.
   on       Wait for a node to return, uncordon it and let the cluster settle.
-           reboot, off and on are the k8s-node-power command; see
-           nixfleet reboot --help.
+           off and on are the k8s-node-power command; see nixfleet off
+           --help.
   status   Read, without changing anything, what each host booted and runs,
            whether it needs a reboot, its Kubernetes cordon state and its CI
            runner units; see nixfleet status --help.
@@ -122,7 +128,9 @@ func dispatch(name string, args []string) int {
 		return 0
 	case "deploy":
 		return runDeploy(args[1:])
-	case "reboot", "off", "on":
+	case "reboot":
+		return runReboot(args[1:])
+	case "off", "on":
 		return runPower("nixfleet", args)
 	case "status":
 		return runStatus(args[1:])

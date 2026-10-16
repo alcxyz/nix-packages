@@ -202,6 +202,16 @@ elif name == "ready-check":
     if late_failure or listed("MOCK_READY_FAIL", args[0]) or (switched and listed("MOCK_READY_FAIL_AFTER_SWITCH", args[0])):
         print("fixture node not ready", file=sys.stderr)
         sys.exit(1)
+elif name == "kubectl":
+    # nixfleet reboot's reads: the hosts in MOCK_NODES are the cluster's
+    # nodes, and no database primaries run on them.
+    if args[:2] == ["get", "nodes"]:
+        nodes = [n for n in os.environ.get("MOCK_NODES", "").split(",") if n]
+        print(json.dumps({"items": [{"metadata": {"name": n}, "spec": {}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}} for n in nodes]}))
+    elif args[:2] == ["get", "pods"] and "cnpg.io/instanceRole=primary" in args:
+        print(json.dumps({"items": []}))
+    else:
+        sys.exit(1)
 elif name == "nixos-rebuild":
     if args == ["--no-reexec", "--store-path", "/nonexistent"]:
         # deploy's capability probe: a frontend that knows both options only
@@ -925,6 +935,10 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         {"serialGroups": [{"hosts": []}]},
         {"serialGroups": [{"hosts": ["node"], "command": "true"}]},
         {"serialGroups": {"hosts": ["node"]}},
+        {"kubernetesNodes": ["missing"]},
+        {"kubernetesNodes": ["node", "node"]},
+        {"kubernetesNodes": "node"},
+        {"kubernetesNodes": None},
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
@@ -956,7 +970,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         _, result = invoke(name, *args)
         assert result.stdout == f"{expected} {version}\n", (name, args, result.stdout)
     _, result = invoke("nixfleet", "--help")
-    for usage in ["nixfleet deploy", "nixfleet reboot|off|on", "nixfleet status", "Subcommands:"]:
+    for usage in ["nixfleet deploy", "nixfleet reboot [OPTIONS] [--all | <host>...]", "nixfleet off|on", "nixfleet status", "Subcommands:"]:
         assert usage in result.stdout, result.stdout
     _, result = invoke("nixfleet", status=2)
     assert result.stdout == "" and "Subcommands:" in result.stderr
@@ -967,15 +981,54 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert "Usage: deploy" in result.stdout and "Known hosts: xyz node solo mac" in result.stdout and not actions(calls)
     calls, result = invoke("nixfleet", "deploy", "--config", str(config), "--no-preflight", "--dry-run", "--nixos", "node")
     assert "[system] [node] changed:" in result.stdout and not activations(calls)
-    # reboot, off and on are k8s-node-power's, named for the command typed.
-    _, result = invoke("nixfleet", "reboot", "--help")
-    assert result.stdout.startswith("Usage: nixfleet reboot [options] <host>") and "--needed" in result.stdout
+    # off and on are k8s-node-power's, named for the command typed; reboot is
+    # the fleet reboot (ADR-0010), and k8s-node-power reboot stays one node.
+    _, result = invoke("nixfleet", "off", "--help")
+    assert result.stdout.startswith("Usage: nixfleet off [options] <host>\n       nixfleet on [options] <host>\n"), result.stdout
+    assert "see nixfleet reboot --help" in result.stdout
     _, result = invoke("k8s-node-power", "reboot", "--help")
     assert result.stdout.startswith("Usage: k8s-node-power reboot [options] <host>")
     calls, result = invoke("nixfleet", "off", "--needed", "node", status=1)
     assert "--needed applies only to reboot" in result.stderr and calls == []
-    calls, result = invoke("nixfleet", "reboot", "--needed", "node", status=1)
+    calls, result = invoke("k8s-node-power", "reboot", "--needed", "node", status=1)
     assert "missing required command: kubectl" in result.stderr and calls == []
+
+    # nixfleet reboot only reads before a confirmation. kubectl is mocked
+    # from its own directory, so the status cases below still lack it.
+    def reboots(calls):
+        return [c for c in calls if c[0] == "ssh" and re.search(r"systemctl (stop|start|reboot)", c[-1])]
+
+    _, result = invoke("nixfleet", "reboot", "--help")
+    assert result.stdout.startswith("Usage: nixfleet reboot [--config FILE] [--all | <host>...]") and "kubernetesNodes" in result.stdout
+    for args, message in [
+        ([], "no host given; name hosts or pass --all"),
+        (["--resume-maintenance", "node", "solo"], "--resume-maintenance needs exactly one host"),
+        (["--node", "edge", "node"], "--node comes from the inventory"),
+        (["nope"], "unknown host 'nope'"),
+    ]:
+        calls, result = invoke("nixfleet", "reboot", "--config", str(config), *args, status=2)
+        assert message in result.stderr and not reboots(calls), (args, result.stderr)
+    kube = root / "kube"
+    kube.mkdir()
+    (kube / "kubectl").write_text("#!" + sys.executable + "\n" + MOCK)
+    (kube / "kubectl").chmod(0o755)
+    fleet = root / "fleet.json"
+    fleet.write_text(json.dumps({**HOST_DATA, "kubernetesNodes": ["node"]}))
+    cluster = {"PATH": f"{kube}:{commands}", "MOCK_NODES": "node"}
+    calls, result = invoke("nixfleet", "reboot", "--config", str(fleet), "--all", "--dry-run", **cluster)
+    assert "group node:\n  1. node: Kubernetes node with 0 database primaries, runners forgejo-actions-runner.service\n" in result.stdout, result.stdout
+    assert "group solo:\n  1. solo: plain host, runners forgejo-actions-runner.service\n" in result.stdout, result.stdout
+    assert "not selected: xyz: the operator host and this machine" in result.stdout and "dry run: nothing was changed" in result.stdout
+    assert not reboots(calls) and all(c[0] in {"hostname", "ssh", "kubectl"} for c in calls), calls
+    assert ["kubectl", "get", "pods", "-A", "-l", "cnpg.io/instanceRole=primary", "-o", "json", "--request-timeout=10s"] in calls
+    calls, result = invoke("nixfleet", "reboot", "--config", str(fleet), "solo", status=2, **cluster)
+    assert "pass --yes" in result.stderr and not reboots(calls), (result.stdout, result.stderr, calls)
+    # Without kubernetesNodes the cluster's node is refused, and without the
+    # cluster no host can be told apart from a node.
+    calls, result = invoke("nixfleet", "reboot", "--config", str(config), "edge", "--dry-run", **cluster)
+    assert "node: fail: the cluster lists it as node node, but kubernetesNodes does not" in result.stdout, result.stdout
+    calls, result = invoke("nixfleet", "reboot", "--config", str(config), "solo", "--dry-run")
+    assert "whether it is a Kubernetes node cannot be told: kubectl is not available" in result.stdout, result.stdout
     # status only reads: one boot check per host over SSH. kubectl is not on
     # the search path, so the cluster is reported, not an error.
     report = root / "status.json"
@@ -998,4 +1051,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     _, result = invoke("nixfleet", "status", "--config", str(config), "nope", status=2)
     assert "unknown host 'nope'" in result.stderr
 
-print("Deployment contract: 122 mocked CLI cases and 24 invalid inventories passed, and 16 nixfleet dispatch and status cases; no deployment commands executed")
+print("Deployment contract: 122 mocked CLI cases and 28 invalid inventories passed, and 25 nixfleet dispatch, reboot and status cases; no deployment commands executed")

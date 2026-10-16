@@ -27,6 +27,9 @@ type inventory struct {
 	SystemActivationModes map[string]string
 	HostColors            map[string]string
 	SerialGroups          []*serialGroup
+	// KubernetesNodes are the hosts that are Kubernetes nodes, each named
+	// like its host; nixfleet reboot gives them the node gates (ADR-0010).
+	KubernetesNodes []string
 }
 
 // serialGroup is a set of hosts that must not switch together, such as the
@@ -162,6 +165,11 @@ func validateInventory(fields map[string]json.RawMessage) (*inventory, bool) {
 		for host, color := range inv.HostColors {
 			valid = valid && contains(known, host) && isColor(color)
 		}
+		check(valid)
+	}
+
+	if raw, present := fields["kubernetesNodes"]; present {
+		inv.KubernetesNodes, valid = knownList(raw, known)
 		check(valid)
 	}
 
@@ -415,6 +423,10 @@ func (inv *inventory) fleet(self string) []string {
 		return inv.RemoteHosts
 	}
 	return inv.DeployAllHosts
+}
+
+func (inv *inventory) isKubernetesNode(host string) bool {
+	return contains(inv.KubernetesNodes, host)
 }
 
 // group returns the serial group host belongs to, or nil.

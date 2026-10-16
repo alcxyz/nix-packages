@@ -39,6 +39,7 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	fields["serialSystemHosts"] = []any{"node"}
 	fields["serialReadyCommand"] = "true"
 	fields["serialReadyTimeoutSeconds"] = 30.0
+	fields["kubernetesNodes"] = []any{"node"}
 	inv, err := parseInventory(encode(t, fields))
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +56,9 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	group := inv.group("node")
 	if group == nil || group.ReadyTimeout != 30 || group.ReadyCommand != "true" || inv.group("xyz") != nil {
 		t.Errorf("serial shorthand not loaded: %+v", inv.SerialGroups)
+	}
+	if !inv.isKubernetesNode("node") || inv.isKubernetesNode("xyz") {
+		t.Errorf("kubernetesNodes not loaded: %v", inv.KubernetesNodes)
 	}
 }
 
@@ -87,6 +91,9 @@ func TestParseInventoryDefaultsSerialTimeout(t *testing.T) {
 	}
 	if len(inv.SerialGroups) != 0 {
 		t.Errorf("unexpected serial groups: %+v", inv.SerialGroups)
+	}
+	if len(inv.KubernetesNodes) != 0 {
+		t.Errorf("unexpected Kubernetes nodes: %v", inv.KubernetesNodes)
 	}
 }
 
@@ -128,6 +135,10 @@ func TestParseInventoryRejects(t *testing.T) {
 			f["serialGroups"] = []any{map[string]any{"hosts": []any{"node"}, "readyTimeoutSeconds": 0.5}}
 		}, "does not satisfy"},
 		{"groups not a list", func(f map[string]any) { f["serialGroups"] = map[string]any{} }, "does not satisfy"},
+		{"unknown Kubernetes node", func(f map[string]any) { f["kubernetesNodes"] = []any{"missing"} }, "does not satisfy"},
+		{"duplicate Kubernetes node", func(f map[string]any) { f["kubernetesNodes"] = []any{"node", "node"} }, "does not satisfy"},
+		{"Kubernetes nodes not a list", func(f map[string]any) { f["kubernetesNodes"] = "node" }, "does not satisfy"},
+		{"null Kubernetes nodes", func(f map[string]any) { f["kubernetesNodes"] = nil }, "does not satisfy"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

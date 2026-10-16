@@ -92,13 +92,21 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
 - `nixfleet deploy`: the deploy command. It is also installed as `deploy`,
   which takes the same options without the subcommand, and `nix run
   .#nix-deploy` still runs it.
-- `nixfleet reboot|off|on <host>`: the Go port of the `k8s-node-reboot`
-  helpers under qualification, also installed as `k8s-node-power`;
+- `nixfleet reboot [--all | <host>...]`: reboots hosts of the fleet, each
+  under the policies the inventory gives it ([ADR-0010](docs/adr/0010-fleet-reboot-policies.md)):
+  Kubernetes nodes (`kubernetesNodes`) behind the node gates, serial group
+  members behind their ready command, runner hosts after their admitted jobs.
+  Serial groups and other hosts run as concurrent constraint groups. It prints
+  the plan first; `--dry-run` stops there, and a run needs a confirmation on a
+  terminal or `--yes`. With `--needed`, hosts whose booted kernel, initrd,
+  kernel modules and kernel parameters match their current and next-boot
+  system are skipped (unless the node is cordoned); when that cannot be told,
+  they reboot.
+- `nixfleet off|on <host>` and `k8s-node-power reboot|off|on <host>`: the Go
+  port of the `k8s-node-reboot` helpers under qualification for one node;
   `kreboot`, `koff` and `kon` remain the supported commands until it replaces
-  them. `nixfleet reboot --needed <host>` first reads whether the host's booted
-  kernel, initrd, kernel modules or kernel parameters differ from its current
-  or next-boot system, and skips a reboot it does not need (unless the node is
-  cordoned) before changing anything; when that cannot be told, it reboots.
+  them. `k8s-node-power reboot --needed <host>` skips a reboot the host does
+  not need, as above.
 - `nixfleet status [--all | <host>...] [--json FILE]`: reads, without changing
   anything, each host's booted and current system, whether it needs a reboot,
   its Kubernetes cordon state and its Forgejo or Gitea runner units, and prints
