@@ -4,7 +4,6 @@ set -euo pipefail
 KEEP_GENERATIONS=10
 HIGH_GENERATIONS=
 MIN_FREE_PERCENT=15
-MAX_FREED_BYTES=10737418240
 PROFILE_ROOT="${NIX_GC_PROFILE_ROOT:-}"
 SYSTEM_PROFILE="${NIX_GC_SYSTEM_PROFILE:-/nix/var/nix/profiles/system}"
 STORE_PATH="${NIX_GC_STORE_PATH:-/nix}"
@@ -28,7 +27,7 @@ Usage: nix-gc-maintenance [host]
        nix-gc-maintenance --automatic-retention --user <user> --home <path> [--keep <n>] [--check-only]
 
 Manual mode retains 10 generations (or --keep) in the current user's Home
-Manager/user profiles and the system profile, then garbage-collects up to 10 GiB.
+Manager/user profiles and the system profile, then collects every dead store path.
 
 With a host argument, the manual command is streamed to that host over SSH.
 The managed SSH host must log in as a non-root user with sudo access.
@@ -173,8 +172,8 @@ manual_maintenance() {
       --delete-generations "+${KEEP_GENERATIONS}"
   fi
 
-  log "garbage-collecting up to ${MAX_FREED_BYTES} bytes"
-  run_privileged "$NIX_STORE_BIN" --gc --max-freed "$MAX_FREED_BYTES"
+  log "collecting dead store paths"
+  run_privileged "$NIX_STORE_BIN" --gc
 }
 
 automatic_retention() {

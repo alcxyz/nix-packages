@@ -11,7 +11,7 @@
 }:
 stdenvNoCC.mkDerivation {
   pname = "nix-gc-maintenance";
-  version = "0.2.0";
+  version = "0.3.0";
 
   src = ./nix-gc-maintenance.sh;
   dontUnpack = true;
@@ -36,7 +36,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = {
-    description = "Conservative manual Nix profile retention and capped garbage collection";
+    description = "Conservative manual Nix profile retention and garbage collection";
     mainProgram = "nix-gc-maintenance";
     platforms = lib.platforms.unix;
   };

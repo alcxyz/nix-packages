@@ -97,8 +97,8 @@ nix-env <--profile> <$PROFILE_ROOT/profile> <--delete-generations> <+10>
 nix-store <-qR> <$SYSTEM_PROFILE>
 sudo <$BIN_DIR/nix-env> <--profile> <$SYSTEM_PROFILE> <--delete-generations> <+10>
 nix-env <--profile> <$SYSTEM_PROFILE> <--delete-generations> <+10>
-sudo <$BIN_DIR/nix-store> <--gc> <--max-freed> <10737418240>
-nix-store <--gc> <--max-freed> <10737418240>
+sudo <$BIN_DIR/nix-store> <--gc>
+nix-store <--gc>
 EOF
 )
 
