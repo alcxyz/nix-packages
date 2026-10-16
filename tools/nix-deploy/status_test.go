@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -192,12 +193,12 @@ func TestStatusReadsEachHost(t *testing.T) {
 	var out bytes.Buffer
 	printStatus(&out, report)
 	for _, want := range []string{
-		"host         ssh          system           reboot   node                  runners\n",
-		"xyz          ok           switched         yes      -                     1/2\n",
-		"node         ok           booted           no       cordoned              -\n",
-		"solo         unreachable  -                -        -                     -\n",
-		"mac          ok           darwin           -        -                     -\n",
-		"k1           ok           booted           unknown  schedulable,notready  -\n",
+		"host         ssh          system           reboot   node                  runners  boot\n",
+		"xyz          ok           switched         yes      -                     1/2      -\n",
+		"node         ok           booted           no       cordoned              -        -\n",
+		"solo         unreachable  -                -        -                     -        -\n",
+		"mac          ok           darwin           -        -                     -        -\n",
+		"k1           ok           booted           unknown  schedulable,notready  -        -\n",
 		"xyz: reboot needed: kernel differs between the booted system and the current or next-boot system\n",
 		"solo: unreachable: ssh: connect to host solo.invalid port 22: Connection timed out\n",
 		"k1: reboot unknown: cannot compare initrd",
@@ -280,7 +281,7 @@ func TestStatusJSONShape(t *testing.T) {
 		t.Errorf("cluster: %v", cluster)
 	}
 	hosts := document["hosts"].([]any)
-	keys := []string{"bootedSystem", "currentSystem", "host", "nextBootSystem", "node", "os", "reachable", "rebootDiffers", "rebootNeeded", "rebootReason", "runners"}
+	keys := []string{"bootCheck", "bootedSystem", "currentSystem", "host", "nextBootSystem", "node", "os", "reachable", "rebootDiffers", "rebootNeeded", "rebootReason", "runners"}
 	xyz := hosts[0].(map[string]any)
 	if got := sortedKeys(xyz); !slices.Equal(got, keys) {
 		t.Errorf("xyz keys: %v", got)
@@ -366,5 +367,100 @@ func TestParseRunners(t *testing.T) {
 	r := parseRunners("runner=forgejo-podman-runner.service loaded inactive dead canary\nrunner=short\n")
 	if r == nil || r.Total != 1 || r.Active != 0 || r.Units[0].State != "inactive" {
 		t.Errorf("got %+v", r)
+	}
+}
+
+// With the inventory's bootCheck, each host's result for its current boot
+// is read and shown; without it the script does not look.
+func TestStatusReadsBootCheck(t *testing.T) {
+	f := &fakeFleet{}
+	s := newStatusCheck(t, f)
+	report := s.collect([]string{"node"})
+	if report.Hosts[0].BootCheck != nil || strings.Contains(f.calls[len(f.calls)-1][len(f.calls[len(f.calls)-1])-1], "nixfleet-boot-check") {
+		t.Errorf("boot check read without bootCheck: %+v", report.Hosts[0].BootCheck)
+	}
+
+	s.inv.BootCheck = true
+	cases := []struct {
+		output string
+		want   *bootCheckStatus
+		row    string
+		note   string
+	}{
+		{"", nil, "-", ""},
+		{"bootcheck.status=pending\n", &bootCheckStatus{Status: "pending", Reasons: []string{}}, "pending", ""},
+		{"bootcheck.status=ok\nbootcheck.time=1700000000\n", &bootCheckStatus{Status: "ok", Time: 1700000000, Reasons: []string{}}, "ok", ""},
+		{"bootcheck.status=failed\nbootcheck.time=1\nbootcheck.reason=unit a.service failed\nbootcheck.reason=booted x but the system profile is y\n",
+			&bootCheckStatus{Status: "failed", Time: 1, Reasons: []string{"unit a.service failed", "booted x but the system profile is y"}}, "failed",
+			"node: boot check failed: unit a.service failed; booted x but the system profile is y\n"},
+		{"bootcheck.present=1\n", &bootCheckStatus{Status: "failed", Reasons: []string{"the result has no status"}}, "failed",
+			"node: boot check failed: the result has no status\n"},
+		{"bootcheck.status=weird\n", &bootCheckStatus{Status: "failed", Reasons: []string{`the result has status "weird"`}}, "failed",
+			`node: boot check failed: the result has status "weird"` + "\n"},
+	}
+	for _, c := range cases {
+		check := &statusCheck{inv: s.inv, self: "xyz", connectTimeout: "5", run: func(timeout time.Duration, argv ...string) (string, string, int) {
+			if argv[0] == "kubectl" {
+				return nodesJSON, "", 0
+			}
+			if !strings.Contains(argv[len(argv)-1], "/run/nixfleet-boot-check/result") {
+				t.Errorf("no boot check read in %v", argv)
+			}
+			return systems("/nix/store/aaa-nixos-system-booted", "k1", "i1") + c.output, "", 0
+		}}
+		report := check.collect([]string{"node"})
+		got := report.Hosts[0].BootCheck
+		if (got == nil) != (c.want == nil) || got != nil && (got.Status != c.want.Status || got.Time != c.want.Time || !slices.Equal(got.Reasons, c.want.Reasons)) {
+			t.Errorf("%q: got %+v, want %+v", c.output, got, c.want)
+		}
+		var out bytes.Buffer
+		printStatus(&out, report)
+		if !strings.Contains(out.String(), "cordoned              -        "+c.row+"\n") || !strings.Contains(out.String(), c.note) {
+			t.Errorf("%q: row %q or note %q missing in:\n%s", c.output, c.row, c.note, out.String())
+		}
+	}
+}
+
+// The boot check script reads an unterminated last line, tells an empty
+// result from a missing check, and fails a result it cannot read.
+func TestBootCheckScript(t *testing.T) {
+	dir := t.TempDir()
+	result, unit := filepath.Join(dir, "result"), filepath.Join(dir, "unit")
+	run := func() string {
+		t.Helper()
+		out, err := exec.Command("sh", "-c", bootCheckScriptFor(result, unit)).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if out := run(); out != "" {
+		t.Errorf("no unit, no result: %q", out)
+	}
+	if err := os.WriteFile(unit, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := run(); out != "bootcheck.status=pending\n" {
+		t.Errorf("unit, no result: %q", out)
+	}
+	if err := os.WriteFile(result, []byte("status=failed\nreason=unit a.service failed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := parseBootCheck(run()); got == nil || got.Status != "failed" || !slices.Equal(got.Reasons, []string{"unit a.service failed"}) {
+		t.Errorf("unterminated last line: %+v", got)
+	}
+	if err := os.WriteFile(result, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := parseBootCheck(run()); got == nil || got.Status != "failed" {
+		t.Errorf("empty result: %+v", got)
+	}
+	if os.Geteuid() != 0 {
+		if err := os.Chmod(result, 0); err != nil {
+			t.Fatal(err)
+		}
+		if got := parseBootCheck(run()); got == nil || got.Status != "failed" || len(got.Reasons) != 1 || !strings.HasPrefix(got.Reasons[0], "the result cannot be read as ") {
+			t.Errorf("unreadable result: %+v", got)
+		}
 	}
 }

@@ -58,6 +58,9 @@ The required fields are:
 | `kubernetesNodes` | unique string array, optional | Known hosts that are Kubernetes nodes, each node named like its host; `nixfleet reboot` reboots them behind the node gates and refuses a cluster node missing here (ADR-0010); default `[]` |
 | `kubernetesContext` | string, optional | kubeconfig context of the cluster of `kubernetesNodes`, used for every cluster read and node step of `nixfleet status`, `reboot`, `off` and `on`; default empty (the current context) |
 | `kubernetesCorePriorityClass` | string, optional | PriorityClass of the cluster's core services; `nixfleet reboot` reboots nodes holding fewer of its single-Pod workloads first (ADR-0010); a lowercase DNS subdomain; default empty (none count) |
+| `interactiveHosts` | unique string array, optional | Known hosts people use at the screen; `nixfleet reboot` runs `rebootGuardCommand` on them before their reboot (ADR-0010); default `[]` |
+| `rebootGuardCommand` | string, optional | Read-only command, one line, run on interactive hosts over SSH (locally on this machine); prints `busy`, `block` and `note` findings; required when `interactiveHosts` is not empty |
+| `bootCheck` | boolean, optional | Hosts check themselves after each boot and leave the result in `/run/nixfleet-boot-check/result`; `nixfleet status` shows it and `nixfleet reboot` waits for it; default `false` |
 
 Every host reference must resolve through `knownHosts`; aliases must not shadow
 canonical names. Validation and loading use one in-memory snapshot of the file. Names, users, prefixes,

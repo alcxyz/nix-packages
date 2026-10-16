@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,9 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	fields["kubernetesNodes"] = []any{"node"}
 	fields["kubernetesContext"] = "admin@lab"
 	fields["kubernetesCorePriorityClass"] = "core-infra"
+	fields["interactiveHosts"] = []any{"node"}
+	fields["rebootGuardCommand"] = "reboot-guard --quiet"
+	fields["bootCheck"] = true
 	inv, err := parseInventory(encode(t, fields))
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +71,9 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	}
 	if inv.KubernetesCorePriorityClass != "core-infra" {
 		t.Errorf("kubernetesCorePriorityClass not loaded: %q", inv.KubernetesCorePriorityClass)
+	}
+	if !slices.Equal(inv.InteractiveHosts, []string{"node"}) || inv.RebootGuardCommand != "reboot-guard --quiet" || !inv.BootCheck {
+		t.Errorf("interactive hosts, guard or boot check not loaded: %v %q %t", inv.InteractiveHosts, inv.RebootGuardCommand, inv.BootCheck)
 	}
 }
 
@@ -156,6 +163,15 @@ func TestParseInventoryRejects(t *testing.T) {
 		{"core priority class like an option", func(f map[string]any) { f["kubernetesCorePriorityClass"] = "-core" }, "does not satisfy"},
 		{"core priority class too long", func(f map[string]any) { f["kubernetesCorePriorityClass"] = strings.Repeat("a", 254) }, "does not satisfy"},
 		{"core priority class not a string", func(f map[string]any) { f["kubernetesCorePriorityClass"] = []any{"core"} }, "does not satisfy"},
+		{"unknown interactive host", func(f map[string]any) {
+			f["interactiveHosts"] = []any{"missing"}
+			f["rebootGuardCommand"] = "guard"
+		}, "does not satisfy"},
+		{"interactive hosts without a guard", func(f map[string]any) { f["interactiveHosts"] = []any{"node"} }, "does not satisfy"},
+		{"empty guard command", func(f map[string]any) { f["rebootGuardCommand"] = " " }, "does not satisfy"},
+		{"guard command on two lines", func(f map[string]any) { f["rebootGuardCommand"] = "guard\nreboot" }, "does not satisfy"},
+		{"boot check not a boolean", func(f map[string]any) { f["bootCheck"] = "true" }, "does not satisfy"},
+		{"null boot check", func(f map[string]any) { f["bootCheck"] = nil }, "does not satisfy"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

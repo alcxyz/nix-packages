@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
@@ -67,6 +68,13 @@ type fakeHost struct {
 	// rebootLost drops the reboot command before it arrives.
 	noSystem   bool
 	rebootLost bool
+	// guards are the guard's answers in turn, the last one repeating;
+	// guardFails makes it exit 1. bootChecks are the boot check results
+	// read after a reboot in turn, the last one repeating; "" is a host
+	// without the check.
+	guards     []string
+	guardFails bool
+	bootChecks []string
 }
 
 type rebootFake struct {
@@ -215,8 +223,34 @@ func (f *rebootFake) statusRun(timeout time.Duration, argv ...string) (string, s
 			return "", "unexpected taint\n", 97
 		}
 		return "node/" + node + " modified\n", "", 0
-	case argv[0] == "ssh" && strings.Contains(argv[len(argv)-1], runnerScript):
-		h := f.hosts[endpointHost(argv[len(argv)-2])]
+	case f.inv.RebootGuardCommand != "" && (argv[len(argv)-1] == f.inv.RebootGuardCommand ||
+		argv[len(argv)-1] == "sudo -n sh -c "+shellQuote(f.inv.RebootGuardCommand)):
+		if argv[0] == "ssh" && strings.HasPrefix(argv[len(argv)-1], "sudo -n ") != f.inv.usesRemoteSudo(endpointHost(argv[len(argv)-2])) {
+			f.t.Errorf("guard with or without sudo: %v", argv)
+		}
+		host := f.self
+		if argv[0] == "ssh" {
+			host = endpointHost(argv[len(argv)-2])
+		}
+		h := f.hosts[host]
+		f.events = append(f.events, "guard "+host)
+		answer := ""
+		if len(h.guards) > 0 {
+			answer = h.guards[0]
+			if len(h.guards) > 1 {
+				h.guards = h.guards[1:]
+			}
+		}
+		if h.guardFails {
+			return answer, "guard: cannot read the sessions\n", 1
+		}
+		return answer, "", 0
+	case (argv[0] == "ssh" || argv[0] == "sh") && strings.Contains(argv[len(argv)-1], runnerScript):
+		host := f.self
+		if argv[0] == "ssh" {
+			host = endpointHost(argv[len(argv)-2])
+		}
+		h := f.hosts[host]
 		if h == nil {
 			return "", "unexpected host\n", 97
 		}
@@ -284,21 +318,44 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 			delete(f.busy, g.Hosts[0])
 		}
 		return k8snode.Result{Stdout: host + " is ready\n"}
-	case "ssh":
+	case "ssh", "sh":
 	default:
 		f.t.Errorf("unexpected command: %v", argv)
 		return k8snode.Result{Status: 97}
 	}
-	if !slices.Contains(argv, "BatchMode=yes") {
-		f.t.Errorf("ssh without BatchMode: %v", argv)
+	host := f.self
+	if argv[0] == "ssh" {
+		if !slices.Contains(argv, "BatchMode=yes") {
+			f.t.Errorf("ssh without BatchMode: %v", argv)
+		}
+		host = endpointHost(argv[len(argv)-2])
 	}
-	host := endpointHost(argv[len(argv)-2])
 	h := f.hosts[host]
 	remote := argv[len(argv)-1]
-	if remote != "cat /proc/sys/kernel/random/boot_id" {
-		f.commands = append(f.commands, argv[len(argv)-2]+" "+remote)
+	if remote != "cat /proc/sys/kernel/random/boot_id" && !strings.Contains(remote, "nixfleet-boot-check") {
+		where := argv[len(argv)-2]
+		if argv[0] == "sh" {
+			where = "local"
+		}
+		f.commands = append(f.commands, where+" "+remote)
 	}
 	switch {
+	case strings.Contains(remote, "/run/nixfleet-boot-check/result"):
+		f.events = append(f.events, "boot check "+host)
+		answer := "status=ok"
+		if len(h.bootChecks) > 0 {
+			answer = h.bootChecks[0]
+			if len(h.bootChecks) > 1 {
+				h.bootChecks = h.bootChecks[1:]
+			}
+		}
+		var lines []string
+		for _, line := range strings.Split(answer, ";") {
+			if line != "" {
+				lines = append(lines, "bootcheck."+line+"\n")
+			}
+		}
+		return k8snode.Result{Stdout: strings.Join(lines, "")}
 	case remote == "cat /proc/sys/kernel/random/boot_id":
 		if h.unreachable {
 			return k8snode.Result{Status: 255}
@@ -347,6 +404,10 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 			return k8snode.Result{Status: 255}
 		}
 		f.boot(h)
+		if argv[0] == "sh" {
+			// This machine: systemctl returns before the shutdown.
+			return k8snode.Result{}
+		}
 		h.down = 1
 		if h.neverReturns {
 			h.down = 1 << 30
@@ -489,7 +550,8 @@ func (f *rebootFake) expectNote(host, text string) {
 func (f *rebootFake) changes() []string {
 	var changes []string
 	for _, event := range f.events {
-		if !strings.HasPrefix(event, "ready ") && !strings.HasPrefix(event, "check ") {
+		if !strings.HasPrefix(event, "ready ") && !strings.HasPrefix(event, "check ") &&
+			!strings.HasPrefix(event, "guard ") && !strings.HasPrefix(event, "boot check ") {
 			changes = append(changes, event)
 		}
 	}
@@ -854,8 +916,8 @@ func TestRebootRefusesOperatorAndSelf(t *testing.T) {
 		t.Errorf("status %d\n%s", status, f.out.String())
 	}
 	f.expectOutcomes(map[string]string{"op": "skipped", "host-a": "skipped", "host-b": "rebooted"})
-	f.expectNote("op", "refused: the operator host; its reboot handoff is not available yet")
-	f.expectNote("host-a", "refused: this machine runs nixfleet")
+	f.expectNote("op", "refused: the operator host; it reboots only from itself, with --include-self")
+	f.expectNote("host-a", "refused: this machine runs nixfleet; it reboots only with --include-self")
 	if got := f.changes(); !slices.Equal(got, []string{"reboot host-b"}) {
 		t.Errorf("changes: %v", got)
 	}
@@ -1095,7 +1157,7 @@ func TestRebootDryRunChangesNothing(t *testing.T) {
 		"plan: 8 host(s) to reboot in 5 group(s)",
 		"group serial-1 (serial: server-a server-b server-c; ready gate: ready {host}):\n  1. server-a: Kubernetes node with 0 database primaries, ready gate\n",
 		"group mac:\n  -  mac: skip: Darwin host, not NixOS\n",
-		"not selected: op: the operator host and this machine; its reboot handoff is not available yet\n",
+		"not selected: op: the operator host and this machine; it reboots only with --include-self\n",
 		"cluster: 4 nodes\n",
 		"dry run: nothing was changed\n",
 	} {
@@ -1276,5 +1338,287 @@ func TestRebootUsesInventoryContext(t *testing.T) {
 		if opts.Context != "lab" {
 			t.Errorf("node %s in context %q", opts.Node, opts.Context)
 		}
+	}
+}
+
+// interactive makes host-a and host-b interactive hosts with a guard.
+func (f *rebootFake) interactive() {
+	f.inv.InteractiveHosts = []string{"host-a", "host-b"}
+	f.inv.RebootGuardCommand = "guard"
+}
+
+// An interactive host's guard runs at its turn: clear goes on, blocked and
+// busy skip it without a terminal, a busy one is put to the operator on a
+// terminal, and a guard that fails counts as busy.
+func TestRebootInteractiveGuard(t *testing.T) {
+	cases := []struct {
+		name     string
+		guards   []string
+		fails    bool
+		terminal bool
+		answers  string
+		outcome  string
+		note     string
+	}{
+		{"clear", []string{"note desktop session of alc is locked"}, false, false, "", "rebooted", ""},
+		{"busy without a terminal", []string{"busy desktop session of alc is active and unlocked"}, false, false, "", "skipped",
+			"busy: desktop session of alc is active and unlocked"},
+		{"busy, confirmed", []string{"busy Moonlight stream is running"}, false, true, "y\ny\n", "rebooted", ""},
+		{"busy, declined", []string{"busy Moonlight stream is running"}, false, true, "y\nn\n", "skipped",
+			"busy, not confirmed: Moonlight stream is running"},
+		{"blocked", []string{"block game Game.exe is running"}, false, true, "y\ny\n", "skipped", "blocked: game Game.exe is running"},
+		{"guard fails", nil, true, false, "", "skipped", "busy: the guard failed: guard: cannot read the sessions"},
+		{"busy only at its turn", []string{"", "busy desktop session of alc is active and unlocked"}, false, false, "", "skipped",
+			"busy: desktop session of alc is active and unlocked"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRebootFake(t)
+			f.interactive()
+			f.hosts["host-b"].guards = c.guards
+			f.hosts["host-b"].guardFails = c.fails
+			f.terminal = c.terminal
+			f.confirmation = c.answers
+			args := []string{"host-b"}
+			if !c.terminal {
+				args = append(args, "--yes")
+			}
+			if status := f.run(args...); status != 0 {
+				t.Fatalf("status %d:\n%s", status, f.out.String())
+			}
+			f.expectOutcomes(map[string]string{"host-b": c.outcome})
+			if c.note != "" {
+				f.expectNote("host-b", c.note)
+			}
+			rebooted := slices.Contains(f.changes(), "reboot host-b")
+			if rebooted != (c.outcome == "rebooted") {
+				t.Errorf("changes: %v", f.changes())
+			}
+			if guards := strings.Count(strings.Join(f.events, ","), "guard host-b"); guards != 2 {
+				t.Errorf("the guard ran %d times: %v", guards, f.events)
+			}
+			asked := strings.Contains(f.out.String(), "host-b is busy (")
+			if asked != (c.terminal && c.outcome != "skipped" || c.name == "busy, declined") {
+				t.Errorf("asked %t in:\n%s", asked, f.out.String())
+			}
+		})
+	}
+	// --yes on a terminal skips a busy host without asking.
+	f := newRebootFake(t)
+	f.interactive()
+	f.terminal = true
+	f.hosts["host-b"].guards = []string{"busy Moonlight stream is running"}
+	if status := f.run("host-b", "--yes"); status != 0 || strings.Contains(f.out.String(), "host-b is busy (") {
+		t.Errorf("status %d:\n%s", status, f.out.String())
+	}
+	f.expectOutcomes(map[string]string{"host-b": "skipped"})
+
+	// The plan shows what the guard found.
+	f = newRebootFake(t)
+	f.interactive()
+	f.hosts["host-a"].guards = []string{"busy desktop session of alc is active and unlocked\nnote other hosts use it as a binary cache"}
+	if status := f.run("host-a", "--dry-run"); status != 0 {
+		t.Fatalf("status %d", status)
+	}
+	for _, want := range []string{
+		"  1. host-a: plain host, runners forgejo-actions-runner.service, guard\n",
+		"       busy: desktop session of alc is active and unlocked\n       note: other hosts use it as a binary cache\n",
+	} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, f.out.String())
+		}
+	}
+}
+
+// This machine reboots only with --include-self, on a terminal, after every
+// other group and only when none failed, after its own confirmation even
+// with --yes. The summary comes before its reboot.
+func TestRebootIncludeSelf(t *testing.T) {
+	setup := func(t *testing.T) *rebootFake {
+		f := newRebootFake(t)
+		f.interactive()
+		f.inv.InteractiveHosts = append(f.inv.InteractiveHosts, "op")
+		f.hosts["op"].runners = map[string]string{"forgejo-actions-runner.service": "active"}
+		f.terminal = true
+		return f
+	}
+
+	f := setup(t)
+	f.terminal = false
+	if status := f.run("op", "host-b", "--include-self", "--yes"); status != 2 {
+		t.Errorf("without a terminal: status %d", status)
+	}
+	if len(f.changes()) != 0 || !strings.Contains(f.errOut.String(), "--include-self needs a terminal") {
+		t.Errorf("changes %v, stderr %s", f.changes(), f.errOut.String())
+	}
+
+	f = setup(t)
+	f.confirmation = "y\n"
+	f.hosts["op"].guards = []string{"note agent job docs is running\nbusy T3 Code main has a running turn"}
+	if status := f.run("--all", "--include-self", "--yes"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	f.expectOutcomes(map[string]string{"op": "next", "host-b": "rebooted", "server-a": "rebooted"})
+	output := f.out.String()
+	summary := strings.Index(output, "host         group")
+	question := strings.Index(output, "op is busy (T3 Code main has a running turn); reboot it, this machine, now?")
+	if summary < 0 || question < summary {
+		t.Errorf("summary at %d, question at %d in:\n%s", summary, question, output)
+	}
+	if !strings.Contains(output, "group op (after every other group, and only when none failed):\n  1. op: plain host, runners forgejo-actions-runner.service, guard, this machine, last, after a confirmation\n") ||
+		!strings.Contains(output, "op: rebooted: the boot check reports after the boot\n") {
+		t.Errorf("plan or result missing in:\n%s", output)
+	}
+	changes := f.changes()
+	if changes[len(changes)-2] != "stop op" || changes[len(changes)-1] != "reboot op" {
+		t.Errorf("changes: %v", changes)
+	}
+	for _, want := range []string{"local sudo systemctl stop 'forgejo-actions-runner.service'", "local sudo systemctl reboot"} {
+		if !slices.Contains(f.commands, want) {
+			t.Errorf("no %q in %v", want, f.commands)
+		}
+	}
+
+	cases := []struct {
+		name    string
+		change  func(*rebootFake)
+		answers string
+		status  int
+		outcome string
+		note    string
+	}{
+		{"another host failed", func(f *rebootFake) { f.hosts["host-b"].rebootFails = true }, "y\n", 1, "not started",
+			"host-b failed; this machine reboots only after a run without failures"},
+		{"declined", func(f *rebootFake) {}, "y\nn\n", 0, "skipped", "not confirmed"},
+		{"blocked by a game", func(f *rebootFake) { f.hosts["op"].guards = []string{"block game Game.exe is running"} }, "y\n", 0, "skipped",
+			"blocked: game Game.exe is running"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := setup(t)
+			c.change(f)
+			f.confirmation = c.answers
+			if status := f.run("op", "host-b", "--include-self"); status != c.status {
+				t.Fatalf("status %d:\n%s", status, f.out.String())
+			}
+			if !strings.Contains(f.out.String(), "op: "+c.outcome+": "+c.note+"\n") {
+				t.Errorf("no %q in:\n%s", c.note, f.out.String())
+			}
+			if slices.Contains(f.changes(), "reboot op") || slices.Contains(f.changes(), "stop op") {
+				t.Errorf("changes: %v", f.changes())
+			}
+		})
+	}
+
+	// A dry run needs no terminal and shows this machine last.
+	f = setup(t)
+	f.terminal = false
+	if status := f.run("op", "host-b", "--include-self", "--dry-run"); status != 0 {
+		t.Fatalf("status %d", status)
+	}
+	if !strings.Contains(f.out.String(), "group op (after every other group") || strings.Index(f.out.String(), "group op") < strings.Index(f.out.String(), "group host-b") {
+		t.Errorf("plan:\n%s", f.out.String())
+	}
+}
+
+// With the inventory's bootCheck a rebooted host must pass the check after
+// its new boot; a host without the check is only warned about.
+func TestRebootWaitsForBootCheck(t *testing.T) {
+	cases := []struct {
+		name    string
+		checks  []string
+		outcome string
+		note    string
+		output  string
+	}{
+		{"passes", []string{"status=pending", "status=running;time=1", "status=ok;time=2"}, "rebooted", "", "the boot check of host-b passed"},
+		{"fails", []string{"status=running", "status=failed;reason=unit a.service failed;reason=booted x but the system profile is y"}, "failed",
+			"the boot check failed: unit a.service failed; booted x but the system profile is y", ""},
+		{"absent", []string{""}, "rebooted", "", "warning: host-b has no boot check; its result is not waited for"},
+		{"read while written", []string{"present=1", "present=1;status=ok"}, "rebooted", "", "the boot check of host-b passed"},
+		{"never ends", []string{"status=running"}, "failed", "the boot check gave no result within 12m0s (last: running)", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRebootFake(t)
+			f.inv.BootCheck = true
+			f.hosts["host-b"].bootChecks = c.checks
+			f.run("host-b", "--yes")
+			f.expectOutcomes(map[string]string{"host-b": c.outcome})
+			if c.note != "" {
+				f.expectNote("host-b", c.note)
+			}
+			if !strings.Contains(f.out.String(), c.output) {
+				t.Errorf("missing %q in:\n%s", c.output, f.out.String())
+			}
+		})
+	}
+	// Without bootCheck nothing waits for it.
+	f := newRebootFake(t)
+	if status := f.run("host-b", "--yes"); status != 0 || slices.Contains(f.events, "boot check host-b") {
+		t.Errorf("status %d, events %v", status, f.events)
+	}
+}
+
+// This machine reboots itself only outside the node and serial gates it
+// cannot pass from inside; without a guard command it is not called busy.
+func TestRebootSelfRefusalsAndNoGuard(t *testing.T) {
+	for self, note := range map[string]string{
+		"server-d": "refused: this machine is a Kubernetes node; reboot it from another machine, behind the node gates",
+		"dns-a":    "refused: this machine is in serial group serial-2; reboot it from another machine, behind the ready gate",
+	} {
+		f := newRebootFake(t)
+		f.self = self
+		f.terminal = true
+		f.confirmation = "y\n"
+		if status := f.run(self, "host-b", "--include-self"); status != 0 {
+			t.Fatalf("%s: status %d:\n%s", self, status, f.out.String())
+		}
+		f.expectOutcomes(map[string]string{self: "skipped", "host-b": "rebooted"})
+		f.expectNote(self, note)
+		if slices.ContainsFunc(f.changes(), func(c string) bool { return strings.HasSuffix(c, " "+self) }) {
+			t.Errorf("%s changed: %v", self, f.changes())
+		}
+	}
+
+	f := newRebootFake(t)
+	f.terminal = true
+	f.confirmation = "y\ny\n"
+	if status := f.run("op", "--include-self"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	if !strings.Contains(f.out.String(), "reboot op, this machine, now?") || strings.Contains(f.out.String(), "busy") || slices.Contains(f.events, "guard op") {
+		t.Errorf("without a guard command:\n%s", f.out.String())
+	}
+	if !slices.Contains(f.changes(), "reboot op") {
+		t.Errorf("changes: %v", f.changes())
+	}
+}
+
+// An answer is read a byte at a time: nothing after its line is taken from
+// the input, and a long line is cut.
+func TestReadLine(t *testing.T) {
+	input := strings.NewReader("yes\nthe password\n")
+	if got := readLine(input); got != "yes" {
+		t.Errorf("first line: %q", got)
+	}
+	rest, _ := io.ReadAll(input)
+	if string(rest) != "the password\n" {
+		t.Errorf("left in the input: %q", rest)
+	}
+	if got := readLine(strings.NewReader(strings.Repeat("y", 100) + "\n")); len(got) != 64 {
+		t.Errorf("long line kept %d bytes", len(got))
+	}
+	if got := readLine(strings.NewReader("")); got != "" {
+		t.Errorf("empty input: %q", got)
+	}
+}
+
+// shellQuote keeps a whole command line, quotes included, as one word.
+func TestShellQuote(t *testing.T) {
+	line := `test -x /bin/guard && guard --say 'it'"'"'s'; echo $HOME`
+	out, err := exec.Command("sh", "-c", "printf %s "+shellQuote(line)).Output()
+	if err != nil || string(out) != line {
+		t.Errorf("got %q (%v), want %q", out, err, line)
 	}
 }

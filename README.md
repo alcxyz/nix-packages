@@ -102,7 +102,10 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   holding fewer database primaries and core singletons (single-Pod workloads
   of `kubernetesCorePriorityClass`) reboot first, and nodes waiting for their
   turn carry a `PreferNoSchedule` taint so evicted Pods prefer nodes that
-  already rebooted. It prints
+  already rebooted. Interactive hosts run a guard first and are asked about
+  or skipped when busy; this machine reboots last, only with `--include-self`
+  on a terminal; with `bootCheck` each host's own check after the boot must
+  pass. It prints
   the plan first; `--dry-run` stops there, and a run needs a confirmation on a
   terminal or `--yes`. With `--needed`, hosts whose booted kernel, initrd,
   kernel modules and kernel parameters match their current and next-boot

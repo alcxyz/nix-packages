@@ -133,3 +133,57 @@ The marks are preferences: a Pod whose own spreading preferences outweigh
 the taint can still land on a waiting node, and the Pods of the first node
 always do. A run that cannot set the marks warns and goes on without them,
 since the gates, not the marks, keep the cluster safe.
+
+## Amendment (2026-10-16): interactive hosts, this machine and the boot check
+
+Hosts people use at the screen, and the machine running `nixfleet`, were
+left out because a reboot there can end someone's work, or the run itself.
+The operator agreed on the following (#548, phase 4).
+
+- **Interactive hosts.** The inventory lists them in `interactiveHosts`
+  and names a `rebootGuardCommand` that runs on them, read-only, over SSH
+  (through `sudo -n` on hosts reached with sudo, so it can read every
+  user's session; locally on this machine). It prints one finding per line: `busy
+  <reason>` (someone uses the host: an unlocked desktop session, a game, a
+  stream), `block <reason>` (it must not reboot now) and `note <text>`. The
+  guard runs for the plan and again at the host's turn. A busy host is put
+  to the operator on a terminal and skipped without one or with `--yes`; a
+  blocked host is skipped; a guard that fails counts as busy. The host
+  configuration owns the detectors, so the tool stays generic.
+- **This machine.** It reboots only with `--include-self` and only from a
+  terminal, never from a script or an agent session: a run with the flag
+  and no terminal is refused before it reads anything. It goes after every
+  other group, and only when none of their hosts failed, so a failure is
+  still visible and fixable from it. Its guard runs first; a block (a
+  running game) refuses, and the operator is asked even with `--yes`, after
+  the summary of the rest of the run, since its reboot ends the run. Its own
+  reboot has no node or serial gates around it, so a machine that is a
+  Kubernetes node or in a gated serial group is refused and reboots from
+  another machine. Questions discard input typed before them and read the
+  terminal only while they wait, so a stray line cannot answer one and sudo
+  gets the password.
+- **Boot check (the handoff).** With the inventory's `bootCheck`, every
+  NixOS host runs its own check after each boot (a unit of the host
+  configuration): it booted its system profile, no unit failed and its
+  runners are back. It leaves the result in
+  `/run/nixfleet-boot-check/result`, readable by the hosts' system users and
+  replaced whole (a temporary file renamed over it); a result read without a
+  status is read again. `nixfleet status` shows it, and a fleet
+  reboot waits for it after each reboot (up to 12 minutes; a host without
+  the check is only warned about). For this machine the check is the only
+  verification, since nothing runs from it across its reboot; on hosts
+  with the operator's health checks, a failed check also alerts.
+
+Alternatives considered:
+
+- **Reboot this machine from another host, such as the operator's
+  laptop:** that host would need the operator's credentials and the run's
+  state, and would have to be up and reachable; a check on the rebooted
+  host itself needs neither.
+- **Detect sessions, games and streams in the tool:** ties a public tool to
+  one fleet's desktop, game and streaming setup; the guard command keeps
+  that in the host configuration, next to the runner guard that already
+  detects games.
+- **Record the expected generation before the reboot:** the system profile
+  already names what the boot should load, so the check compares against
+  it and needs no state from the run.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +40,12 @@ Columns:
            is no node or the cluster did not answer within 15 seconds.
   runners  active/total Forgejo or Gitea Actions runner service units
            (gitea-runner-*, gitea-*runner and forgejo-*runner); - for none.
+  boot     with the inventory's bootCheck, the result of the host's check
+           after its current boot: ok, failed, running, or pending before
+           it ran; - for a host without the check.
 
-Notes below the table explain each reboot verdict that is not "no" and each
-unreachable host. --json FILE writes the same per host. The exit status is 0
+Notes below the table explain each reboot verdict that is not "no", each
+failed boot check and each unreachable host. --json FILE writes the same per host. The exit status is 0
 however the hosts and the cluster answer; it is 2 for invalid arguments and 1
 when the inventory, this machine's name or the JSON report fails.
 `
@@ -62,6 +66,24 @@ const (
 // after bootcheck.Script, which exits early on hosts that are not Linux.
 const runnerScript = `systemctl list-units --all --plain --no-legend --type=service "gitea-runner-*.service" "gitea-*runner.service" "forgejo-*runner.service" 2>/dev/null | while read -r line; do echo "runner=$line"; done`
 
+// bootCheckScript prints the result the host's boot check (unit
+// nixfleet-boot-check, from the host configuration) left for the current
+// boot, each line prefixed with "bootcheck.": status=running|ok|failed,
+// time=<unix seconds> and a reason= line per problem, after a present line.
+// /run starts empty at every boot, so a result is always this boot's. A
+// result it cannot read reads as failed. A host with the unit but no result
+// yet prints status=pending; one without the unit prints nothing.
+var bootCheckScript = bootCheckScriptFor("/run/nixfleet-boot-check/result", "/etc/systemd/system/nixfleet-boot-check.service")
+
+// bootCheckScriptFor is bootCheckScript for other paths, which tests use.
+// The script has no single quote, so it runs through RemoteCommand.
+func bootCheckScriptFor(result, unit string) string {
+	return `if [ -e ` + result + ` ]; then if [ -r ` + result + ` ]; then echo bootcheck.present=1; ` +
+		`while IFS= read -r line || [ -n "$line" ]; do echo "bootcheck.$line"; done <` + result + `; ` +
+		`else echo bootcheck.status=failed; echo "bootcheck.reason=the result cannot be read as $(id -un)"; fi; ` +
+		`elif [ -e ` + unit + ` ]; then echo bootcheck.status=pending; fi`
+}
+
 // hostStatus is one host's state, as printed and as written by --json.
 type hostStatus struct {
 	Host      string `json:"host"`
@@ -81,6 +103,19 @@ type hostStatus struct {
 	RebootDiffers []string      `json:"rebootDiffers"`
 	Node          *nodeStatus   `json:"node"`
 	Runners       *runnerStatus `json:"runners"`
+	// BootCheck is null without the inventory's bootCheck or on a host
+	// without the check.
+	BootCheck *bootCheckStatus `json:"bootCheck"`
+}
+
+// bootCheckStatus is the result of a host's check after its current boot.
+type bootCheckStatus struct {
+	// Status is pending, running, ok or failed.
+	Status string `json:"status"`
+	// Time is when the check wrote its result, in Unix seconds; 0 when
+	// pending.
+	Time    int64    `json:"time"`
+	Reasons []string `json:"reasons"`
 }
 
 type nodeStatus struct {
@@ -292,6 +327,9 @@ func (s *statusCheck) collect(hosts []string) statusReport {
 func (s *statusCheck) readHost(host string) hostStatus {
 	h := hostStatus{Host: host, RebootDiffers: []string{}}
 	script := bootcheck.Script + "; " + runnerScript
+	if s.inv.BootCheck {
+		script += "; " + bootCheckScript
+	}
 	argv := []string{"sh", "-c", script}
 	if host != s.self {
 		argv = []string{"ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + s.connectTimeout, "-o", "ConnectionAttempts=1"}
@@ -330,7 +368,48 @@ func (s *statusCheck) readHost(host string) hostStatus {
 		}
 	}
 	h.Runners = parseRunners(stdout)
+	h.BootCheck = parseBootCheck(stdout)
 	return h
+}
+
+// parseBootCheck reads bootCheckScript's lines. A missing status, or one
+// other than the four it knows, reads as failed, so an empty or damaged
+// result never passes.
+func parseBootCheck(output string) *bootCheckStatus {
+	var check *bootCheckStatus
+	for _, line := range strings.Split(output, "\n") {
+		rest, ok := strings.CutPrefix(line, "bootcheck.")
+		if !ok {
+			continue
+		}
+		if check == nil {
+			check = &bootCheckStatus{Reasons: []string{}}
+		}
+		key, value, _ := strings.Cut(rest, "=")
+		switch key {
+		case "status":
+			check.Status = value
+		case "time":
+			check.Time, _ = strconv.ParseInt(value, 10, 64)
+		case "reason":
+			if value != "" {
+				check.Reasons = append(check.Reasons, value)
+			}
+		}
+	}
+	if check == nil {
+		return nil
+	}
+	switch check.Status {
+	case "pending", "running", "ok", "failed":
+	case "":
+		check.Reasons = append(check.Reasons, "the result has no status")
+		check.Status = "failed"
+	default:
+		check.Reasons = append(check.Reasons, fmt.Sprintf("the result has status %q", check.Status))
+		check.Status = "failed"
+	}
+	return check
 }
 
 // parseRunners reads runnerScript's lines: systemctl list-units columns
@@ -419,11 +498,11 @@ func (s *statusCheck) readNodes() (map[string]nodeStatus, clusterStatus) {
 }
 
 func printStatus(w io.Writer, report statusReport) {
-	format := "%-12s %-12s %-16s %-8s %-21s %s\n"
-	fmt.Fprintf(w, format, "host", "ssh", "system", "reboot", "node", "runners")
+	format := "%-12s %-12s %-16s %-8s %-21s %-8s %s\n"
+	fmt.Fprintf(w, format, "host", "ssh", "system", "reboot", "node", "runners", "boot")
 	var notes []string
 	for _, h := range report.Hosts {
-		ssh, system, reboot, node, runners := "unreachable", "-", "-", "-", "-"
+		ssh, system, reboot, node, runners, boot := "unreachable", "-", "-", "-", "-", "-"
 		if h.Reachable {
 			ssh = "ok"
 			system = systemState(h)
@@ -455,7 +534,13 @@ func printStatus(w io.Writer, report statusReport) {
 		if h.Runners != nil {
 			runners = fmt.Sprintf("%d/%d", h.Runners.Active, h.Runners.Total)
 		}
-		fmt.Fprintf(w, format, h.Host, ssh, system, reboot, node, runners)
+		if h.BootCheck != nil {
+			boot = h.BootCheck.Status
+			if boot == "failed" {
+				notes = append(notes, h.Host+": boot check failed: "+strings.Join(h.BootCheck.Reasons, "; "))
+			}
+		}
+		fmt.Fprintf(w, format, h.Host, ssh, system, reboot, node, runners, boot)
 	}
 	for _, note := range notes {
 		fmt.Fprintln(w, note)

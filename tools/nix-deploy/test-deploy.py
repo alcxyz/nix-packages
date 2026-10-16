@@ -949,6 +949,10 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         {"kubernetesCorePriorityClass": ""},
         {"kubernetesCorePriorityClass": "Core"},
         {"kubernetesCorePriorityClass": None},
+        {"interactiveHosts": ["node"]},
+        {"interactiveHosts": ["missing"], "rebootGuardCommand": "guard"},
+        {"rebootGuardCommand": ""},
+        {"bootCheck": "yes"},
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
@@ -1040,6 +1044,10 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert not [c for c in calls if c[:2] == ["kubectl", "taint"]], calls
     calls, result = invoke("nixfleet", "reboot", "--config", str(fleet), "solo", status=2, **cluster)
     assert "pass --yes" in result.stderr and not reboots(calls), (result.stdout, result.stderr, calls)
+    # This machine reboots only from a terminal: the flag without one is
+    # refused before anything is read.
+    calls, result = invoke("nixfleet", "reboot", "--config", str(fleet), "--all", "--include-self", "--yes", status=2, **cluster)
+    assert "--include-self needs a terminal" in result.stderr and all(c[0] == "hostname" for c in calls), (result.stderr, calls)
     # Without kubernetesNodes the cluster's node is refused, and without the
     # cluster no host can be told apart from a node.
     calls, result = invoke("nixfleet", "reboot", "--config", str(config), "edge", "--dry-run", **cluster)
@@ -1051,10 +1059,10 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     report = root / "status.json"
     calls, result = invoke("nixfleet", "status", "--config", str(config), "edge", "solo", "mac", "--json", str(report), MOCK_STATUS_UNREACHABLE="solo")
     rows = [line.split() for line in result.stdout.splitlines()]
-    assert rows[0] == ["host", "ssh", "system", "reboot", "node", "runners"], rows
-    assert rows[1] == ["node", "ok", "switched", "yes", "-", "1/1"], rows
-    assert rows[2] == ["solo", "unreachable", "-", "-", "-", "-"], rows
-    assert rows[3] == ["mac", "ok", "darwin", "-", "-", "-"], rows
+    assert rows[0] == ["host", "ssh", "system", "reboot", "node", "runners", "boot"], rows
+    assert rows[1] == ["node", "ok", "switched", "yes", "-", "1/1", "-"], rows
+    assert rows[2] == ["solo", "unreachable", "-", "-", "-", "-", "-"], rows
+    assert rows[3] == ["mac", "ok", "darwin", "-", "-", "-", "-"], rows
     assert "node: reboot needed: kernel differs" in result.stdout and "solo: unreachable: fixture endpoint unavailable" in result.stdout
     assert "cluster: not read: kubectl is not available" in result.stdout
     assert sorted(c[-2] for c in calls if c[0] == "ssh") == ["operator@solo.invalid", "root@mac", "root@node.invalid"]
@@ -1068,4 +1076,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     _, result = invoke("nixfleet", "status", "--config", str(config), "nope", status=2)
     assert "unknown host 'nope'" in result.stderr
 
-print("Deployment contract: 122 mocked CLI cases and 34 invalid inventories passed, and 26 nixfleet dispatch, reboot and status cases; no deployment commands executed")
+print("Deployment contract: 122 mocked CLI cases and 38 invalid inventories passed, and 27 nixfleet dispatch, reboot and status cases; no deployment commands executed")

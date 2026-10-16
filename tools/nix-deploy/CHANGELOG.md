@@ -9,6 +9,23 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.14.0 (2026-10-16)
+
+- Interactive hosts (#548, phase 4, ADR-0010 amendment): new optional
+  inventory fields `interactiveHosts` and `rebootGuardCommand`. `nixfleet
+  reboot` runs the guard on those hosts for the plan and again at their
+  turn; a busy host is asked about on a terminal and skipped without one or
+  with `--yes`, a blocked one is skipped, and a failed guard counts as busy.
+- `nixfleet reboot --include-self` reboots this machine last, only on a
+  terminal, only when no other host failed, after its guard (a block
+  refuses) and its own confirmation even with `--yes`; the summary comes
+  first. A Kubernetes node or a member of a gated serial group is refused.
+  Without the flag the message says how to include it.
+- New optional inventory field `bootCheck`: `nixfleet status` gains a `boot`
+  column with each host's check after its current boot (and a note for a
+  failed one, and `bootCheck` in `--json`), and `nixfleet reboot` waits up to
+  12 minutes for a rebooted host's check to pass.
+
 ## 0.13.0 (2026-10-16)
 
 - New optional inventory field `kubernetesCorePriorityClass`: the

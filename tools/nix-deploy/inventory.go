@@ -39,6 +39,13 @@ type inventory struct {
 	// reboot counts their single-instance Pods per node and reboots nodes
 	// that hold fewer of them first. Empty counts none.
 	KubernetesCorePriorityClass string
+	// InteractiveHosts are hosts people use at the screen; nixfleet reboot
+	// runs RebootGuardCommand on them before their reboot (ADR-0010).
+	InteractiveHosts   []string
+	RebootGuardCommand string
+	// BootCheck says every NixOS host checks itself after each boot and
+	// leaves the result for nixfleet status and reboot.
+	BootCheck bool
 }
 
 // serialGroup is a set of hosts that must not switch together, such as the
@@ -186,6 +193,21 @@ func validateInventory(fields map[string]json.RawMessage) (*inventory, bool) {
 	}
 	if raw, present := fields["kubernetesContext"]; present {
 		check(json.Unmarshal(raw, &inv.KubernetesContext) == nil && isString(raw) && k8snode.ValidContext(inv.KubernetesContext))
+	}
+	if raw, present := fields["interactiveHosts"]; present {
+		inv.InteractiveHosts, valid = knownList(raw, known)
+		check(valid)
+	}
+	if raw, present := fields["rebootGuardCommand"]; present {
+		command := &inv.RebootGuardCommand
+		check(json.Unmarshal(raw, command) == nil && isString(raw) && strings.TrimSpace(*command) != "" && !strings.ContainsAny(*command, "\n\r"))
+	}
+	// An interactive host cannot be checked without the guard.
+	check(len(inv.InteractiveHosts) == 0 || inv.RebootGuardCommand != "")
+	if raw, present := fields["bootCheck"]; present {
+		text := strings.TrimSpace(string(raw))
+		check(text == "true" || text == "false")
+		inv.BootCheck = text == "true"
 	}
 	if raw, present := fields["kubernetesCorePriorityClass"]; present {
 		name := &inv.KubernetesCorePriorityClass
@@ -442,6 +464,10 @@ func (inv *inventory) fleet(self string) []string {
 		return inv.RemoteHosts
 	}
 	return inv.DeployAllHosts
+}
+
+func (inv *inventory) isInteractive(host string) bool {
+	return contains(inv.InteractiveHosts, host)
 }
 
 func (inv *inventory) isKubernetesNode(host string) bool {

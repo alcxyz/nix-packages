@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,11 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	"nix-deploy/bootcheck"
 	"nix-deploy/k8snode"
 )
 
 const rebootUsage = `Usage: nixfleet reboot [--config FILE] [--all | <host>...] [--needed] [--dry-run]
-                       [--yes] [node options]
+                       [--yes] [--include-self] [node options]
 
 Reboots the selected hosts, each under the policies the inventory gives it
 (ADR-0010). Hosts may be named by alias; --all selects the hosts deploy --all
@@ -47,10 +47,28 @@ Policies:
                     3700 seconds) and admit no new ones. They are started
                     again when the host then is not rebooted, and must be
                     active within 5 minutes after it is.
+  interactive host  A host in the inventory's interactiveHosts runs its
+                    rebootGuardCommand (through sudo -n on hosts reached
+                    with sudo) when the plan is made and again at its turn. A busy host (someone at the screen, a game, a
+                    stream) is put to the operator on a terminal and skipped
+                    without one or with --yes; a blocked host is skipped; a
+                    guard that fails counts as busy.
   every host        The boot ID must change, and the host must then run the
                     system it was meant to boot (reboot no; unknown warns).
-  not rebooted      The operator host and this machine, whose reboot handoff
-                    is not available yet: named, they are refused; --all
+                    With the inventory's bootCheck, the host's own check
+                    after the boot must pass within 12 minutes; a host
+                    without the check is only warned about.
+  this machine      Only with --include-self, and only on a terminal: after
+                    every other group, when none of their hosts failed, it
+                    runs its guard (a block refuses), asks even with --yes,
+                    stops its runner units and reboots. The summary comes
+                    first; its boot check reports after the boot, in
+                    nixfleet status. A Kubernetes node or a member of a
+                    gated serial group is refused: it has no gates around
+                    its own reboot. Questions discard input typed before
+                    them and read only while they wait.
+  not rebooted      The operator host from another machine, and this machine
+                    without --include-self: named, they are refused; --all
                     leaves them out. Hosts that are not NixOS are reported.
 
 Each serial group is a constraint group, and every other host a group of its
@@ -78,7 +96,9 @@ Options:
   --needed       Skip hosts whose reboot verdict is no, and for a node that
                  is not cordoned; an unknown verdict reboots.
   --dry-run      Print the plan and change nothing.
-  --yes          Reboot without asking.
+  --yes          Reboot without asking; busy interactive hosts are skipped,
+                 and this machine still asks.
+  --include-self Reboot this machine too, last (see above).
   -h, --help     Show this help.
 
 Node options are those of k8s-node-power reboot, applied to every Kubernetes
@@ -93,7 +113,8 @@ Two node options apply to the other hosts too:
 nothing anywhere, and --ssh-timeout (default 900) bounds their return.
 
 The exit status is 0 when no host failed and 1 when one did; 2 for invalid
-arguments or a run that was not confirmed, 130 or 143 when interrupted.
+arguments, a run that was not confirmed or --include-self without a
+terminal, 130 or 143 when interrupted.
 `
 
 // Bounds of the host steps of a fleet reboot. A runner's own shutdown
@@ -105,6 +126,12 @@ const (
 	bootIDTimeout       = 30 * time.Second
 	rebootCommandBound  = 60 * time.Second
 	sshDownAttempts     = 30
+	// guardTimeout bounds an interactive host's guard command, and
+	// bootCheckTimeout the wait for a host's boot check after its reboot:
+	// the check starts two minutes after the boot and waits up to five
+	// for the system to settle.
+	guardTimeout     = 60 * time.Second
+	bootCheckTimeout = 12 * time.Minute
 )
 
 // Outcomes of a host in a fleet reboot.
@@ -114,6 +141,9 @@ const (
 	outcomeSkipped    = "skipped"
 	outcomeFailed     = "failed"
 	outcomeNotStarted = "not started"
+	// outcomeNext is this machine's while the rest of the run is summed
+	// up, before its own reboot.
+	outcomeNext = "next"
 )
 
 // nodeValueOptions are the node options that take a value.
@@ -136,6 +166,9 @@ type rebootOptions struct {
 	needed     bool
 	dryRun     bool
 	yes        bool
+	// includeSelf lets this machine reboot, last and after a confirmation
+	// on its terminal.
+	includeSelf bool
 	// node holds the validated node options every Kubernetes node starts
 	// from.
 	node k8snode.Options
@@ -156,6 +189,8 @@ func parseRebootArgs(args []string) (rebootOptions, error) {
 			opts.dryRun = true
 		case arg == "--yes":
 			opts.yes = true
+		case arg == "--include-self":
+			opts.includeSelf = true
 		case arg == "--config":
 			if i+1 >= len(args) || args[i+1] == "" {
 				return opts, fmt.Errorf("--config requires a file")
@@ -314,6 +349,8 @@ type fleetReboot struct {
 	// nodes drained at once could leave the cluster without quorum or
 	// storage replicas.
 	nodeLock sync.Mutex
+	// askLock keeps one question on the terminal at a time.
+	askLock sync.Mutex
 	// marked are the nodes this run gave RebootPendingTaint. It is set
 	// before the groups start and changed only in a node's turn, under
 	// nodeLock, until they all ended.
@@ -362,6 +399,12 @@ type rebootTarget struct {
 	// were counted.
 	core     []string
 	coreRead bool
+	// interactive hosts run the inventory's guard before their reboot, and
+	// self is this machine, rebooted last with --include-self. guard is
+	// what the guard found when the plan was made.
+	interactive bool
+	self        bool
+	guard       *guardResult
 	// runners are the active runner units the reboot stops.
 	runners []string
 	// skip says why the host is not rebooted, fail why its group fails
@@ -374,6 +417,105 @@ type rebootTarget struct {
 	duration time.Duration
 }
 
+// guardResult is what an interactive host's guard command reported: one
+// finding per line, "busy <reason>" when someone uses the host, "block
+// <reason>" when it must not reboot now, and "note <text>" to show.
+type guardResult struct {
+	busy  []string
+	block []string
+	notes []string
+	// err says why the guard could not tell; it counts as busy.
+	err string
+}
+
+// clear reports whether nothing keeps the host from its reboot.
+func (g *guardResult) clear() bool {
+	return len(g.busy) == 0 && len(g.block) == 0 && g.err == ""
+}
+
+// busyReason joins why the host counts as busy.
+func (g *guardResult) busyReason() string {
+	reasons := slices.Clone(g.busy)
+	if g.err != "" {
+		reasons = append(reasons, "the guard failed: "+g.err)
+	}
+	return strings.Join(reasons, "; ")
+}
+
+// lines are the findings as the plan and a host's turn show them.
+func (g *guardResult) lines() []string {
+	var lines []string
+	for _, reason := range g.block {
+		lines = append(lines, "blocked: "+reason)
+	}
+	for _, reason := range g.busy {
+		lines = append(lines, "busy: "+reason)
+	}
+	if g.err != "" {
+		lines = append(lines, "busy: the guard failed: "+g.err)
+	}
+	for _, note := range g.notes {
+		lines = append(lines, "note: "+note)
+	}
+	return lines
+}
+
+// parseGuard reads a guard's findings. A line in no known form is shown as
+// a note.
+func parseGuard(output string) *guardResult {
+	g := &guardResult{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		kind, text, _ := strings.Cut(line, " ")
+		text = strings.TrimSpace(text)
+		switch {
+		case line == "":
+		case kind == "busy" && text != "":
+			g.busy = append(g.busy, text)
+		case kind == "block" && text != "":
+			g.block = append(g.block, text)
+		case kind == "note" && text != "":
+			g.notes = append(g.notes, text)
+		default:
+			g.notes = append(g.notes, line)
+		}
+	}
+	return g
+}
+
+// runGuard runs the inventory's guard command on an interactive host, over
+// SSH or, for this machine, locally. It only reads.
+func (f *fleetReboot) runGuard(t *rebootTarget) *guardResult {
+	command := f.inv.RebootGuardCommand
+	if command == "" {
+		return &guardResult{err: "the inventory has no rebootGuardCommand"}
+	}
+	argv := []string{"sh", "-c", command}
+	if !t.self {
+		// A host reached as a user with sudo runs the whole guard line as
+		// root, which can read every user's session; a refused sudo fails
+		// the guard rather than leaving it empty.
+		if f.inv.usesRemoteSudo(t.host) {
+			command = "sudo -n sh -c " + shellQuote(command)
+		}
+		argv = []string{"ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"}
+		argv = append(argv, f.status.sshArgs...)
+		argv = append(argv, f.inv.systemEndpoint(t.host), command)
+	}
+	stdout, stderr, status := f.status.run(guardTimeout, argv...)
+	g := parseGuard(stdout)
+	switch {
+	case status == exitTimedOut:
+		g.err = fmt.Sprintf("no answer within %s", guardTimeout)
+	case status != 0:
+		g.err = oneLine(lastLine(stderr))
+		if g.err == "" {
+			g.err = fmt.Sprintf("it exited with status %d", status)
+		}
+	}
+	return g
+}
+
 // rebootGroup is a constraint group: a serial group's selected members, or
 // a host of its own.
 type rebootGroup struct {
@@ -381,6 +523,8 @@ type rebootGroup struct {
 	name    string
 	serial  *serialGroup
 	members []*rebootTarget
+	// last is this machine's group, run after every other group finished.
+	last bool
 }
 
 // failed reports whether the group fails before it starts.
@@ -432,6 +576,10 @@ func (p *rebootPlan) size() (int, int) {
 // run plans the reboot, asks for confirmation, runs the groups and prints the
 // summary. It returns the exit status.
 func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
+	if f.opts.includeSelf && !f.opts.dryRun && !f.opts.node.CheckOnly && !f.terminal {
+		fmt.Fprintln(f.errOut, "nixfleet reboot: --include-self needs a terminal: this machine reboots only after a confirmation there, never from a script or an agent")
+		return 2
+	}
 	p := f.plan(hosts)
 	f.printPlan(p)
 	if f.opts.dryRun {
@@ -454,7 +602,12 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 		defer f.clearMarks()
 	}
 	var wait sync.WaitGroup
+	var last *rebootGroup
 	for _, g := range p.groups {
+		if g.last {
+			last = g
+			continue
+		}
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
@@ -462,10 +615,13 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 		}()
 	}
 	wait.Wait()
-	if f.printSummary(p) {
-		return 1
+	if last == nil {
+		if f.printSummary(p) {
+			return 1
+		}
+		return 0
 	}
-	return 0
+	return f.runLast(ctx, p, last)
 }
 
 // confirm asks on the terminal unless --yes was given. An interrupt while
@@ -478,23 +634,65 @@ func (f *fleetReboot) confirm(ctx context.Context, hosts, groups int) int {
 		fmt.Fprintln(f.errOut, "nixfleet reboot: standard input is not a terminal to confirm on; pass --yes to reboot without asking")
 		return 2
 	}
-	fmt.Fprintf(f.out, "reboot %d hosts in %d groups? [y/N] ", hosts, groups)
-	answers := make(chan string, 1)
-	go func() {
-		answer, _ := bufio.NewReader(io.LimitReader(f.in, 64)).ReadString('\n')
-		answers <- answer
-	}()
+	if f.ask(ctx, fmt.Sprintf("reboot %d hosts in %d groups? [y/N] ", hosts, groups)) {
+		return 0
+	}
+	fmt.Fprintln(f.errOut, "nixfleet reboot: not confirmed; nothing was changed")
+	return 2
+}
+
+// ask asks a yes or no question on the terminal and reports a yes. One
+// question is asked at a time. Input typed before it is discarded, so a
+// stray line cannot answer it, and the input is read only while it waits,
+// so a later prompt (sudo's password) gets its own. An interrupt, or the end
+// of the input, declines.
+func (f *fleetReboot) ask(ctx context.Context, question string) bool {
+	f.askLock.Lock()
+	defer f.askLock.Unlock()
+	if file, ok := f.in.(*os.File); ok && f.terminal {
+		flushInput(file)
+	}
+	fmt.Fprint(f.out, question)
+	answer := make(chan string, 1)
+	go func() { answer <- readLine(f.in) }()
 	select {
-	case answer := <-answers:
-		switch strings.ToLower(strings.TrimSpace(answer)) {
+	case line := <-answer:
+		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
-			return 0
+			return true
 		}
 	case <-ctx.Done():
 		fmt.Fprintln(f.out)
 	}
-	fmt.Fprintln(f.errOut, "nixfleet reboot: not confirmed; nothing was changed")
-	return 2
+	return false
+}
+
+// readLine reads one line, a byte at a time so nothing after it is taken
+// from the input, and keeps at most its first 64 bytes.
+func readLine(r io.Reader) string {
+	var line []byte
+	b := make([]byte, 1)
+	for {
+		n, err := r.Read(b)
+		if n == 1 {
+			if b[0] == '\n' {
+				break
+			}
+			if len(line) < 64 {
+				line = append(line, b[0])
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return string(line)
+}
+
+// canAsk tells whether a busy interactive host can be put to the operator:
+// on a terminal, without --yes.
+func (f *fleetReboot) canAsk() bool {
+	return f.terminal && !f.opts.yes
 }
 
 // stdinIsTerminal tells whether standard input is a terminal to ask on: a
@@ -511,16 +709,36 @@ func stdinIsTerminal() bool {
 
 // excluded says why a host is never rebooted by the fleet, or "".
 func (f *fleetReboot) excluded(host string) string {
-	const handoff = "its reboot handoff is not available yet"
 	switch {
+	case host == f.self && f.opts.includeSelf:
+		return ""
 	case host == f.self && host == f.inv.OperatorHost:
-		return "the operator host and this machine; " + handoff
+		return "the operator host and this machine; it reboots only with --include-self"
 	case host == f.self:
-		return "this machine runs nixfleet; " + handoff
+		return "this machine runs nixfleet; it reboots only with --include-self"
 	case host == f.inv.OperatorHost:
-		return "the operator host; " + handoff
+		return "the operator host; it reboots only from itself, with --include-self"
 	}
 	return ""
+}
+
+// selfRefusal says why this machine cannot reboot itself, or "": its own
+// reboot has no node gates and no serial group around it, so a Kubernetes
+// node or a member of a gated serial group reboots from another machine.
+func (f *fleetReboot) selfRefusal(t *rebootTarget) string {
+	switch serial := f.inv.group(t.host); {
+	case t.node:
+		return "this machine is a Kubernetes node; reboot it from another machine, behind the node gates"
+	case serial != nil && serial.ReadyCommand != "":
+		return "this machine is in serial group " + f.serialName(serial) + "; reboot it from another machine, behind the ready gate"
+	}
+	return ""
+}
+
+// guarded reports whether the host's guard runs: an interactive host, or
+// this machine when the inventory names a guard.
+func (t *rebootTarget) guarded(inv *inventory) bool {
+	return t.interactive || t.self && inv.RebootGuardCommand != ""
 }
 
 // plan reads the selected hosts and the cluster and decides, for each host,
@@ -531,7 +749,8 @@ func (f *fleetReboot) plan(hosts []string) *rebootPlan {
 	var targets []*rebootTarget
 	var read []string
 	for _, host := range hosts {
-		t := &rebootTarget{host: host, node: f.inv.isKubernetesNode(host), primaries: -1}
+		t := &rebootTarget{host: host, node: f.inv.isKubernetesNode(host), primaries: -1,
+			interactive: f.inv.isInteractive(host), self: host == f.self}
 		if reason := f.excluded(host); reason != "" {
 			if f.opts.all {
 				t.skip = reason
@@ -558,7 +777,17 @@ func (f *fleetReboot) plan(hosts []string) *rebootPlan {
 	}
 
 	bySerial := map[*serialGroup]*rebootGroup{}
+	var last *rebootGroup
 	for _, t := range targets {
+		if t.self && t.skip == "" && t.fail == "" {
+			if reason := f.selfRefusal(t); reason != "" {
+				t.skip = "refused: " + reason
+			}
+		}
+		if t.self && t.skip == "" {
+			last = &rebootGroup{name: t.host, members: []*rebootTarget{t}, last: true}
+			continue
+		}
 		serial := f.inv.group(t.host)
 		if serial == nil {
 			p.groups = append(p.groups, &rebootGroup{name: t.host, members: []*rebootTarget{t}})
@@ -581,6 +810,16 @@ func (f *fleetReboot) plan(hosts []string) *rebootPlan {
 		}
 	}
 	f.orderNodes(p)
+	if last != nil {
+		p.groups = append(p.groups, last)
+	}
+	for _, g := range p.groups {
+		for _, t := range g.members {
+			if t.guarded(f.inv) && t.skip == "" && t.fail == "" {
+				t.guard = f.runGuard(t)
+			}
+		}
+	}
 	return p
 }
 
@@ -968,6 +1207,12 @@ func (t *rebootTarget) policies(g *rebootGroup) string {
 	if len(t.runners) > 0 {
 		parts = append(parts, "runners "+strings.Join(t.runners, " "))
 	}
+	if t.guard != nil || t.interactive {
+		parts = append(parts, "guard")
+	}
+	if t.self {
+		parts = append(parts, "this machine, last, after a confirmation")
+	}
 	return strings.Join(parts, ", ")
 }
 
@@ -982,6 +1227,9 @@ func (f *fleetReboot) printPlan(p *rebootPlan) {
 				header += "; ready gate: " + g.serial.ReadyCommand
 			}
 			header += ")"
+		}
+		if g.last {
+			header += " (after every other group, and only when none failed)"
 		}
 		if g.failed() {
 			header += ", fails before it starts"
@@ -999,6 +1247,11 @@ func (f *fleetReboot) printPlan(p *rebootPlan) {
 			default:
 				step++
 				fmt.Fprintf(f.out, "  %d. %s: %s\n", step, t.host, t.policies(g))
+			}
+			if t.guard != nil {
+				for _, line := range t.guard.lines() {
+					fmt.Fprintf(f.out, "       %s\n", line)
+				}
 			}
 		}
 	}
@@ -1043,6 +1296,54 @@ func (f *fleetReboot) runGroup(ctx context.Context, g *rebootGroup) {
 			}
 		}
 	}
+}
+
+// runLast reboots this machine once every other group finished, only when
+// none of their hosts failed. The summary comes first, since a reboot ends
+// the run.
+func (f *fleetReboot) runLast(ctx context.Context, p *rebootPlan, g *rebootGroup) int {
+	t := g.members[0]
+	failed := ""
+	for _, other := range p.groups {
+		for _, member := range other.members {
+			if other != g && member.outcome == outcomeFailed && failed == "" {
+				failed = member.host
+			}
+		}
+	}
+	switch {
+	case t.skip != "":
+		t.outcome, t.reason = outcomeSkipped, t.skip
+	case t.fail != "":
+		t.outcome, t.reason = outcomeFailed, t.fail
+	case failed != "":
+		t.outcome, t.reason = outcomeNotStarted, failed+" failed; this machine reboots only after a run without failures"
+	case ctx.Err() != nil:
+		t.outcome, t.reason = outcomeNotStarted, "interrupted"
+	default:
+		t.outcome, t.reason = outcomeNext, "reboots now, after its guard and a confirmation"
+	}
+	if f.printSummary(p) {
+		return 1
+	}
+	if t.outcome != outcomeNext {
+		return 0
+	}
+	fmt.Fprintln(f.out)
+	start := time.Now()
+	h := f.newHostReboot(ctx, g, t)
+	t.outcome, t.reason = h.runSelf()
+	h.out.flush()
+	t.duration = time.Since(start)
+	line := t.host + ": " + t.outcome
+	if t.reason != "" {
+		line += ": " + t.reason
+	}
+	fmt.Fprintln(f.out, line)
+	if t.outcome == outcomeFailed {
+		return 1
+	}
+	return 0
 }
 
 // printSummary prints every host's outcome and reports whether one failed.
@@ -1121,6 +1422,11 @@ func (h *hostReboot) run() (string, string) {
 			return h.failure(errStopped)
 		}
 	}
+	if t.interactive {
+		if outcome, reason := h.passGuard(); outcome != "" {
+			return outcome, reason
+		}
+	}
 	h.bootID = h.readBootID(h.ctx)
 	if h.bootID == "" {
 		return h.failure(errors.New("cannot read the boot ID over SSH"))
@@ -1163,6 +1469,136 @@ func (h *hostReboot) run() (string, string) {
 	return outcomeRebooted, ""
 }
 
+// passGuard runs an interactive host's guard at its turn, since the plan's
+// reading may be stale. A blocked host is skipped; a busy one is put to the
+// operator on a terminal, and skipped without one. It returns an empty
+// outcome when the reboot goes on.
+func (h *hostReboot) passGuard() (string, string) {
+	t := h.target
+	g := h.f.runGuard(t)
+	for _, line := range g.lines() {
+		h.log("%s", line)
+	}
+	switch {
+	case h.f.opts.node.CheckOnly || g.clear():
+		return "", ""
+	case len(g.block) > 0:
+		return outcomeSkipped, "blocked: " + strings.Join(g.block, "; ")
+	case !h.f.canAsk():
+		return outcomeSkipped, "busy: " + g.busyReason()
+	}
+	h.out.flush()
+	if h.f.ask(h.ctx, fmt.Sprintf("%s is busy (%s); reboot it anyway? [y/N] ", t.host, g.busyReason())) {
+		return "", ""
+	}
+	return outcomeSkipped, "busy, not confirmed: " + g.busyReason()
+}
+
+// hostCommand runs a shell command on the host: over SSH, or locally on
+// this machine.
+func (h *hostReboot) hostCommand(connectTimeout, command string) []string {
+	if h.target.self {
+		return []string{"sh", "-c", command}
+	}
+	return h.sshCommand(connectTimeout, command)
+}
+
+// runSelf reboots this machine after every other group: its guard, a
+// confirmation even with --yes, its runner units, then the reboot. Nothing
+// checks the boot from here; the host's boot check does, and nixfleet
+// status shows its result.
+func (h *hostReboot) runSelf() (string, string) {
+	t := h.target
+	h.log("%s: %s", t.host, t.policies(h.group))
+	g := &guardResult{}
+	if t.guarded(h.f.inv) {
+		g = h.f.runGuard(t)
+	}
+	for _, line := range g.lines() {
+		h.log("%s", line)
+	}
+	if h.f.opts.node.CheckOnly {
+		h.log("checks passed; nothing was changed")
+		return outcomeChecked, ""
+	}
+	if len(g.block) > 0 {
+		return outcomeSkipped, "blocked: " + strings.Join(g.block, "; ")
+	}
+	h.out.flush()
+	question := fmt.Sprintf("reboot %s, this machine, now? Its sessions, agents and terminals end. [y/N] ", t.host)
+	if !g.clear() {
+		question = fmt.Sprintf("%s is busy (%s); reboot it, this machine, now? Its sessions, agents and terminals end. [y/N] ", t.host, g.busyReason())
+	}
+	if !h.f.ask(h.ctx, question) {
+		return outcomeSkipped, "not confirmed"
+	}
+	if err := h.stopRunners(); err != nil {
+		h.startRunners()
+		return h.failure(err)
+	}
+	h.log("rebooting %s; after the boot, nixfleet status shows its boot check", t.host)
+	h.out.flush()
+	r := h.runner.Run(h.ctx, k8snode.Command{Argv: h.hostCommand("10", h.privileged("systemctl reboot")), Timeout: rebootCommandBound})
+	switch {
+	case h.ctx.Err() != nil:
+		// The shutdown may already be stopping this run; its runner units
+		// are left to the shutdown.
+		return h.failure(errStopped)
+	case r.Status != 0:
+		h.startRunners()
+		return h.failure(fmt.Errorf("the reboot command failed (status %d); this machine was not rebooted", r.Status))
+	}
+	return outcomeRebooted, "the boot check reports after the boot"
+}
+
+// waitBootCheck waits, with the inventory's bootCheck, for the result of
+// the host's check after its new boot: ok passes, failed fails with its
+// reasons. A host without the check is only warned about.
+func (h *hostReboot) waitBootCheck() error {
+	if !h.f.inv.BootCheck {
+		return nil
+	}
+	host := h.target.host
+	h.log("waiting for the boot check of %s", host)
+	clock := waitClock{start: time.Now()}
+	last := "no answer"
+	for {
+		r := h.runner.Run(h.ctx, k8snode.Command{
+			Argv:    h.sshCommand("10", bootcheck.RemoteCommand(bootCheckScript)),
+			Quiet:   true,
+			Timeout: bootIDTimeout,
+		})
+		if h.ctx.Err() != nil {
+			return errStopped
+		}
+		if r.Status == 0 {
+			check := parseBootCheck(r.Stdout)
+			switch {
+			case check != nil && !strings.Contains(r.Stdout, "bootcheck.status="):
+				// A result without a status was read as it was written;
+				// the next poll reads it whole.
+				last = "a result without a status"
+			case check == nil:
+				h.log("warning: %s has no boot check; its result is not waited for", host)
+				return nil
+			case check.Status == "ok":
+				h.log("the boot check of %s passed", host)
+				return nil
+			case check.Status == "failed":
+				return fmt.Errorf("the boot check failed: %s", strings.Join(check.Reasons, "; "))
+			default:
+				last = check.Status
+			}
+		}
+		if bootCheckTimeout-clock.elapsed() <= h.f.runnerPoll {
+			return fmt.Errorf("the boot check gave no result within %s (last: %s)", bootCheckTimeout, last)
+		}
+		if err := h.pause(&clock, h.f.runnerPoll); err != nil {
+			return err
+		}
+	}
+}
+
 // endTurn takes the reboot mark off a node whose turn ended, whatever its
 // outcome: it no longer waits for a reboot, and one that failed stays
 // cordoned.
@@ -1193,7 +1629,11 @@ func (h *hostReboot) sshCommand(connectTimeout, remote string) []string {
 // privileged runs a systemctl command line through noninteractive sudo on
 // hosts whose system user is not root.
 func (h *hostReboot) privileged(command string) string {
-	if h.f.inv.usesRemoteSudo(h.target.host) {
+	switch {
+	case h.target.self:
+		// On this machine's terminal, sudo may ask for the password.
+		return "sudo " + command
+	case h.f.inv.usesRemoteSudo(h.target.host):
 		return "sudo -n " + command
 	}
 	return command
@@ -1275,6 +1715,11 @@ func (h *hostReboot) waitReady(host string) error {
 	return fmt.Errorf("%s did not pass the ready gate within %ds (%d attempt(s))", host, serial.ReadyTimeout, attempts)
 }
 
+// shellQuote quotes a string as one word for a POSIX shell.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // quoteUnits quotes unit names that safeUnit accepted.
 func quoteUnits(units []string) string {
 	quoted := make([]string, len(units))
@@ -1294,7 +1739,7 @@ func (h *hostReboot) stopRunners() error {
 	h.log("stopping %s; admitted jobs finish first (waiting up to %s)", strings.Join(units, " "), runnerStopTimeout)
 	h.stopped = units
 	r := h.runner.Run(h.ctx, k8snode.Command{
-		Argv:    h.sshCommand("10", h.privileged("systemctl stop "+quoteUnits(units))),
+		Argv:    h.hostCommand("10", h.privileged("systemctl stop "+quoteUnits(units))),
 		Timeout: runnerStopTimeout,
 	})
 	switch {
@@ -1318,7 +1763,7 @@ func (h *hostReboot) startRunners() {
 	h.stopped = nil
 	h.log("starting %s again", strings.Join(units, " "))
 	r := h.runner.Run(context.WithoutCancel(h.ctx), k8snode.Command{
-		Argv:    h.sshCommand("10", h.privileged("systemctl start "+quoteUnits(units))),
+		Argv:    h.hostCommand("10", h.privileged("systemctl start "+quoteUnits(units))),
 		Timeout: runnerStartTimeout,
 	})
 	if r.Status != 0 {
@@ -1477,6 +1922,9 @@ func (h *hostReboot) verify() error {
 		}
 	}
 
+	if err := h.waitBootCheck(); err != nil {
+		return err
+	}
 	if serial := h.group.serial; serial != nil && serial.ReadyCommand != "" {
 		return h.waitReady(host)
 	}
