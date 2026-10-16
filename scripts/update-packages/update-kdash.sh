@@ -29,7 +29,10 @@ compute_sri() {
   local tmp
   tmp=$(mktemp)
   echo "  fetching: $url" >&2
-  curl -fsSL -o "$tmp" "$url"
+  if ! curl -fsSL -o "$tmp" "$url"; then
+    rm -f "$tmp"
+    return 1
+  fi
   python3 - "$tmp" <<'PYEOF'
 import base64
 import hashlib

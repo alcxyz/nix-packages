@@ -23,6 +23,7 @@ Then reference packages as `inputs.nix-packages.packages.${system}.<name>`.
 | [claude-code](https://github.com/anthropics/claude-code) | Agentic coding tool that lives in your terminal | all |
 | [codex-cli](https://github.com/openai/codex) | Lightweight coding agent that runs in your terminal | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [codex-app-server](https://github.com/openai/codex) | Codex app server for GUI integrations | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
+| [workmux](https://github.com/raine/workmux) | Git worktrees and tmux windows for parallel development | `x86_64-linux` `aarch64-linux` `x86_64-darwin` `aarch64-darwin` |
 | [ndrop](https://github.com/schweber/ndrop) | Scratchpad toggle helper for Wayland compositors | `x86_64-linux` |
 | [OpenZFS 7.1 snapshot](https://github.com/openzfs/zfs) | Pinned unreleased OpenZFS snapshot with Linux 7.1 support | `x86_64-linux` `aarch64-linux` |
 

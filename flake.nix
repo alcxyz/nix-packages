@@ -55,6 +55,7 @@
           # deploy, so `nix run .#nix-deploy` keeps its command line.
           nix-deploy = lib.addMetaAttrs { mainProgram = "deploy"; } allPackages.nixfleet;
           nix-gc-maintenance = pkgs.callPackage ./tools/nix-gc-maintenance { };
+          workmux = pkgs.callPackage ./pkgs/workmux { };
         }
         //
           lib.optionalAttrs
