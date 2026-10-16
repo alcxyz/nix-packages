@@ -9,6 +9,20 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.12.0 (2026-10-16)
+
+- New optional inventory field `kubernetesContext`: the kubeconfig context of
+  the Kubernetes nodes' cluster. `nixfleet status` reads the cluster there,
+  `nixfleet reboot` reads it and reboots every node there, and `nixfleet off`
+  and `on` default to it, so the current context no longer picks the
+  cluster. Without the field, the current context is used as before.
+- `k8s-node-power`, `nixfleet off` and `nixfleet on` accept
+  `--context <name>`; `nixfleet reboot` rejects it, since its ready gates and
+  status reads follow the inventory. `nixfleet off` and `on` stop when the
+  inventory in `NIX_DEPLOY_CONFIG` cannot be read. The kubectl cnpg plugin takes
+  the context after its name, since kubectl finds a plugin only before the
+  first flag.
+
 ## 0.11.0 (2026-10-16)
 
 - `nixfleet reboot [--all | <host>...]` reboots the fleet by policy and

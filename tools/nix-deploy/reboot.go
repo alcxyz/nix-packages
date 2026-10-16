@@ -76,8 +76,10 @@ Node options are those of k8s-node-power reboot, applied to every Kubernetes
 node: --skip-drain, --force-drain, --bypass-pdb, --leave-cordoned,
 --resume-maintenance (with exactly one host), --check-only, --drain-timeout,
 --ready-timeout, --fence-timeout, --settle-timeout, --ssh-timeout,
---require-longhorn-backup-target and --min-free-pod-slots. --node and
---ssh-target come from the inventory. Two apply to the other hosts too:
+--require-longhorn-backup-target and --min-free-pod-slots. --node,
+--ssh-target and --context come from the inventory; every cluster read and
+node step uses its kubernetesContext, or the current context without one.
+Two node options apply to the other hosts too:
 --check-only reads their boot ID and runs their ready gate only, changing
 nothing anywhere, and --ssh-timeout (default 900) bounds their return.
 
@@ -160,6 +162,8 @@ func parseRebootArgs(args []string) (rebootOptions, error) {
 			return opts, errRebootHelp
 		case arg == "--node" || arg == "--ssh-target":
 			return opts, fmt.Errorf("%s comes from the inventory: each node is named like its host and reached at its system endpoint", arg)
+		case arg == "--context":
+			return opts, fmt.Errorf("--context comes from the inventory's kubernetesContext, which the ready gates and status also use")
 		case contains(nodeValueOptions, arg):
 			if i+1 >= len(args) {
 				return opts, fmt.Errorf("%s requires a value", arg)
@@ -653,7 +657,7 @@ func (f *fleetReboot) orderNodes(p *rebootPlan) {
 
 // readPrimaries counts the CloudNativePG primary Pods on each node.
 func (f *fleetReboot) readPrimaries() (map[string]int, error) {
-	stdout, stderr, status := f.status.run(kubectlTimeout, "kubectl", "get", "pods", "-A", "-l", "cnpg.io/instanceRole=primary", "-o", "json", "--request-timeout=10s")
+	stdout, stderr, status := f.status.run(kubectlTimeout, f.status.kubectl("get", "pods", "-A", "-l", "cnpg.io/instanceRole=primary", "-o", "json", "--request-timeout=10s")...)
 	switch {
 	case status == exitTimedOut:
 		return nil, fmt.Errorf("kubectl did not answer within %s", kubectlTimeout)
@@ -1062,6 +1066,7 @@ func (h *hostReboot) runNode() int {
 	opts.Host = h.target.host
 	opts.Node = h.target.host
 	opts.SSHTarget = h.f.inv.systemEndpoint(h.target.host)
+	opts.Context = h.f.inv.KubernetesContext
 	opts.Needed = h.f.opts.needed
 	status := h.f.nodeReboot(h.ctx, opts, h.runner)
 	h.out.flush()

@@ -125,8 +125,9 @@ func (o *Operation) restoreRebuildLimit() error {
 	}
 	o.log("restoring Longhorn replica rebuild admission to %s", original)
 	patch, _ := json.Marshal(map[string]string{"value": original})
-	r := o.runner.Run(context.Background(), Command{Argv: []string{"kubectl", "-n", "longhorn-system", "patch", "settings.longhorn.io", rebuildLimitSetting,
-		"--type=merge", "-p", string(patch)}})
+	argv := append(o.kubectlArgv(), "-n", "longhorn-system", "patch", "settings.longhorn.io", rebuildLimitSetting,
+		"--type=merge", "-p", string(patch))
+	r := o.runner.Run(context.Background(), Command{Argv: argv})
 	if r.Status != 0 {
 		return fmt.Errorf("failed to restore Longhorn replica rebuild admission to %s", original)
 	}

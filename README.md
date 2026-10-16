@@ -95,7 +95,8 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   .#nix-deploy` still runs it.
 - `nixfleet reboot [--all | <host>...]`: reboots hosts of the fleet, each
   under the policies the inventory gives it ([ADR-0010](docs/adr/0010-fleet-reboot-policies.md)):
-  Kubernetes nodes (`kubernetesNodes`) behind the node gates, serial group
+  Kubernetes nodes (`kubernetesNodes`, in the cluster of `kubernetesContext`)
+  behind the node gates, serial group
   members behind their ready command, runner hosts after their admitted jobs.
   Serial groups and other hosts run as concurrent constraint groups. It prints
   the plan first; `--dry-run` stops there, and a run needs a confirmation on a

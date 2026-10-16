@@ -546,10 +546,30 @@ func (o *Operation) uncordon() error {
 	return nil
 }
 
-// kubectl runs kubectl with the given arguments.
+// kubectl runs kubectl with the given arguments, in the chosen context.
+// kubectl finds a plugin only among the words before the first flag, so the
+// cnpg plugin takes the context after its name.
 func (o *Operation) kubectl(c Command) Result {
-	c.Argv = append([]string{"kubectl"}, c.Argv...)
+	if len(c.Argv) > 0 && c.Argv[0] == "cnpg" {
+		argv := append([]string{"kubectl", "cnpg"}, o.contextArgs()...)
+		c.Argv = append(argv, c.Argv[1:]...)
+	} else {
+		c.Argv = append(o.kubectlArgv(), c.Argv...)
+	}
 	return o.runner.Run(o.ctx, c)
+}
+
+// kubectlArgv starts every kubectl command line of a built-in command.
+func (o *Operation) kubectlArgv() []string {
+	return append([]string{"kubectl"}, o.contextArgs()...)
+}
+
+// contextArgs selects the chosen context, or none for the current one.
+func (o *Operation) contextArgs() []string {
+	if o.opts.Context == "" {
+		return nil
+	}
+	return []string{"--context=" + o.opts.Context}
 }
 
 // getJSON runs a kubectl read and decodes its JSON output into v.

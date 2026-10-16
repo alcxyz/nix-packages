@@ -90,6 +90,9 @@ type rebootFake struct {
 	nodeBusy    bool
 	overlaps    []string
 	nodeOptions []k8snode.Options
+	// kubectlContexts records the context of each cluster read, empty for
+	// the current context.
+	kubectlContexts []string
 	// stopCancels interrupts the run while runner units stop, and
 	// rebootCancels as the reboot command is sent.
 	stopCancels   bool
@@ -128,6 +131,15 @@ func endpointHost(endpoint string) string {
 func (f *rebootFake) statusRun(timeout time.Duration, argv ...string) (string, string, int) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
+	// A context option is recorded, then the read answered without it.
+	if argv[0] == "kubectl" {
+		name := ""
+		if strings.HasPrefix(argv[1], "--context=") {
+			name = strings.TrimPrefix(argv[1], "--context=")
+			argv = append([]string{"kubectl"}, argv[2:]...)
+		}
+		f.kubectlContexts = append(f.kubectlContexts, name)
+	}
 	switch {
 	case slices.Equal(argv[:3], []string{"kubectl", "get", "nodes"}):
 		if !f.cluster {
@@ -446,6 +458,7 @@ func TestRebootArguments(t *testing.T) {
 		{[]string{"--all", "host-a"}, "cannot be combined"},
 		{[]string{"--node", "x", "host-a"}, "--node comes from the inventory"},
 		{[]string{"--ssh-target", "root@x", "host-a"}, "--ssh-target comes from the inventory"},
+		{[]string{"--context", "lab", "host-a"}, "--context comes from the inventory's kubernetesContext"},
 		{[]string{"--bogus", "host-a"}, "unknown option: --bogus"},
 		{[]string{"host-a", "--drain-timeout"}, "--drain-timeout requires a value"},
 		{[]string{"--ready-timeout", "soon", "host-a"}, "unsupported duration: soon"},
@@ -671,7 +684,7 @@ func TestRebootGroupsRunConcurrently(t *testing.T) {
 		t.Errorf("overlaps: %v", f.overlaps)
 	}
 	for _, opts := range f.nodeOptions {
-		if opts.Node != opts.Host || opts.SSHTarget != "root@"+opts.Host || opts.Needed || opts.CheckOnly || opts.SettleTimeout != "90m" {
+		if opts.Node != opts.Host || opts.SSHTarget != "root@"+opts.Host || opts.Context != "" || opts.Needed || opts.CheckOnly || opts.SettleTimeout != "90m" {
 			t.Errorf("node options: %+v", opts)
 		}
 	}
@@ -973,5 +986,32 @@ func TestRebootInterruptedWaitStartsRunners(t *testing.T) {
 	}
 	if got := f.changes(); !slices.Equal(got, []string{"stop host-a", "reboot host-a", "start host-a"}) {
 		t.Errorf("changes: %v", got)
+	}
+}
+
+// The inventory's kubernetesContext picks the cluster of every read and node
+// reboot.
+func TestRebootUsesInventoryContext(t *testing.T) {
+	f := newRebootFake(t)
+	f.inv.KubernetesContext = "lab"
+	if status := f.run("server-a", "server-b", "--yes"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	if len(f.kubectlContexts) < 2 {
+		t.Fatalf("cluster reads: %v", f.kubectlContexts)
+	}
+	for _, name := range f.kubectlContexts {
+		if name != "lab" {
+			t.Errorf("cluster reads in contexts %v", f.kubectlContexts)
+			break
+		}
+	}
+	if len(f.nodeOptions) != 2 {
+		t.Fatalf("node reboots: %+v", f.nodeOptions)
+	}
+	for _, opts := range f.nodeOptions {
+		if opts.Context != "lab" {
+			t.Errorf("node %s in context %q", opts.Node, opts.Context)
+		}
 	}
 }

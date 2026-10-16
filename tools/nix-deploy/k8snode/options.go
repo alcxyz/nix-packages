@@ -27,6 +27,8 @@ Commands:
 Options:
   --node <name>            Kubernetes node name. Defaults to <host>.
   --ssh-target <target>    SSH target. Defaults to root@<host>.
+  --context <name>         kubeconfig context of the cluster. Defaults to the
+                           current context.
   --skip-drain             Cordon only, then reboot. Use for intentional disruption.
   --force-drain            Pass --force to kubectl drain for unmanaged pods.
   --bypass-pdb             Use pod deletion instead of eviction; ignores PDBs.
@@ -86,6 +88,9 @@ type Options struct {
 	Host      string
 	Node      string
 	SSHTarget string
+	// Context is the kubeconfig context every kubectl call uses; empty uses
+	// the current context.
+	Context string
 
 	SkipDrain         bool
 	ForceDrain        bool
@@ -121,7 +126,16 @@ var (
 	positiveInteger      = regexp.MustCompile(`^[1-9][0-9]*$`)
 	safeName             = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	digitsOnly           = regexp.MustCompile(`^[0-9]+$`)
+	contextPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@:/-]*$`)
 )
+
+// ValidContext reports whether name can be a kubeconfig context: it cannot
+// be empty or start with a dash, and holds only the characters context names
+// usually do, such as user@cluster, gke_project_zone_cluster or a cloud
+// provider's resource path.
+func ValidContext(name string) bool {
+	return contextPattern.MatchString(name)
+}
 
 // ParseArgs reads the options that follow the action.
 func ParseArgs(action string, args []string) (Options, error) {
@@ -161,6 +175,11 @@ func ParseArgs(action string, args []string) (Options, error) {
 			opts.Node, err = value()
 		case "--ssh-target":
 			opts.SSHTarget, err = value()
+		case "--context":
+			opts.Context, err = value()
+			if err == nil && !ValidContext(opts.Context) {
+				err = fmt.Errorf("unsupported kubeconfig context: %s", opts.Context)
+			}
 		case "--skip-drain":
 			opts.SkipDrain = true
 		case "--force-drain":

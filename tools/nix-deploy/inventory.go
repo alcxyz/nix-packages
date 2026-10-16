@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"nix-deploy/k8snode"
 )
 
 // inventory is schema version 1 of the deploy inventory (ADR-0006).
@@ -30,6 +32,9 @@ type inventory struct {
 	// KubernetesNodes are the hosts that are Kubernetes nodes, each named
 	// like its host; nixfleet reboot gives them the node gates (ADR-0010).
 	KubernetesNodes []string
+	// KubernetesContext is the kubeconfig context of their cluster; empty
+	// uses the current context.
+	KubernetesContext string
 }
 
 // serialGroup is a set of hosts that must not switch together, such as the
@@ -171,6 +176,9 @@ func validateInventory(fields map[string]json.RawMessage) (*inventory, bool) {
 	if raw, present := fields["kubernetesNodes"]; present {
 		inv.KubernetesNodes, valid = knownList(raw, known)
 		check(valid)
+	}
+	if raw, present := fields["kubernetesContext"]; present {
+		check(json.Unmarshal(raw, &inv.KubernetesContext) == nil && isString(raw) && k8snode.ValidContext(inv.KubernetesContext))
 	}
 
 	// serialSystemHosts, serialReadyCommand and serialReadyTimeoutSeconds

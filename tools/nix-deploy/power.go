@@ -25,6 +25,8 @@ func runPower(name string, args []string) int {
 			"Usage: nixfleet off", 1)
 		usage = strings.Replace(usage, "\nKubernetes-aware node power helpers.\n",
 			"\nKubernetes-aware node power helpers. nixfleet reboot reboots the fleet\ninstead; see nixfleet reboot --help.\n", 1)
+		usage = strings.Replace(usage, "Defaults to the\n                           current context.",
+			"Defaults to the\n                           inventory's kubernetesContext (NIX_DEPLOY_CONFIG),\n                           else the current context.", 1)
 	}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
@@ -50,6 +52,20 @@ func runPower(name string, args []string) int {
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
+	}
+
+	// nixfleet off and on default to the cluster of the inventory, as
+	// nixfleet status and reboot read it; an inventory that cannot be read
+	// stops them rather than fall back to the current context.
+	if name == "nixfleet" && opts.Context == "" {
+		if configFile := os.Getenv("NIX_DEPLOY_CONFIG"); configFile != "" {
+			inv, err := loadInventory(configFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				return 1
+			}
+			opts.Context = inv.KubernetesContext
+		}
 	}
 
 	runner := &k8snode.Runner{Stdout: os.Stdout, Stderr: os.Stderr}

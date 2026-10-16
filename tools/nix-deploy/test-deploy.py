@@ -939,6 +939,9 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         {"kubernetesNodes": ["node", "node"]},
         {"kubernetesNodes": "node"},
         {"kubernetesNodes": None},
+        {"kubernetesContext": ""},
+        {"kubernetesContext": "-x"},
+        {"kubernetesContext": None},
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
@@ -986,8 +989,14 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     _, result = invoke("nixfleet", "off", "--help")
     assert result.stdout.startswith("Usage: nixfleet off [options] <host>\n       nixfleet on [options] <host>\n"), result.stdout
     assert "see nixfleet reboot --help" in result.stdout
+    assert "inventory's kubernetesContext (NIX_DEPLOY_CONFIG),\n                           else the current context." in result.stdout, result.stdout
     _, result = invoke("k8s-node-power", "reboot", "--help")
     assert result.stdout.startswith("Usage: k8s-node-power reboot [options] <host>")
+    assert "Defaults to the\n                           current context." in result.stdout and "kubernetesContext" not in result.stdout
+    # nixfleet off and on take the inventory's context and stop when it
+    # cannot be read, rather than use the current context.
+    calls, result = invoke("nixfleet", "off", "node", status=1, NIX_DEPLOY_CONFIG=str(root / "missing.json"))
+    assert "missing.json" in result.stderr and calls == [], result.stderr
     calls, result = invoke("nixfleet", "off", "--needed", "node", status=1)
     assert "--needed applies only to reboot" in result.stderr and calls == []
     calls, result = invoke("k8s-node-power", "reboot", "--needed", "node", status=1)
@@ -1051,4 +1060,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     _, result = invoke("nixfleet", "status", "--config", str(config), "nope", status=2)
     assert "unknown host 'nope'" in result.stderr
 
-print("Deployment contract: 122 mocked CLI cases and 28 invalid inventories passed, and 25 nixfleet dispatch, reboot and status cases; no deployment commands executed")
+print("Deployment contract: 122 mocked CLI cases and 31 invalid inventories passed, and 26 nixfleet dispatch, reboot and status cases; no deployment commands executed")

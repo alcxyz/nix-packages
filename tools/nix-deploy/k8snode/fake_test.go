@@ -31,6 +31,8 @@ type fakeCluster struct {
 	t     *testing.T
 	clock time.Time
 	calls []call
+	// contexts are the --context options kubectl calls carried, in order.
+	contexts []string
 	// sleeps counts the operation's poll pauses.
 	sleeps int
 	// audits records each network audit as node, expected IP and SSH target.
@@ -87,6 +89,23 @@ type fakeCluster struct {
 }
 
 func (f *fakeCluster) run(c Command) Result {
+	// The context option is recorded and then answered like any other
+	// call, so the fixtures match command lines without it. Like kubectl, a
+	// flag before a plugin's name fails.
+	if len(c.Argv) > 2 && c.Argv[0] == "kubectl" {
+		if strings.HasPrefix(c.Argv[1], "--context=") && c.Argv[2] == "cnpg" {
+			f.calls = append(f.calls, call{line: strings.Join(c.Argv, " ")})
+			return Result{Status: 1, Stderr: "Error: flags cannot be placed before plugin name: " + c.Argv[1] + "\n"}
+		}
+		at := 1
+		if c.Argv[1] == "cnpg" {
+			at = 2
+		}
+		if strings.HasPrefix(c.Argv[at], "--context=") {
+			f.contexts = append(f.contexts, c.Argv[at])
+			c.Argv = append(slices.Clone(c.Argv[:at]), c.Argv[at+1:]...)
+		}
+	}
 	line := strings.Join(c.Argv, " ")
 	f.calls = append(f.calls, call{line: line, stdin: c.Stdin})
 	if f.respond != nil {

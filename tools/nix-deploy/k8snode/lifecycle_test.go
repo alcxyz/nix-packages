@@ -640,3 +640,44 @@ func TestLonghornSurvivabilityFailures(t *testing.T) {
 		t.Fatalf("got %q", bad)
 	}
 }
+
+// requireContext checks that every kubectl call carried the context.
+func requireContext(t *testing.T, f *fakeCluster, want string) {
+	t.Helper()
+	kubectl := 0
+	for _, c := range f.calls {
+		if strings.HasPrefix(c.line, "kubectl ") {
+			kubectl++
+		}
+	}
+	if kubectl == 0 || len(f.contexts) != kubectl {
+		t.Fatalf("%d of %d kubectl calls carried a context:\n%s", len(f.contexts), kubectl, f.callLog())
+	}
+	for _, got := range f.contexts {
+		if got != "--context="+want {
+			t.Fatalf("kubectl call with %s, want --context=%s", got, want)
+		}
+	}
+}
+
+// --context reaches every kubectl call: the database switchover through the
+// cnpg plugin, which takes it after its name, and the cleanup that restores
+// Longhorn's rebuild admission after a failed gate.
+func TestContextReachesEveryKubectlCall(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	run(t, f, "reboot", "--context", "lab")
+	requireOrder(t, f, `^kubectl cnpg promote -n default db db-2$`, `^kubectl cordon server-a$`)
+	requireContext(t, f, "lab")
+
+	f = newHealthyCluster(t)
+	set(f.volumes[0], "degraded", "status", "robustness")
+	runFailure(t, f, "reboot", []string{"--context", "lab", "--settle-timeout", "1m"}, "Longhorn volumes are not healthy")
+	mustContain(t, f.callLog(), `"value":"0"`)
+	requireContext(t, f, "lab")
+
+	f = newHealthyCluster(t)
+	run(t, f, "reboot")
+	if len(f.contexts) != 0 {
+		t.Fatalf("calls carried %v without --context", f.contexts)
+	}
+}

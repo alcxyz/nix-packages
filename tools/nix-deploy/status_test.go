@@ -210,6 +210,20 @@ func TestStatusReadsEachHost(t *testing.T) {
 	}
 }
 
+// The inventory's kubernetesContext picks the cluster that is read.
+func TestStatusReadsInventoryContext(t *testing.T) {
+	f := &fakeFleet{}
+	s := newStatusCheck(t, f)
+	s.inv.KubernetesContext = "lab"
+	if report := s.collect([]string{"k1"}); !report.Cluster.Reachable {
+		t.Fatalf("cluster: %+v", report.Cluster)
+	}
+	want := []string{"kubectl", "--context=lab", "get", "nodes", "-o", "json", "--request-timeout=10s"}
+	if !slices.ContainsFunc(f.calls, func(call []string) bool { return slices.Equal(call, want) }) {
+		t.Errorf("no %v in %v", want, f.calls)
+	}
+}
+
 func TestStatusStagedSystem(t *testing.T) {
 	h := hostStatus{Reachable: true, OS: "Linux", BootedSystem: "/nix/store/a", CurrentSystem: "/nix/store/a", NextBootSystem: "/nix/store/b"}
 	if got := systemState(h); got != "booted,staged" {

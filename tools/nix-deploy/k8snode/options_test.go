@@ -39,6 +39,19 @@ func TestParseArgsDefaults(t *testing.T) {
 	}
 }
 
+func TestValidContext(t *testing.T) {
+	for _, name := range []string{"lab", "admin@lab", "gke_project_europe-west1-b_lab", "arn:aws:eks:eu-north-1:1:cluster/lab"} {
+		if !ValidContext(name) {
+			t.Errorf("%q rejected", name)
+		}
+	}
+	for _, name := range []string{"", "-x", "_x", "a b", "a;b", "a$b"} {
+		if ValidContext(name) {
+			t.Errorf("%q accepted", name)
+		}
+	}
+}
+
 func TestParseArgsErrors(t *testing.T) {
 	t.Setenv("K8S_NODE_SSH_USER", "")
 	cases := []struct {
@@ -55,6 +68,9 @@ func TestParseArgsErrors(t *testing.T) {
 		{"reboot", []string{"--bogus", "h"}, "unknown option: --bogus"},
 		{"reboot", []string{"-oProxyCommand=x"}, "unknown option: -oProxyCommand=x"},
 		{"reboot", []string{"h", "--node"}, "--node requires a value"},
+		{"reboot", []string{"--context", "-x", "h"}, "unsupported kubeconfig context: -x"},
+		{"reboot", []string{"--context", "", "h"}, "unsupported kubeconfig context: "},
+		{"reboot", []string{"--context", "a b", "h"}, "unsupported kubeconfig context: a b"},
 		{"reboot", []string{"--min-free-pod-slots", "0", "h"}, "--min-free-pod-slots must be a positive integer"},
 		{"reboot", []string{"--settle-timeout", "1h30m", "h"}, "unsupported duration: 1h30m"},
 		{"reboot", []string{"--drain-timeout", "soon", "h"}, "unsupported duration: soon"},

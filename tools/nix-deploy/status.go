@@ -33,7 +33,8 @@ Columns:
            differ between the booted system and the current or next-boot
            system, no when none does, unknown when one cannot be compared.
   node     the Kubernetes node of the host's name or alias, from one
-           kubectl get nodes in the current context: cordoned or
+           kubectl get nodes in the inventory's kubernetesContext, or
+           the current context without one: cordoned or
            schedulable, and notready when it is not Ready; - when the host
            is no node or the cluster did not answer within 15 seconds.
   runners  active/total Forgejo or Gitea Actions runner service units
@@ -360,10 +361,19 @@ func parseRunners(output string) *runnerStatus {
 	return runners
 }
 
+// kubectl is the command line of a kubectl read in the inventory's context.
+func (s *statusCheck) kubectl(args ...string) []string {
+	argv := []string{"kubectl"}
+	if s.inv.KubernetesContext != "" {
+		argv = append(argv, "--context="+s.inv.KubernetesContext)
+	}
+	return append(argv, args...)
+}
+
 // readNodes reads every node's cordon and readiness, by canonical host name.
 // A cluster that cannot be read leaves every node unknown.
 func (s *statusCheck) readNodes() (map[string]nodeStatus, clusterStatus) {
-	stdout, stderr, status := s.run(kubectlTimeout, "kubectl", "get", "nodes", "-o", "json", "--request-timeout=10s")
+	stdout, stderr, status := s.run(kubectlTimeout, s.kubectl("get", "nodes", "-o", "json", "--request-timeout=10s")...)
 	switch {
 	case status == 127:
 		return nil, clusterStatus{Error: "kubectl is not available"}

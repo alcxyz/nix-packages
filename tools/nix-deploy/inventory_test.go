@@ -40,6 +40,7 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	fields["serialReadyCommand"] = "true"
 	fields["serialReadyTimeoutSeconds"] = 30.0
 	fields["kubernetesNodes"] = []any{"node"}
+	fields["kubernetesContext"] = "admin@lab"
 	inv, err := parseInventory(encode(t, fields))
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +60,9 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	}
 	if !inv.isKubernetesNode("node") || inv.isKubernetesNode("xyz") {
 		t.Errorf("kubernetesNodes not loaded: %v", inv.KubernetesNodes)
+	}
+	if inv.KubernetesContext != "admin@lab" {
+		t.Errorf("kubernetesContext not loaded: %q", inv.KubernetesContext)
 	}
 }
 
@@ -139,6 +143,10 @@ func TestParseInventoryRejects(t *testing.T) {
 		{"duplicate Kubernetes node", func(f map[string]any) { f["kubernetesNodes"] = []any{"node", "node"} }, "does not satisfy"},
 		{"Kubernetes nodes not a list", func(f map[string]any) { f["kubernetesNodes"] = "node" }, "does not satisfy"},
 		{"null Kubernetes nodes", func(f map[string]any) { f["kubernetesNodes"] = nil }, "does not satisfy"},
+		{"empty Kubernetes context", func(f map[string]any) { f["kubernetesContext"] = "" }, "does not satisfy"},
+		{"Kubernetes context like an option", func(f map[string]any) { f["kubernetesContext"] = "-x" }, "does not satisfy"},
+		{"Kubernetes context not a string", func(f map[string]any) { f["kubernetesContext"] = 1.0 }, "does not satisfy"},
+		{"null Kubernetes context", func(f map[string]any) { f["kubernetesContext"] = nil }, "does not satisfy"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
