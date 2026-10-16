@@ -89,3 +89,47 @@ terminal, or `--yes`.
 - Concurrent groups interleave their output, so each line names its host.
 - `deploy --all --reboot` and the interactive-host policy are left for later
   changes.
+
+## Amendment (2026-10-16): core singletons and reboot marks
+
+A node reboot also moves the core services that run as a single Pod, such
+as the forge and the identity provider, and each move is a short outage.
+The order counted only database primaries, and a drained Pod could land on
+a node still waiting for its reboot and move again in that node's turn.
+The cluster already marks its core tier with a PriorityClass, so the
+inventory names that class rather than listing services.
+
+- **Core singletons.** The new optional inventory field
+  `kubernetesCorePriorityClass` names the class. A Pod of that class that is
+  the only live Pod of its workload is a core singleton. Pods of a
+  DaemonSet, a Job or a node (static Pods) do not count, since a node
+  reboot does not move them. Within a group, nodes that hold
+  fewer database primaries and core singletons together reboot first, and
+  the plan lists each node's core singletons. Without the field, only
+  primaries count, as before.
+- **Reboot marks.** When a run will reboot two or more nodes, each waits for
+  its turn with the taint `nixfleet/reboot-pending:PreferNoSchedule`, which
+  comes off when its turn ends, whatever the outcome; nodes whose turn never
+  came lose it at the end of the run. Pods a drain evicts then prefer nodes
+  that already rebooted, and a primary switchover takes a replica on an
+  unmarked node first. A run that reboots a node also removes every mark
+  it does not set, such as one an interrupted run left; a mark it cannot
+  remove stays tracked so the end of the run tries again, and one already
+  gone counts as removed. `--dry-run` and `--check-only`
+  set no marks.
+
+Alternatives considered:
+
+- **Cordon the waiting nodes:** guarantees one move, but leaves a three-node
+  cluster with a single schedulable node for the first reboot, below the
+  capacity the drain checks require.
+- **Place the core services explicitly (node affinity or a restart after
+  each node):** changes workloads that GitOps owns, and fights their own
+  spreading rules.
+- **List the core services in the inventory:** duplicates the cluster's
+  tier, which then has two owners.
+
+The marks are preferences: a Pod whose own spreading preferences outweigh
+the taint can still land on a waiting node, and the Pods of the first node
+always do. A run that cannot set the marks warns and goes on without them,
+since the gates, not the marks, keep the cluster safe.

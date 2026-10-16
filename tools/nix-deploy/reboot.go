@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -25,9 +26,8 @@ const rebootUsage = `Usage: nixfleet reboot [--config FILE] [--all | <host>...] 
 Reboots the selected hosts, each under the policies the inventory gives it
 (ADR-0010). Hosts may be named by alias; --all selects the hosts deploy --all
 would. A run first reads every selected host as nixfleet status does, the
-cluster's nodes and the nodes of its CloudNativePG primaries, and prints the
-plan: groups, order, policies, and skips with their reasons. --dry-run stops
-there. Otherwise a terminal is asked to confirm, and without one the run
+cluster's nodes and its Pods, and prints the plan: groups, order, policies,
+and skips with their reasons. --dry-run stops there. Otherwise a terminal is asked to confirm, and without one the run
 needs --yes.
 
 Policies:
@@ -56,9 +56,18 @@ Policies:
 Each serial group is a constraint group, and every other host a group of its
 own. Groups run concurrently and the members of a group one at a time, in
 inventory order, except that Kubernetes nodes holding fewer database
-primaries go first. A group fails before anything in it changes when a host
-cannot be read, a node is refused, or the cluster's nodes (or, for a group
-with nodes, its primaries) cannot be read. A failure stops the rest of its
+primaries and core singletons go first. Core singletons are the Pods of the
+inventory's kubernetesCorePriorityClass that are the only Pod of their
+workload, other than those of a DaemonSet, a Job or a node; without that
+field none count. With two or more nodes to reboot,
+each waits for its turn with the PreferNoSchedule taint
+nixfleet/reboot-pending, so Pods a drain evicts prefer nodes that already
+rebooted, and a primary switchover a replica on one; the taint comes off as
+the node's turn ends (or, when that fails, at the end of the run), and a run
+that reboots a node takes off every mark it does not set. A group fails
+before anything in it changes when a host cannot be read, a node is
+refused, or the cluster's nodes (or, for a group with nodes, its Pods)
+cannot be read. A failure stops the rest of its
 group and leaves the host as it is (a node cordoned and drained); the other
 groups go on. Every line a host prints starts with its name, and a summary
 of every host ends the run.
@@ -305,6 +314,10 @@ type fleetReboot struct {
 	// nodes drained at once could leave the cluster without quorum or
 	// storage replicas.
 	nodeLock sync.Mutex
+	// marked are the nodes this run gave RebootPendingTaint. It is set
+	// before the groups start and changed only in a node's turn, under
+	// nodeLock, until they all ended.
+	marked []string
 }
 
 func newFleetReboot(inv *inventory, self string, opts rebootOptions, status *statusCheck) *fleetReboot {
@@ -344,6 +357,11 @@ type rebootTarget struct {
 	node bool
 	// primaries counts the database primaries on the node; -1 when unread.
 	primaries int
+	// core are the core service workloads with a single Pod, which runs on
+	// the node (inventory kubernetesCorePriorityClass); coreRead says they
+	// were counted.
+	core     []string
+	coreRead bool
 	// runners are the active runner units the reboot stops.
 	runners []string
 	// skip says why the host is not rebooted, fail why its group fails
@@ -431,6 +449,10 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 		verb = "checking"
 	}
 	fmt.Fprintf(f.out, "==> %s %d host(s) in %d group(s)\n", verb, count, groups)
+	if !f.opts.node.CheckOnly {
+		f.markPending(p)
+		defer f.clearMarks()
+	}
 	var wait sync.WaitGroup
 	for _, g := range p.groups {
 		wait.Add(1)
@@ -615,12 +637,13 @@ func (f *fleetReboot) decide(t *rebootTarget, h hostStatus, cluster clusterStatu
 	}
 }
 
-// orderNodes puts the Kubernetes nodes of each group that holds fewer
-// database primaries first, so a primary moves once, to a node that already
-// rebooted. Nodes with equal counts, and the other hosts, keep the inventory
-// order. A group whose primaries cannot be read fails.
+// orderNodes puts the Kubernetes nodes of each group that hold fewer
+// database primaries and core singletons first: a node reboot moves each of
+// them, and the later a node reboots, the more nodes that already rebooted
+// can take them. Nodes with equal counts, and the other hosts, keep the
+// inventory order. A group whose placement cannot be read fails.
 func (f *fleetReboot) orderNodes(p *rebootPlan) {
-	var counts map[string]int
+	var placements map[string]*placement
 	var readErr error
 	read := false
 	for _, g := range p.groups {
@@ -636,53 +659,273 @@ func (f *fleetReboot) orderNodes(p *rebootPlan) {
 			continue
 		}
 		if !read {
-			counts, readErr = f.readPrimaries()
+			placements, readErr = f.readPlacement()
 			read = true
 		}
 		if readErr != nil {
 			for _, t := range nodes {
-				t.fail = "the database primaries cannot be read: " + readErr.Error()
+				t.fail = "the cluster's Pods cannot be read: " + readErr.Error()
 			}
 			continue
 		}
 		for _, t := range nodes {
-			t.primaries = counts[t.host]
+			t.primaries = 0
+			if at := placements[t.host]; at != nil {
+				t.primaries = at.primaries
+				t.core = at.core
+			}
+			t.coreRead = f.inv.KubernetesCorePriorityClass != ""
 		}
-		sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].primaries < nodes[j].primaries })
+		sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].moves() < nodes[j].moves() })
 		for i, slot := range slots {
 			g.members[slot] = nodes[i]
 		}
 	}
 }
 
-// readPrimaries counts the CloudNativePG primary Pods on each node.
-func (f *fleetReboot) readPrimaries() (map[string]int, error) {
-	stdout, stderr, status := f.status.run(kubectlTimeout, f.status.kubectl("get", "pods", "-A", "-l", "cnpg.io/instanceRole=primary", "-o", "json", "--request-timeout=10s")...)
+// moves counts what a node reboot moves to another node.
+func (t *rebootTarget) moves() int {
+	return t.primaries + len(t.core)
+}
+
+// placement is what runs on a node that a node reboot moves: database
+// primaries and core singletons.
+type placement struct {
+	primaries int
+	core      []string
+}
+
+// podList is the part of kubectl's Pod list that placement needs.
+type podList struct {
+	Items []struct {
+		Metadata struct {
+			Namespace         string            `json:"namespace"`
+			Name              string            `json:"name"`
+			Labels            map[string]string `json:"labels"`
+			DeletionTimestamp *string           `json:"deletionTimestamp"`
+			OwnerReferences   []struct {
+				Kind       string `json:"kind"`
+				Name       string `json:"name"`
+				Controller bool   `json:"controller"`
+			} `json:"ownerReferences"`
+		} `json:"metadata"`
+		Spec struct {
+			NodeName          string `json:"nodeName"`
+			PriorityClassName string `json:"priorityClassName"`
+		} `json:"spec"`
+		Status struct {
+			Phase string `json:"phase"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+// readPlacement reads, for each node, the CloudNativePG primary Pods and
+// the core singletons on it: Pods of the inventory's core priority class
+// that are the only live Pod of their workload.
+func (f *fleetReboot) readPlacement() (map[string]*placement, error) {
+	stdout, err := f.kubectl("get", "pods", "-A", "-o", "json", "--request-timeout=10s")
+	if err != nil {
+		return nil, err
+	}
+	var list podList
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
+		return nil, fmt.Errorf("kubectl output does not decode: %v", err)
+	}
+	placements := map[string]*placement{}
+	at := func(node string) *placement {
+		if placements[node] == nil {
+			placements[node] = &placement{}
+		}
+		return placements[node]
+	}
+	class := f.inv.KubernetesCorePriorityClass
+	// pods counts the live Pods of each core workload, by namespace,
+	// controller kind and name; nodes holds the node of its last one, and
+	// names the name the plan shows.
+	pods := map[string]int{}
+	nodes := map[string]string{}
+	names := map[string]string{}
+	for _, item := range list.Items {
+		meta := item.Metadata
+		node := item.Spec.NodeName
+		if meta.DeletionTimestamp != nil || node == "" || item.Status.Phase == "Succeeded" || item.Status.Phase == "Failed" {
+			continue
+		}
+		if meta.Labels["cnpg.io/instanceRole"] == "primary" {
+			at(node).primaries++
+		}
+		if class == "" || item.Spec.PriorityClassName != class {
+			continue
+		}
+		kind, name := "Pod", meta.Name
+		for _, owner := range meta.OwnerReferences {
+			if owner.Controller {
+				kind, name = owner.Kind, owner.Name
+				break
+			}
+		}
+		switch kind {
+		case "DaemonSet", "Job", "Node":
+			// A DaemonSet runs a Pod on every node, a Job's Pod ends, and a
+			// static Pod belongs to its node: a node reboot moves none.
+			continue
+		case "ReplicaSet":
+			// A Deployment's ReplicaSet is named after it and the Pod
+			// template's hash.
+			if hash := meta.Labels["pod-template-hash"]; hash != "" {
+				name = strings.TrimSuffix(name, "-"+hash)
+			}
+		}
+		key := meta.Namespace + "/" + kind + "/" + name
+		pods[key]++
+		nodes[key] = node
+		names[key] = meta.Namespace + "/" + name
+	}
+	for key, count := range pods {
+		if count == 1 {
+			at(nodes[key]).core = append(at(nodes[key]).core, names[key])
+		}
+	}
+	for _, p := range placements {
+		sort.Strings(p.core)
+	}
+	return placements, nil
+}
+
+// kubectl runs a kubectl command in the inventory's context and returns its
+// output, or an error from the last line it wrote to stderr.
+func (f *fleetReboot) kubectl(args ...string) (string, error) {
+	stdout, stderr, status := f.status.run(kubectlTimeout, f.status.kubectl(args...)...)
 	switch {
 	case status == exitTimedOut:
-		return nil, fmt.Errorf("kubectl did not answer within %s", kubectlTimeout)
+		return "", fmt.Errorf("kubectl did not answer within %s", kubectlTimeout)
 	case status != 0:
 		message := oneLine(lastLine(stderr))
 		if message == "" {
 			message = fmt.Sprintf("kubectl exited with status %d", status)
 		}
-		return nil, errors.New(message)
+		return "", errors.New(message)
 	}
-	var list struct {
+	return stdout, nil
+}
+
+// pendingNodes are the Kubernetes nodes the run will reboot, in no
+// particular order.
+func (p *rebootPlan) pendingNodes() []string {
+	var nodes []string
+	for _, g := range p.groups {
+		if g.failed() {
+			continue
+		}
+		for _, t := range g.members {
+			if t.node && t.skip == "" {
+				nodes = append(nodes, t.host)
+			}
+		}
+	}
+	return nodes
+}
+
+// markPending gives the nodes the run will reboot RebootPendingTaint, with
+// the PreferNoSchedule effect, when there are two or more: Pods a drain
+// evicts then prefer nodes that already rebooted, and a primary switchover
+// a replica on one, so they move once. It takes any other mark off, such as
+// one an interrupted run left, and tracks every mark it found, so a node
+// whose mark cannot be refreshed still loses it. A run that reboots no node
+// changes no mark. The marks only steer the scheduler, so a run whose marks
+// cannot be set goes on without them.
+func (f *fleetReboot) markPending(p *rebootPlan) {
+	pending := p.pendingNodes()
+	if len(pending) == 0 {
+		return
+	}
+	var wanted []string
+	if len(pending) >= 2 {
+		wanted = pending
+	}
+	stdout, err := f.kubectl("get", "nodes", "-o", "json", "--request-timeout=10s")
+	var nodes struct {
 		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
 			Spec struct {
-				NodeName string `json:"nodeName"`
+				Taints []struct {
+					Key string `json:"key"`
+				} `json:"taints"`
 			} `json:"spec"`
 		} `json:"items"`
 	}
-	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
-		return nil, fmt.Errorf("kubectl output does not decode: %v", err)
+	if err == nil {
+		if decodeErr := json.Unmarshal([]byte(stdout), &nodes); decodeErr != nil {
+			err = fmt.Errorf("kubectl output does not decode: %v", decodeErr)
+		}
 	}
-	counts := map[string]int{}
-	for _, item := range list.Items {
-		counts[item.Spec.NodeName]++
+	if err != nil {
+		fmt.Fprintf(f.out, "warning: the nodes' reboot marks cannot be read, so none are set or removed: %v\n", err)
+		return
 	}
-	return counts, nil
+	for _, n := range nodes.Items {
+		for _, t := range n.Spec.Taints {
+			if t.Key == k8snode.RebootPendingTaint && !slices.Contains(f.marked, n.Metadata.Name) {
+				f.marked = append(f.marked, n.Metadata.Name)
+			}
+		}
+	}
+	for _, node := range slices.Clone(f.marked) {
+		if !slices.Contains(wanted, node) {
+			f.warnUnmark(node, f.unmark(node))
+		}
+	}
+	for _, node := range wanted {
+		_, err := f.kubectl("taint", "nodes", node, k8snode.RebootPendingTaint+"=true:PreferNoSchedule", "--overwrite")
+		if err != nil {
+			fmt.Fprintf(f.out, "warning: cannot mark %s as waiting for its reboot: %v\n", node, err)
+			continue
+		}
+		if !slices.Contains(f.marked, node) {
+			f.marked = append(f.marked, node)
+		}
+	}
+}
+
+// unmark takes RebootPendingTaint off a node. The node stays in marked
+// until that succeeds, so the end of the run tries again; a mark or node
+// that is gone already counts as removed, by kubectl's exact messages.
+func (f *fleetReboot) unmark(node string) error {
+	_, err := f.kubectl("taint", "nodes", node, k8snode.RebootPendingTaint+":PreferNoSchedule-")
+	if err != nil {
+		message := err.Error()
+		gone := strings.HasSuffix(message, fmt.Sprintf("taint %q not found", k8snode.RebootPendingTaint+":PreferNoSchedule")) ||
+			strings.HasSuffix(message, fmt.Sprintf("nodes %q not found", node))
+		if !gone {
+			return err
+		}
+	}
+	f.marked = slices.DeleteFunc(f.marked, func(name string) bool { return name == node })
+	return nil
+}
+
+// unmarkWarning says how to finish an unmark that failed, or "".
+func unmarkWarning(node string, err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("warning: cannot remove the reboot mark from %s: %v; remove its %s taint by hand", node, err, k8snode.RebootPendingTaint)
+}
+
+func (f *fleetReboot) warnUnmark(node string, err error) {
+	if warning := unmarkWarning(node, err); warning != "" {
+		fmt.Fprintln(f.out, warning)
+	}
+}
+
+// clearMarks takes the mark off the nodes whose turn did not end, after a
+// failure or an interrupt, and off those whose unmark failed before.
+func (f *fleetReboot) clearMarks() {
+	for _, node := range slices.Clone(f.marked) {
+		f.warnUnmark(node, f.unmark(node))
+	}
 }
 
 func (f *fleetReboot) serialName(serial *serialGroup) string {
@@ -710,6 +953,13 @@ func (t *rebootTarget) policies(g *rebootGroup) string {
 		parts[0] = "Kubernetes node"
 		if t.primaries >= 0 {
 			parts[0] = fmt.Sprintf("Kubernetes node with %d database primaries", t.primaries)
+		}
+		switch {
+		case !t.coreRead:
+		case len(t.core) == 0:
+			parts[0] += " and no core singletons"
+		default:
+			parts[0] += " and core singletons " + strings.Join(t.core, " ")
 		}
 	}
 	if g.serial != nil && g.serial.ReadyCommand != "" {
@@ -751,6 +1001,10 @@ func (f *fleetReboot) printPlan(p *rebootPlan) {
 				fmt.Fprintf(f.out, "  %d. %s: %s\n", step, t.host, t.policies(g))
 			}
 		}
+	}
+	if pending := p.pendingNodes(); len(pending) >= 2 && !f.opts.node.CheckOnly {
+		fmt.Fprintf(f.out, "scheduling: %s wait for their turn with the PreferNoSchedule taint %s, so Pods a drain evicts prefer nodes that already rebooted\n",
+			strings.Join(pending, " "), k8snode.RebootPendingTaint)
 	}
 	for _, t := range p.notSelected {
 		fmt.Fprintf(f.out, "not selected: %s: %s\n", t.host, t.skip)
@@ -862,6 +1116,7 @@ func (h *hostReboot) run() (string, string) {
 		// node, and held until this node passed its checks after the boot.
 		h.f.nodeLock.Lock()
 		defer h.f.nodeLock.Unlock()
+		defer h.endTurn()
 		if h.ctx.Err() != nil {
 			return h.failure(errStopped)
 		}
@@ -906,6 +1161,18 @@ func (h *hostReboot) run() (string, string) {
 	}
 	h.log("%s rebooted", t.host)
 	return outcomeRebooted, ""
+}
+
+// endTurn takes the reboot mark off a node whose turn ended, whatever its
+// outcome: it no longer waits for a reboot, and one that failed stays
+// cordoned.
+func (h *hostReboot) endTurn() {
+	if !slices.Contains(h.f.marked, h.target.host) {
+		return
+	}
+	if err := h.f.unmark(h.target.host); err != nil {
+		h.log("warning: cannot remove the reboot mark from %s yet: %v; the run tries again at its end", h.target.host, err)
+	}
 }
 
 func (h *hostReboot) failure(err error) (string, string) {

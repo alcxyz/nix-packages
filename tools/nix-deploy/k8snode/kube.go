@@ -50,6 +50,12 @@ type taint struct {
 	Effect string `json:"effect"`
 }
 
+// RebootPendingTaint marks the nodes a fleet reboot (nixfleet reboot) has
+// still to reboot. Its PreferNoSchedule effect makes evicted Pods prefer
+// nodes that already rebooted, and a primary switchover prefers a replica
+// on a node without it.
+const RebootPendingTaint = "nixfleet/reboot-pending"
+
 type node struct {
 	Metadata objectMeta `json:"metadata"`
 	Spec     struct {
@@ -269,4 +275,15 @@ func (o *Operation) listNodePods() ([]pod, error) {
 	var pods podList
 	err := o.getJSON(&pods, "get", "pods", "--all-namespaces", "--field-selector", "spec.nodeName="+o.opts.Node, "-o", "json")
 	return pods.Items, err
+}
+
+// rebootPending reports whether the node waits for its turn in a fleet
+// reboot.
+func rebootPending(n node) bool {
+	for _, t := range n.Spec.Taints {
+		if t.Key == RebootPendingTaint {
+			return true
+		}
+	}
+	return false
 }

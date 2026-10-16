@@ -98,7 +98,11 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   Kubernetes nodes (`kubernetesNodes`, in the cluster of `kubernetesContext`)
   behind the node gates, serial group
   members behind their ready command, runner hosts after their admitted jobs.
-  Serial groups and other hosts run as concurrent constraint groups. It prints
+  Serial groups and other hosts run as concurrent constraint groups. Nodes
+  holding fewer database primaries and core singletons (single-Pod workloads
+  of `kubernetesCorePriorityClass`) reboot first, and nodes waiting for their
+  turn carry a `PreferNoSchedule` taint so evicted Pods prefer nodes that
+  already rebooted. It prints
   the plan first; `--dry-run` stops there, and a run needs a confirmation on a
   terminal or `--yes`. With `--needed`, hosts whose booted kernel, initrd,
   kernel modules and kernel parameters match their current and next-boot

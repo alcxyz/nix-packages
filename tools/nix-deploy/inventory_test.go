@@ -41,6 +41,7 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	fields["serialReadyTimeoutSeconds"] = 30.0
 	fields["kubernetesNodes"] = []any{"node"}
 	fields["kubernetesContext"] = "admin@lab"
+	fields["kubernetesCorePriorityClass"] = "core-infra"
 	inv, err := parseInventory(encode(t, fields))
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +64,9 @@ func TestParseInventoryAcceptsValidDocument(t *testing.T) {
 	}
 	if inv.KubernetesContext != "admin@lab" {
 		t.Errorf("kubernetesContext not loaded: %q", inv.KubernetesContext)
+	}
+	if inv.KubernetesCorePriorityClass != "core-infra" {
+		t.Errorf("kubernetesCorePriorityClass not loaded: %q", inv.KubernetesCorePriorityClass)
 	}
 }
 
@@ -147,6 +151,11 @@ func TestParseInventoryRejects(t *testing.T) {
 		{"Kubernetes context like an option", func(f map[string]any) { f["kubernetesContext"] = "-x" }, "does not satisfy"},
 		{"Kubernetes context not a string", func(f map[string]any) { f["kubernetesContext"] = 1.0 }, "does not satisfy"},
 		{"null Kubernetes context", func(f map[string]any) { f["kubernetesContext"] = nil }, "does not satisfy"},
+		{"empty core priority class", func(f map[string]any) { f["kubernetesCorePriorityClass"] = "" }, "does not satisfy"},
+		{"core priority class with capitals", func(f map[string]any) { f["kubernetesCorePriorityClass"] = "Core" }, "does not satisfy"},
+		{"core priority class like an option", func(f map[string]any) { f["kubernetesCorePriorityClass"] = "-core" }, "does not satisfy"},
+		{"core priority class too long", func(f map[string]any) { f["kubernetesCorePriorityClass"] = strings.Repeat("a", 254) }, "does not satisfy"},
+		{"core priority class not a string", func(f map[string]any) { f["kubernetesCorePriorityClass"] = []any{"core"} }, "does not satisfy"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

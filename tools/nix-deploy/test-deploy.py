@@ -204,12 +204,16 @@ elif name == "ready-check":
         sys.exit(1)
 elif name == "kubectl":
     # nixfleet reboot's reads: the hosts in MOCK_NODES are the cluster's
-    # nodes, and no database primaries run on them.
+    # nodes, no database primaries run on them, and the first runs a core
+    # singleton.
     if args[:2] == ["get", "nodes"]:
         nodes = [n for n in os.environ.get("MOCK_NODES", "").split(",") if n]
         print(json.dumps({"items": [{"metadata": {"name": n}, "spec": {}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}} for n in nodes]}))
-    elif args[:2] == ["get", "pods"] and "cnpg.io/instanceRole=primary" in args:
-        print(json.dumps({"items": []}))
+    elif args == ["get", "pods", "-A", "-o", "json", "--request-timeout=10s"]:
+        nodes = [n for n in os.environ.get("MOCK_NODES", "").split(",") if n]
+        print(json.dumps({"items": [{
+            "metadata": {"namespace": "platform", "name": "forge-0", "ownerReferences": [{"kind": "StatefulSet", "name": "forge", "controller": True}]},
+            "spec": {"nodeName": n, "priorityClassName": "core"}, "status": {"phase": "Running"}} for n in nodes[:1]]}))
     else:
         sys.exit(1)
 elif name == "nixos-rebuild":
@@ -942,6 +946,9 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         {"kubernetesContext": ""},
         {"kubernetesContext": "-x"},
         {"kubernetesContext": None},
+        {"kubernetesCorePriorityClass": ""},
+        {"kubernetesCorePriorityClass": "Core"},
+        {"kubernetesCorePriorityClass": None},
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
@@ -1022,14 +1029,15 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     (kube / "kubectl").write_text("#!" + sys.executable + "\n" + MOCK)
     (kube / "kubectl").chmod(0o755)
     fleet = root / "fleet.json"
-    fleet.write_text(json.dumps({**HOST_DATA, "kubernetesNodes": ["node"]}))
+    fleet.write_text(json.dumps({**HOST_DATA, "kubernetesNodes": ["node"], "kubernetesCorePriorityClass": "core"}))
     cluster = {"PATH": f"{kube}:{commands}", "MOCK_NODES": "node"}
     calls, result = invoke("nixfleet", "reboot", "--config", str(fleet), "--all", "--dry-run", **cluster)
-    assert "group node:\n  1. node: Kubernetes node with 0 database primaries, runners forgejo-actions-runner.service\n" in result.stdout, result.stdout
+    assert "group node:\n  1. node: Kubernetes node with 0 database primaries and core singletons platform/forge, runners forgejo-actions-runner.service\n" in result.stdout, result.stdout
     assert "group solo:\n  1. solo: plain host, runners forgejo-actions-runner.service\n" in result.stdout, result.stdout
     assert "not selected: xyz: the operator host and this machine" in result.stdout and "dry run: nothing was changed" in result.stdout
     assert not reboots(calls) and all(c[0] in {"hostname", "ssh", "kubectl"} for c in calls), calls
-    assert ["kubectl", "get", "pods", "-A", "-l", "cnpg.io/instanceRole=primary", "-o", "json", "--request-timeout=10s"] in calls
+    assert ["kubectl", "get", "pods", "-A", "-o", "json", "--request-timeout=10s"] in calls
+    assert not [c for c in calls if c[:2] == ["kubectl", "taint"]], calls
     calls, result = invoke("nixfleet", "reboot", "--config", str(fleet), "solo", status=2, **cluster)
     assert "pass --yes" in result.stderr and not reboots(calls), (result.stdout, result.stderr, calls)
     # Without kubernetesNodes the cluster's node is refused, and without the
@@ -1060,4 +1068,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     _, result = invoke("nixfleet", "status", "--config", str(config), "nope", status=2)
     assert "unknown host 'nope'" in result.stderr
 
-print("Deployment contract: 122 mocked CLI cases and 31 invalid inventories passed, and 26 nixfleet dispatch, reboot and status cases; no deployment commands executed")
+print("Deployment contract: 122 mocked CLI cases and 34 invalid inventories passed, and 26 nixfleet dispatch, reboot and status cases; no deployment commands executed")

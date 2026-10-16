@@ -35,6 +35,10 @@ type inventory struct {
 	// KubernetesContext is the kubeconfig context of their cluster; empty
 	// uses the current context.
 	KubernetesContext string
+	// KubernetesCorePriorityClass marks the cluster's core services: nixfleet
+	// reboot counts their single-instance Pods per node and reboots nodes
+	// that hold fewer of them first. Empty counts none.
+	KubernetesCorePriorityClass string
 }
 
 // serialGroup is a set of hosts that must not switch together, such as the
@@ -55,6 +59,9 @@ var (
 	safeName     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	safeEndpoint = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
 	validColor   = regexp.MustCompile(`^[0-9]{1,3};[0-9]{1,3};[0-9]{1,3}$`)
+	// kubernetesName is a lowercase DNS subdomain, the form of most
+	// Kubernetes object names.
+	kubernetesName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 )
 
 var (
@@ -179,6 +186,10 @@ func validateInventory(fields map[string]json.RawMessage) (*inventory, bool) {
 	}
 	if raw, present := fields["kubernetesContext"]; present {
 		check(json.Unmarshal(raw, &inv.KubernetesContext) == nil && isString(raw) && k8snode.ValidContext(inv.KubernetesContext))
+	}
+	if raw, present := fields["kubernetesCorePriorityClass"]; present {
+		name := &inv.KubernetesCorePriorityClass
+		check(json.Unmarshal(raw, name) == nil && isString(raw) && len(*name) <= 253 && kubernetesName.MatchString(*name))
 	}
 
 	// serialSystemHosts, serialReadyCommand and serialReadyTimeoutSeconds

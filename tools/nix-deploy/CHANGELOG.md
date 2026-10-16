@@ -9,6 +9,24 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.13.0 (2026-10-16)
+
+- New optional inventory field `kubernetesCorePriorityClass`: the
+  PriorityClass of the cluster's core services. `nixfleet reboot` counts the
+  Pods of that class that are the only Pod of their workload (core
+  singletons; not those of a DaemonSet, a Job or a node) on each node, lists them in the plan, and reboots nodes holding
+  fewer primaries and core singletons first (ADR-0010 amendment). It reads
+  the cluster's Pods for this; a group with nodes fails when they cannot be
+  read.
+- With two or more nodes to reboot, each waits for its turn with the
+  `nixfleet/reboot-pending:PreferNoSchedule` taint, so Pods a drain evicts
+  prefer nodes that already rebooted. The taint comes off as the node's turn
+  ends, or at the end of the run when that failed, and a run that reboots a
+  node removes every mark it does not set. A run that cannot set it warns
+  and goes on.
+- A primary switchover (also of `k8s-node-power`) prefers a replica on a node
+  without that taint.
+
 ## 0.12.0 (2026-10-16)
 
 - New optional inventory field `kubernetesContext`: the kubeconfig context of

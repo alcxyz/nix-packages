@@ -155,7 +155,9 @@ func (o *Operation) waitForCNPGHealth() error {
 
 // planSwitchovers finds every cluster whose primary runs on the node and
 // the healthy replica, on a surviving Ready, schedulable stable node, that
-// would take over. Candidates are taken in name order.
+// would take over. Candidates on nodes without RebootPendingTaint come
+// first, so a fleet reboot moves a primary to a node that already rebooted;
+// otherwise they are taken in name order.
 func planSwitchovers(target string, clusters []cnpgCluster, pods []pod, nodes []node) []switchover {
 	index := podIndex(pods)
 	nodeIndex := map[string]node{}
@@ -191,6 +193,11 @@ func planSwitchovers(target string, clusters []cnpgCluster, pods []pod, nodes []
 			candidates = append(candidates, p)
 		}
 		sort.Slice(candidates, func(i, j int) bool {
+			pendingI := rebootPending(nodeIndex[candidates[i].Spec.NodeName])
+			pendingJ := rebootPending(nodeIndex[candidates[j].Spec.NodeName])
+			if pendingI != pendingJ {
+				return pendingJ
+			}
 			return candidates[i].Metadata.Name < candidates[j].Metadata.Name
 		})
 		s := switchover{namespace: c.Metadata.Namespace, cluster: c.Metadata.Name, primary: primary}

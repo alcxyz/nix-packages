@@ -447,6 +447,21 @@ func TestCNPGPrimarySwitchedBeforeCordon(t *testing.T) {
 	requireOrder(t, f, `^kubectl cnpg promote -n default db db-2$`, `^kubectl cordon server-a$`)
 }
 
+// A fleet reboot marks the nodes it has still to reboot; a primary moves to
+// a replica on a node without the mark, though another comes first by name.
+func TestCNPGPrefersRebootedNode(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	set(f.clusters[0], float64(3), "spec", "instances")
+	set(f.clusters[0], float64(3), "status", "readyInstances")
+	set(f.clusters[0], []any{"db-1", "db-2", "db-3"}, "status", "instancesStatus", "healthy")
+	f.pods = append(f.pods, readyPod(t, "default", "db-3", "server-c", "Cluster", "db",
+		`{"cnpg.io/cluster": "db", "cnpg.io/podRole": "instance", "cnpg.io/instanceRole": "replica"}`))
+	set(f.nodes[1], []any{map[string]any{"key": RebootPendingTaint, "value": "true", "effect": "PreferNoSchedule"}}, "spec", "taints")
+	output := run(t, f, "reboot")
+	mustContain(t, output, "switching default/db primary from db-1 to db-3 on server-c")
+	requireOrder(t, f, `^kubectl cnpg promote -n default db db-3$`, `^kubectl cordon server-a$`)
+}
+
 func TestCNPGWithoutCandidateStopsBeforeCordon(t *testing.T) {
 	f := withDatabase(t, newHealthyCluster(t))
 	set(f.clusters[0], []any{"db-1"}, "status", "instancesStatus", "healthy")

@@ -75,10 +75,25 @@ type rebootFake struct {
 	lock    sync.Mutex
 	hosts   map[string]*fakeHost
 	cluster bool
-	// primaries counts the database primaries per node; primariesFail makes
-	// their read fail.
-	primaries     map[string]int
-	primariesFail bool
+	// primaries counts the database primaries per node; podsFail makes the
+	// Pod list fail.
+	primaries map[string]int
+	podsFail  bool
+	// pods are more Pods the cluster lists, as JSON.
+	pods []string
+	// marked are the nodes with the reboot mark, marks the mark and unmark
+	// commands in order, and markedAt the marked nodes as each node reboot
+	// starts; taintFails fails every mark and unmark.
+	marked     map[string]bool
+	marks      []string
+	markedAt   map[string][]string
+	taintFails bool
+	// unmarkFails fails the next unmark of each node it holds, markFails
+	// every mark, and dropMark removes the mark of its value by hand as the
+	// node of its key reboots.
+	unmarkFails map[string]bool
+	markFails   map[string]bool
+	dropMark    map[string]string
 	// events records every change and ready check, commands every remote
 	// command that changes a host.
 	events   []string
@@ -112,7 +127,9 @@ func newRebootFake(t *testing.T) *rebootFake {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &rebootFake{t: t, self: "op", inv: inv, cluster: true, hosts: map[string]*fakeHost{}, busy: map[string]string{}}
+	f := &rebootFake{t: t, self: "op", inv: inv, cluster: true, hosts: map[string]*fakeHost{}, busy: map[string]string{},
+		marked: map[string]bool{}, markedAt: map[string][]string{}, unmarkFails: map[string]bool{},
+		markFails: map[string]bool{}, dropMark: map[string]string{}}
 	for _, host := range inv.KnownHosts {
 		f.hosts[host] = &fakeHost{verdict: "yes", after: "no", node: strings.HasPrefix(host, "server-")}
 	}
@@ -148,24 +165,56 @@ func (f *rebootFake) statusRun(timeout time.Duration, argv ...string) (string, s
 		var items []string
 		for _, host := range f.inv.KnownHosts {
 			if h := f.hosts[host]; h.node {
-				items = append(items, fmt.Sprintf(`{"metadata": {"name": %q}, "spec": {"unschedulable": %t}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}}`, host, h.cordoned))
+				taints := "[]"
+				if f.marked[host] {
+					taints = `[{"key": "` + k8snode.RebootPendingTaint + `", "value": "true", "effect": "PreferNoSchedule"}]`
+				}
+				items = append(items, fmt.Sprintf(`{"metadata": {"name": %q}, "spec": {"unschedulable": %t, "taints": %s}, "status": {"conditions": [{"type": "Ready", "status": "True"}]}}`, host, h.cordoned, taints))
 			}
 		}
 		return `{"items": [` + strings.Join(items, ",") + `]}`, "", 0
-	case slices.Equal(argv[:3], []string{"kubectl", "get", "pods"}):
-		if !slices.Contains(argv, "cnpg.io/instanceRole=primary") {
-			return "", "unexpected read\n", 97
-		}
-		if f.primariesFail {
+	case slices.Equal(argv, []string{"kubectl", "get", "pods", "-A", "-o", "json", "--request-timeout=10s"}):
+		if f.podsFail {
 			return "", "error: the server is currently unable to handle the request\n", 1
 		}
-		var items []string
+		items := slices.Clone(f.pods)
 		for node, count := range f.primaries {
-			for range count {
-				items = append(items, fmt.Sprintf(`{"spec": {"nodeName": %q}}`, node))
+			for i := range count {
+				items = append(items, fmt.Sprintf(`{"metadata": {"namespace": "db", "name": "db-%s-%d", "labels": {"cnpg.io/instanceRole": "primary"}},
+				  "spec": {"nodeName": %q}, "status": {"phase": "Running"}}`, node, i, node))
 			}
 		}
 		return `{"items": [` + strings.Join(items, ",") + `]}`, "", 0
+	case slices.Equal(argv[:3], []string{"kubectl", "taint", "nodes"}) && len(argv) >= 5:
+		node, change := argv[3], argv[4]
+		if f.hosts[node] == nil || !f.hosts[node].node {
+			return "", "Error from server (NotFound): nodes \"" + node + "\" not found\n", 1
+		}
+		if f.taintFails {
+			return "", "error: nodes is forbidden\n", 1
+		}
+		switch {
+		case change == k8snode.RebootPendingTaint+"=true:PreferNoSchedule" && slices.Equal(argv[5:], []string{"--overwrite"}):
+			if f.markFails[node] {
+				return "", "error: the server is currently unable to handle the request\n", 1
+			}
+			f.marked[node] = true
+			f.marks = append(f.marks, "mark "+node)
+		case change == k8snode.RebootPendingTaint+":PreferNoSchedule-" && len(argv) == 5:
+			if f.unmarkFails[node] {
+				delete(f.unmarkFails, node)
+				// Denied, in words that also end in "not found".
+				return "", "Error from server (Forbidden): nodes \"" + node + "\" is forbidden: RBAC: clusterrole.rbac.authorization.k8s.io \"node-maintainer\" not found\n", 1
+			}
+			if !f.marked[node] {
+				return "", "error: taint \"" + k8snode.RebootPendingTaint + ":PreferNoSchedule\" not found\n", 1
+			}
+			delete(f.marked, node)
+			f.marks = append(f.marks, "unmark "+node)
+		default:
+			return "", "unexpected taint\n", 97
+		}
+		return "node/" + node + " modified\n", "", 0
 	case argv[0] == "ssh" && strings.Contains(argv[len(argv)-1], runnerScript):
 		h := f.hosts[endpointHost(argv[len(argv)-2])]
 		if h == nil {
@@ -328,6 +377,13 @@ func (f *rebootFake) nodeReboot(ctx context.Context, opts k8snode.Options, runne
 	}
 	f.nodeBusy = true
 	f.nodeOptions = append(f.nodeOptions, opts)
+	var marked []string
+	for node := range f.marked {
+		marked = append(marked, node)
+	}
+	slices.Sort(marked)
+	f.markedAt[opts.Node] = marked
+	delete(f.marked, f.dropMark[opts.Node])
 	f.lock.Unlock()
 	defer func() {
 		f.lock.Lock()
@@ -527,6 +583,213 @@ func TestRebootPlanGroupsAndOrder(t *testing.T) {
 	}
 }
 
+// corePod is a running Pod as the fake cluster lists it, owned by the
+// controller kind/name; a ReplicaSet's name ends in the template hash 5f.
+func corePod(namespace, name, node, class, owner string) string {
+	kind, ownerName, _ := strings.Cut(owner, "/")
+	return fmt.Sprintf(`{"metadata": {"namespace": %q, "name": %q, "labels": {"pod-template-hash": "5f"},
+	  "ownerReferences": [{"kind": "Pod", "name": "not-the-controller"}, {"kind": %q, "name": %q, "controller": true}]},
+	  "spec": {"nodeName": %q, "priorityClassName": %q}, "status": {"phase": "Running"}}`, namespace, name, kind, ownerName, node, class)
+}
+
+// Core singletons count like primaries: a node that holds fewer of both
+// reboots first. Pods of a workload with more Pods, a DaemonSet, another
+// class or no live Pod do not count.
+func TestRebootPlanCoreSingletons(t *testing.T) {
+	f := newRebootFake(t)
+	f.inv.KubernetesCorePriorityClass = "core"
+	f.primaries = map[string]int{"server-b": 1, "server-c": 1}
+	f.pods = []string{
+		corePod("forge", "forge-5f-x", "server-a", "core", "ReplicaSet/forge-5f"),
+		corePod("auth", "auth-0", "server-a", "core", "StatefulSet/auth"),
+		corePod("edge", "edge-5f-a", "server-a", "core", "ReplicaSet/edge-5f"),
+		corePod("edge", "edge-5f-b", "server-b", "core", "ReplicaSet/edge-5f"),
+		corePod("edge", "agent-b", "server-b", "core", "DaemonSet/agent"),
+		corePod("apps", "web-5f-c", "server-b", "other", "ReplicaSet/web-5f"),
+		`{"metadata": {"namespace": "bare", "name": "solo"}, "spec": {"nodeName": "server-c", "priorityClassName": "core"}, "status": {"phase": "Running"}}`,
+		`{"metadata": {"namespace": "job", "name": "done"}, "spec": {"nodeName": "server-b", "priorityClassName": "core"}, "status": {"phase": "Succeeded"}}`,
+		`{"metadata": {"namespace": "job", "name": "going", "deletionTimestamp": "2026-01-01T00:00:00Z"}, "spec": {"nodeName": "server-b", "priorityClassName": "core"}, "status": {"phase": "Running"}}`,
+	}
+	r, hosts := f.fleet("--all")
+	p := r.plan(hosts)
+	if got := memberNames(p.groups[0]); !slices.Equal(got, []string{"server-b", "server-a", "server-c"}) {
+		t.Errorf("serial-1 order: %v", got)
+	}
+	r.printPlan(p)
+	for _, want := range []string{
+		"  1. server-b: Kubernetes node with 1 database primaries and no core singletons, ready gate\n",
+		"  2. server-a: Kubernetes node with 0 database primaries and core singletons auth/auth forge/forge, ready gate\n",
+		"  3. server-c: Kubernetes node with 1 database primaries and core singletons bare/solo, ready gate\n",
+	} {
+		if !strings.Contains(f.out.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, f.out.String())
+		}
+	}
+}
+
+// Nodes waiting for their reboot carry the mark until their turn ends;
+// other nodes lose a mark an earlier run left.
+func TestRebootMarksPendingNodes(t *testing.T) {
+	f := newRebootFake(t)
+	f.primaries = map[string]int{"server-a": 1}
+	f.marked["server-d"] = true
+	if status := f.run("server-a", "server-b", "server-c", "--yes"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	want := []string{"unmark server-d", "mark server-b", "mark server-c", "mark server-a",
+		"unmark server-b", "unmark server-c", "unmark server-a"}
+	if !slices.Equal(f.marks, want) {
+		t.Errorf("marks: %v", f.marks)
+	}
+	for node, marked := range map[string][]string{
+		"server-b": {"server-a", "server-b", "server-c"},
+		"server-c": {"server-a", "server-c"},
+		"server-a": {"server-a"},
+	} {
+		if !slices.Equal(f.markedAt[node], marked) {
+			t.Errorf("marked as %s reboots: %v", node, f.markedAt[node])
+		}
+	}
+	if !strings.Contains(f.out.String(), "plan: ") || !strings.Contains(f.out.String(), "scheduling: server-b server-c server-a wait for their turn") {
+		t.Errorf("no scheduling line in:\n%s", f.out.String())
+	}
+}
+
+// A failure leaves the failed node cordoned, and a node that never got its
+// turn without the mark.
+func TestRebootClearsMarksAfterFailure(t *testing.T) {
+	f := newRebootFake(t)
+	f.hosts["server-b"].nodeFails = true
+	if status := f.run("server-a", "server-b", "server-c", "--yes"); status != 1 {
+		t.Fatalf("status %d", status)
+	}
+	f.expectOutcomes(map[string]string{"server-a": "rebooted", "server-b": "failed", "server-c": "not started"})
+	if len(f.marked) != 0 {
+		t.Errorf("still marked: %v (%v)", f.marked, f.marks)
+	}
+	if got := f.marks[len(f.marks)-1]; got != "unmark server-c" {
+		t.Errorf("marks: %v", f.marks)
+	}
+}
+
+// The marks only steer the scheduler: a run goes on without them.
+func TestRebootGoesOnWithoutMarks(t *testing.T) {
+	f := newRebootFake(t)
+	f.taintFails = true
+	if status := f.run("server-a", "server-b", "--yes"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	f.expectOutcomes(map[string]string{"server-a": "rebooted", "server-b": "rebooted"})
+	if !strings.Contains(f.out.String(), "warning: cannot mark server-a as waiting for its reboot: error: nodes is forbidden\n") {
+		t.Errorf("no warning in:\n%s", f.out.String())
+	}
+}
+
+// A single node, a check and a dry run set no marks, and only a dry run
+// says it would; a single node still clears a mark left on another node.
+func TestRebootMarksNeedTwoNodes(t *testing.T) {
+	for _, args := range [][]string{
+		{"server-a", "host-a", "--yes"},
+		{"server-a", "server-b", "--check-only"},
+		{"server-a", "server-b", "--dry-run"},
+	} {
+		f := newRebootFake(t)
+		if status := f.run(args...); status != 0 {
+			t.Fatalf("%v: status %d:\n%s", args, status, f.out.String())
+		}
+		if len(f.marks) != 0 || len(f.markedAt["server-a"]) != 0 {
+			t.Errorf("%v: marks %v, marked at reboot %v", args, f.marks, f.markedAt)
+		}
+		if strings.Contains(f.out.String(), "scheduling:") != slices.Contains(args, "--dry-run") {
+			t.Errorf("%v: scheduling line in or missing from:\n%s", args, f.out.String())
+		}
+	}
+	// A run that reboots a node clears every mark it does not set, on
+	// another node or on the one it reboots; a run that reboots no node
+	// changes no mark.
+	for _, c := range []struct {
+		args   []string
+		marked string
+		marks  []string
+	}{
+		{[]string{"server-a", "--yes"}, "server-b", []string{"unmark server-b"}},
+		{[]string{"server-a", "--yes"}, "server-a", []string{"unmark server-a"}},
+		{[]string{"host-a", "--yes"}, "server-b", nil},
+	} {
+		f := newRebootFake(t)
+		f.marked[c.marked] = true
+		if status := f.run(c.args...); status != 0 {
+			t.Fatalf("%v: status %d", c.args, status)
+		}
+		if !slices.Equal(f.marks, c.marks) || f.marked[c.marked] != (c.marks == nil) {
+			t.Errorf("%v with %s marked: marks %v, still marked %v", c.args, c.marked, f.marks, f.marked)
+		}
+	}
+}
+
+// A mark an earlier run left on a node the run marks again is removed at
+// the end of the node's turn even when refreshing it failed.
+func TestRebootTracksFoundMarks(t *testing.T) {
+	f := newRebootFake(t)
+	f.marked["server-a"] = true
+	f.markFails["server-a"] = true
+	if status := f.run("server-a", "server-b", "--yes"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	if len(f.marked) != 0 || !slices.Contains(f.marks, "unmark server-a") {
+		t.Errorf("marks %v, still marked %v", f.marks, f.marked)
+	}
+}
+
+// A mark removed by hand during the run counts as removed.
+func TestRebootMarkGoneCountsAsRemoved(t *testing.T) {
+	f := newRebootFake(t)
+	f.dropMark["server-a"] = "server-b"
+	if status := f.run("server-a", "server-b", "--yes"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	if strings.Contains(f.out.String(), "warning:") || len(f.marked) != 0 {
+		t.Errorf("marks %v, still marked %v, output:\n%s", f.marks, f.marked, f.out.String())
+	}
+}
+
+// An unmark that fails is tried again at the end of the run.
+func TestRebootRetriesFailedUnmark(t *testing.T) {
+	f := newRebootFake(t)
+	f.unmarkFails["server-a"] = true
+	if status := f.run("server-a", "server-b", "--yes"); status != 0 {
+		t.Fatalf("status %d:\n%s", status, f.out.String())
+	}
+	if !slices.Equal(f.marks, []string{"mark server-a", "mark server-b", "unmark server-b", "unmark server-a"}) || len(f.marked) != 0 {
+		t.Errorf("marks %v, still marked %v", f.marks, f.marked)
+	}
+	if !strings.Contains(f.out.String(), "cannot remove the reboot mark from server-a yet") {
+		t.Errorf("no warning in:\n%s", f.out.String())
+	}
+}
+
+// Workloads of different kinds count apart, even with the same name; the
+// Pods of a Job or a node (static Pods) never move with a node reboot.
+func TestRebootCoreWorkloadKinds(t *testing.T) {
+	f := newRebootFake(t)
+	f.inv.KubernetesCorePriorityClass = "core"
+	f.pods = []string{
+		corePod("apps", "api-5f-x", "server-a", "core", "ReplicaSet/api-5f"),
+		corePod("apps", "api-0", "server-b", "core", "StatefulSet/api"),
+		corePod("apps", "backup-1-x", "server-c", "core", "Job/backup-1"),
+		corePod("kube-system", "etcd-server-c", "server-c", "core", "Node/server-c"),
+	}
+	r, hosts := f.fleet("server-a", "server-b", "server-c")
+	p := r.plan(hosts)
+	core := map[string][]string{}
+	for _, target := range p.groups[0].members {
+		core[target.host] = target.core
+	}
+	if !slices.Equal(core["server-a"], []string{"apps/api"}) || !slices.Equal(core["server-b"], []string{"apps/api"}) || len(core["server-c"]) != 0 {
+		t.Errorf("core singletons: %v", core)
+	}
+}
+
 // A serial group's members keep the group's order, whatever order they are
 // named in.
 func TestRebootPlanNamedHosts(t *testing.T) {
@@ -633,10 +896,10 @@ func TestRebootPlanFailures(t *testing.T) {
 			[]string{"server-a", "server-b", "server-c", "host-b"},
 			map[string]string{"server-a": "not started", "server-b": "not started", "server-c": "failed", "host-b": "rebooted"},
 			"server-c", "unreachable: ssh: connect to host port 22: No route to host"},
-		{"primaries not read", func(f *rebootFake) { f.primariesFail = true },
+		{"pods not read", func(f *rebootFake) { f.podsFail = true },
 			[]string{"server-a", "dns-a"},
 			map[string]string{"server-a": "failed", "dns-a": "rebooted"},
-			"server-a", "the database primaries cannot be read: error: the server is currently unable"},
+			"server-a", "the cluster's Pods cannot be read: error: the server is currently unable"},
 		{"node missing from the cluster", func(f *rebootFake) { f.hosts["server-d"].node = false },
 			[]string{"server-d", "host-b"},
 			map[string]string{"server-d": "failed", "host-b": "rebooted"},
