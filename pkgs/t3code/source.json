@@ -1,7 +1,7 @@
 {
-  "version": "0.1.1-nightly.20261016.3190",
-  "revision": "9b150f791b8d3c8b284c3c701d2c1ef8aa14df45",
-  "hash": "sha256-F4wtsef12vR7aTk0pX+diQn3NHSw9K4dygfqW/W3P30=",
+  "version": "0.1.1-nightly.20261016.3203",
+  "revision": "e3b35d1b2440b104f0bc2e357377c348121234dd",
+  "hash": "sha256-ut5nXbiRp2rdbKZkef7fIkRsu0dAGb/LFKkdg1Zylws=",
   "cargoHash": "sha256-5cmG2daM1bVOA23gjjoalbx0fEL1hmqV6WZov0sUZp8=",
   "pnpmDepsHash": "sha256-XRgN5NIC94VsLIhoMsMj8ocLtxiVfLFvG+nlK1spqmI="
 }
