@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -483,6 +485,14 @@ func cmdSync(forgejoURL, forgejoUser, forgejoSSHHost string, scanPaths []string)
 
 	mirrorNames := make(map[string]string) // repo name → https clone url
 	for _, r := range mirrors {
+		// Only the user's own repositories get push URLs (the search can
+		// return other owners'), and a pull mirror rejects pushes.
+		if r.FullName != "" && !strings.EqualFold(r.FullName, forgejoUser+"/"+r.Name) {
+			continue
+		}
+		if r.Mirror {
+			continue
+		}
 		mirrorNames[r.Name] = r.CloneURL
 	}
 
@@ -528,18 +538,51 @@ func cmdPrimary(forgejoURL, forgejoUser, forgejoSSHHost string, scanPaths []stri
 
 	repos := findLocalRepos(scanPaths)
 	forgejoRepos := make(map[string]bool)
+	pullMirrors := make(map[string]forgejoRepo)
+	unattributedMirrors := make(map[string]bool)
 	remoteRepos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
 	if err != nil {
 		return fmt.Errorf("fetching Forgejo repos: %w", err)
 	}
 	for _, r := range remoteRepos {
+		// The search can return other owners' repositories, which say nothing
+		// about the user's checkouts. A mirror with no full name cannot be
+		// attributed, so its name is left alone.
+		own := strings.EqualFold(r.FullName, forgejoUser+"/"+r.Name)
+		switch {
+		case r.FullName != "" && !own:
+			continue
+		case r.Mirror && own:
+			pullMirrors[r.Name] = r
+		case r.Mirror:
+			unattributedMirrors[r.Name] = true
+		}
 		forgejoRepos[r.Name] = true
 	}
 
 	changedCount := 0
 	for _, repoPath := range repos {
 		name := inferRepoName(repoPath)
-		if githubPrimaryRepos[strings.ToLower(name)] {
+		// A pull mirror is read-only and never the source of truth, so it is
+		// never made origin, and an origin left pointing at one is moved back
+		// to the mirror's GitHub source.
+		if mirror, ok := pullMirrors[name]; ok {
+			result, err := restoreMirrorSourceOrigin(repoPath, mirror, forgejoURL, forgejoSSHHost, forgejoUser)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  %s: error: %v\n", name, err)
+			}
+			if result.pushURLsRemoved {
+				fmt.Printf("  %s: removed push URLs for its Forgejo pull mirror\n", name)
+			}
+			if result.originMoved {
+				fmt.Printf("  %s: set the GitHub source of its Forgejo pull mirror as origin\n", name)
+			}
+			if result.pushURLsRemoved || result.originMoved {
+				changedCount++
+			}
+			continue
+		}
+		if unattributedMirrors[name] || githubPrimaryRepos[strings.ToLower(name)] {
 			continue
 		}
 		if !forgejoRepos[name] {
@@ -1787,6 +1830,159 @@ func ensureForgejoPrimary(repoPath, forgejoSSHHost, forgejoUser, repoName string
 	}
 
 	return changed, nil
+}
+
+// mirrorRepair records what restoreMirrorSourceOrigin changed.
+type mirrorRepair struct {
+	pushURLsRemoved bool
+	originMoved     bool
+}
+
+// restoreMirrorSourceOrigin points origin at the GitHub source of a Forgejo
+// pull mirror when origin currently points at that mirror, and drops push URLs
+// for the mirror from origin, since a pull mirror rejects pushes. Other
+// remotes, branch upstreams and push defaults are left alone. Remote addresses
+// may carry credentials, so none is passed to git or printed.
+func restoreMirrorSourceOrigin(repoPath string, mirror forgejoRepo, forgejoURL, forgejoSSHHost, forgejoUser string) (mirrorRepair, error) {
+	isMirror := func(address string) bool {
+		return remoteMatchesForgejo(address, forgejoURL, forgejoSSHHost) &&
+			strings.EqualFold(remoteRepoPath(address), forgejoUser+"/"+mirror.Name)
+	}
+	var result mirrorRepair
+	// Remove only the mirror's push URLs from the repository's own config,
+	// in place and by a pattern without credentials, so the others stay. A
+	// failure here does not stop the origin repair below.
+	var pushErr error
+	patterns := make(map[string]bool)
+	for _, pushURL := range getLocalPushURLs(repoPath) {
+		if !isMirror(pushURL) {
+			continue
+		}
+		pattern := credentialFreePattern(pushURL)
+		if pattern == "" || patterns[pattern] {
+			continue
+		}
+		patterns[pattern] = true
+		if err := gitCmd(repoPath, "config", "--local", "--unset-all", "remote.origin.pushurl", pattern); err != nil {
+			if pushErr == nil {
+				pushErr = fmt.Errorf("removing push URLs for the Forgejo pull mirror: %w", err)
+			}
+			continue
+		}
+		result.pushURLsRemoved = true
+	}
+	// A push URL for the mirror set outside the repository's config (an
+	// include, global or system config) is reported for removal there.
+	if pushErr == nil {
+		for _, pushURL := range getExplicitPushURLs(repoPath) {
+			if isMirror(pushURL) {
+				pushErr = fmt.Errorf("a push URL for the Forgejo pull mirror is set outside the repository's config; find it with `git config --show-origin --get-all remote.origin.pushurl` and remove it there")
+				break
+			}
+		}
+	}
+
+	originURL := getGitOriginURL(repoPath)
+	if originURL == "" || !isMirror(originURL) {
+		return result, pushErr
+	}
+	source := githubSSHURL(mirror.OriginalURL)
+	if source == "" {
+		return result, errors.Join(pushErr, fmt.Errorf("origin points at a Forgejo pull mirror whose source is not on GitHub"))
+	}
+	if err := gitCmd(repoPath, "remote", "set-url", "origin", source); err != nil {
+		return result, errors.Join(pushErr, err)
+	}
+	result.originMoved = true
+	// Git uses every configured origin URL, so one for the mirror set outside
+	// the repository's config still applies. The stored values are read, not
+	// the rewritten ones git remote get-url returns.
+	for _, originURL := range getConfigValues(repoPath, "remote.origin.url") {
+		if isMirror(originURL) {
+			return result, errors.Join(pushErr, fmt.Errorf("origin's URL for the Forgejo pull mirror is also set outside the repository's config; find it with `git config --show-origin --get-all remote.origin.url` and remove it there"))
+		}
+	}
+	return result, pushErr
+}
+
+// credentialFreePattern returns a git value pattern matching the remote
+// address with any user information, built from its scheme, host and path
+// only, or "" when the address cannot be parsed.
+func credentialFreePattern(address string) string {
+	if scheme, rest, ok := strings.Cut(address, "://"); ok {
+		authority, path := rest, ""
+		if slash := strings.Index(rest, "/"); slash >= 0 {
+			authority, path = rest[:slash], rest[slash:]
+		}
+		if at := strings.LastIndex(authority, "@"); at >= 0 {
+			authority = authority[at+1:]
+		}
+		if authority == "" {
+			return ""
+		}
+		return "^" + regexp.QuoteMeta(scheme+"://") + "([^/@]*@)?" + regexp.QuoteMeta(authority+path) + "$"
+	}
+	host, path, ok := strings.Cut(address, ":")
+	if !ok {
+		return ""
+	}
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	return "^([^/@:]*@)?" + regexp.QuoteMeta(host+":"+path) + "$"
+}
+
+// getLocalPushURLs returns origin's push URLs from the repository's own
+// config, the only ones forge-mirror can remove there.
+func getLocalPushURLs(repoPath string) []string {
+	return getConfigValues(repoPath, "--local", "remote.origin.pushurl")
+}
+
+// getConfigValues returns every stored value of a git config key, without
+// URL rewrites; leading arguments such as --local select the scope.
+func getConfigValues(repoPath string, args ...string) []string {
+	command := append([]string{"-C", repoPath, "config"}, args[:len(args)-1]...)
+	command = append(command, "--get-all", args[len(args)-1])
+	out, err := exec.Command("git", command...).Output()
+	if err != nil {
+		return nil
+	}
+	var urls []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			urls = append(urls, line)
+		}
+	}
+	return urls
+}
+
+// remoteRepoPath returns the owner/repository path of a Git remote address in
+// any form, without a .git suffix, or "" when it has none.
+func remoteRepoPath(address string) string {
+	var path string
+	if strings.Contains(address, "://") {
+		parsed, err := url.Parse(address)
+		if err != nil {
+			return ""
+		}
+		path = parsed.Path
+	} else {
+		_, path, _ = strings.Cut(address, ":")
+	}
+	return strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+}
+
+// githubSSHURL returns the SSH address of a GitHub repository given in any Git
+// remote form, or "" for any other address. Credentials are dropped.
+func githubSSHURL(address string) string {
+	if !isGitHubHost(remoteHost(address)) {
+		return ""
+	}
+	owner, repo, ok := strings.Cut(remoteRepoPath(address), "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return ""
+	}
+	return fmt.Sprintf("git@github.com:%s/%s.git", owner, repo)
 }
 
 func ensureRemoteURL(repoPath, remoteName, url string) error {

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -229,6 +230,193 @@ func TestPrimaryUsesConfiguredForgejoEndpointAndSSHHost(t *testing.T) {
 	}
 	if got := getGitOriginURL(repoPath); got != "git@ssh.forge.test:forge-user/sample-repo.git" {
 		t.Fatalf("unexpected origin %q", got)
+	}
+}
+
+// initRepo creates a repository under root whose origin has the given fetch
+// URL and push URLs.
+func initRepo(t *testing.T, root, name, origin string, pushURLs ...string) string {
+	t.Helper()
+	repoPath := filepath.Join(root, name)
+	if err := os.Mkdir(repoPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	commands := [][]string{{"init", "-q"}, {"remote", "add", "origin", origin}}
+	for _, pushURL := range pushURLs {
+		commands = append(commands, []string{"config", "--add", "remote.origin.pushurl", pushURL})
+	}
+	for _, args := range commands {
+		if output, err := exec.Command("git", append([]string{"-C", repoPath}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	return repoPath
+}
+
+// forgejoReposServer answers the repository search with the given JSON list.
+func forgejoReposServer(t *testing.T, repos string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			fmt.Fprint(w, `{"data":[]}`)
+			return
+		}
+		fmt.Fprintf(w, `{"data":%s}`, repos)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestPrimaryNeverMakesPullMirrorOriginAndRestoresItsSource(t *testing.T) {
+	isolatedMirrorConfig(t)
+	root := t.TempDir()
+	server := forgejoReposServer(t, `[
+		{"name":"stranded","full_name":"forge-user/stranded","mirror":true,"original_url":"https://github.com/owner/stranded.git"},
+		{"name":"sshsource","full_name":"forge-user/sshsource","mirror":true,"original_url":"ssh://git@ssh.github.com:443/owner/sshsource.git"},
+		{"name":"unlisted","full_name":"forge-user/unlisted","mirror":true,"original_url":"https://github.com/owner/unlisted.git"},
+		{"name":"pushed","full_name":"forge-user/pushed","mirror":true,"original_url":"https://github.com/owner/pushed.git"},
+		{"name":"shared","full_name":"forge-user/shared","mirror":true,"original_url":"https://github.com/owner/shared.git"},
+		{"name":"elsewhere","full_name":"forge-user/elsewhere","mirror":true,"original_url":"https://codeberg.org/owner/elsewhere.git"},
+		{"name":"orgmirror","full_name":"acme/orgmirror","mirror":true,"original_url":"https://github.com/upstream/orgmirror.git"},
+		{"name":"orgmirror","full_name":"forge-user/orgmirror"},
+		{"name":"foreign","full_name":"acme/foreign","mirror":true,"original_url":"https://github.com/upstream/foreign.git"},
+		{"name":"anonymous","mirror":true,"original_url":"https://github.com/owner/anonymous.git"},
+		{"name":"included","full_name":"forge-user/included","mirror":true,"original_url":"https://github.com/owner/included.git"},
+		{"name":"regular","full_name":"forge-user/regular"}
+	]`)
+	repos := map[string]string{
+		// origin left on a pull mirror: moved back to its GitHub source.
+		// A duplicated mirror push URL is removed once and does not stop the
+		// repair.
+		"stranded": initRepo(t, root, "stranded", "git@ssh.forge.test:forge-user/stranded.git",
+			"git@ssh.forge.test:forge-user/stranded.git", "git@ssh.forge.test:forge-user/stranded.git"),
+		"sshsource": initRepo(t, root, "sshsource", server.URL+"/forge-user/sshsource.git"),
+		// A pull mirror that is not on the GitHub-primary list stays on GitHub.
+		"unlisted": initRepo(t, root, "unlisted", "https://github.com/owner/unlisted.git"),
+		// Push URLs for the mirror are dropped; others are kept.
+		"pushed": initRepo(t, root, "pushed", "https://github.com/owner/pushed.git",
+			"git@ssh.forge.test:forge-user/pushed.git", server.URL+"/forge-user/pushed.git",
+			strings.Replace(server.URL, "://", "://user:secret@", 1)+"/forge-user/pushed.git", "git@github.com:owner/pushed.git"),
+		// Another owner's repository with a mirror's name is not the mirror.
+		"shared": initRepo(t, root, "shared", "git@ssh.forge.test:other-org/shared.git"),
+		// A mirror of a non-GitHub source keeps its origin but loses push URLs
+		// for the mirror.
+		"elsewhere": initRepo(t, root, "elsewhere", "git@ssh.forge.test:forge-user/elsewhere.git",
+			"git@ssh.forge.test:forge-user/elsewhere.git"),
+		// Another owner's mirror does not stop the user's own regular
+		// repository of that name from becoming Forgejo-primary.
+		"orgmirror": initRepo(t, root, "orgmirror", "https://github.com/owner/orgmirror.git"),
+		// Another owner's repository says nothing about the user's checkout.
+		"foreign": initRepo(t, root, "foreign", "https://github.com/owner/foreign.git"),
+		// A mirror result without a full name is left alone entirely.
+		"anonymous": initRepo(t, root, "anonymous", "https://github.com/owner/anonymous.git"),
+		// A regular Forgejo repository still becomes Forgejo-primary.
+		"regular": initRepo(t, root, "regular", "https://github.com/owner/regular.git"),
+	}
+	// A push URL for the mirror inherited from an included config file cannot
+	// be removed locally and does not stop the repair.
+	repos["included"] = initRepo(t, root, "included", "git@ssh.forge.test:forge-user/included.git")
+	included := filepath.Join(t.TempDir(), "included.gitconfig")
+	if err := os.WriteFile(included, []byte("[remote \"origin\"]\n\tpushurl = git@ssh.forge.test:forge-user/included.git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", repos["included"], "config", "include.path", included).CombinedOutput(); err != nil {
+		t.Fatalf("git config include.path: %v: %s", err, output)
+	}
+	if err := cmdPrimary(server.URL, "forge-user", "ssh.forge.test", []string{root}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := restoreMirrorSourceOrigin(repos["included"], forgejoRepo{Name: "included"}, server.URL, "ssh.forge.test", "forge-user")
+	if result.pushURLsRemoved || result.originMoved || err == nil || !strings.Contains(err.Error(), "outside the repository's config") || strings.Contains(err.Error(), "forge-user/included") {
+		t.Errorf("included: got %+v, err=%v; want only the inherited push URL reported", result, err)
+	}
+	want := map[string]string{
+		"included":  "git@github.com:owner/included.git",
+		"stranded":  "git@github.com:owner/stranded.git",
+		"sshsource": "git@github.com:owner/sshsource.git",
+		"unlisted":  "https://github.com/owner/unlisted.git",
+		"pushed":    "https://github.com/owner/pushed.git",
+		"shared":    "git@ssh.forge.test:other-org/shared.git",
+		"elsewhere": "git@ssh.forge.test:forge-user/elsewhere.git",
+		"orgmirror": "git@ssh.forge.test:forge-user/orgmirror.git",
+		"foreign":   "https://github.com/owner/foreign.git",
+		"anonymous": "https://github.com/owner/anonymous.git",
+		"regular":   "git@ssh.forge.test:forge-user/regular.git",
+	}
+	for name, expected := range want {
+		if got := getGitOriginURL(repos[name]); got != expected {
+			t.Errorf("%s: origin %q, want %q", name, got, expected)
+		}
+	}
+	if got := strings.Join(getExplicitPushURLs(repos["pushed"]), " "); got != "git@github.com:owner/pushed.git" {
+		t.Errorf("pushed: push URLs %q, want only the GitHub one", got)
+	}
+	if got := getExplicitPushURLs(repos["stranded"]); len(got) != 0 {
+		t.Errorf("stranded: push URLs %q, want none", got)
+	}
+	if got := getExplicitPushURLs(repos["elsewhere"]); len(got) != 0 {
+		t.Errorf("elsewhere: push URLs %q, want none", got)
+	}
+}
+
+func TestSyncAddsNoPushURLForPullMirror(t *testing.T) {
+	isolatedMirrorConfig(t)
+	root := t.TempDir()
+	server := forgejoReposServer(t, `[
+		{"name":"mirrored","full_name":"acme/mirrored","clone_url":"https://forge.test/acme/mirrored.git"},
+		{"name":"mirrored","full_name":"forge-user/mirrored","mirror":true,"clone_url":"https://forge.test/forge-user/mirrored.git"},
+		{"name":"regular","full_name":"forge-user/regular","clone_url":"https://forge.test/forge-user/regular.git"}
+	]`)
+	mirrored := initRepo(t, root, "mirrored", "https://github.com/owner/mirrored.git")
+	regular := initRepo(t, root, "regular", "https://github.com/owner/regular.git")
+	if err := cmdSync(server.URL, "forge-user", "ssh.forge.test", []string{root}); err != nil {
+		t.Fatal(err)
+	}
+	if got := getExplicitPushURLs(mirrored); len(got) != 0 {
+		t.Errorf("pull mirror got push URLs %q", got)
+	}
+	if got := getExplicitPushURLs(regular); len(got) == 0 {
+		t.Error("regular repository got no Forgejo push URL")
+	}
+}
+
+func TestCredentialFreePattern(t *testing.T) {
+	for _, address := range []string{
+		"https://user:secret@forge.test/forge-user/repo.git",
+		"https://secret@forge.test:3000/forge-user/repo.git",
+		"git@ssh.forge.test:forge-user/repo.git",
+		"ssh://git@ssh.forge.test:2222/forge-user/repo.git",
+	} {
+		pattern := credentialFreePattern(address)
+		if pattern == "" || strings.Contains(pattern, "secret") {
+			t.Errorf("credentialFreePattern(%q) = %q", address, pattern)
+			continue
+		}
+		if !regexp.MustCompile(pattern).MatchString(address) {
+			t.Errorf("pattern %q does not match %q", pattern, address)
+		}
+		if regexp.MustCompile(pattern).MatchString(strings.Replace(address, "repo", "other", 1)) {
+			t.Errorf("pattern %q matches another repository", pattern)
+		}
+	}
+}
+
+func TestGitHubSSHURL(t *testing.T) {
+	for address, want := range map[string]string{
+		"https://github.com/owner/repo.git":         "git@github.com:owner/repo.git",
+		"https://token@github.com/owner/repo":       "git@github.com:owner/repo.git",
+		"ssh://git@github.com/owner/repo.git":       "git@github.com:owner/repo.git",
+		"git@github.com:owner/repo.git":             "git@github.com:owner/repo.git",
+		"https://GitHub.com/owner/repo/":            "git@github.com:owner/repo.git",
+		"https://codeberg.org/owner/repo.git":       "",
+		"https://github.com.example/owner/repo.git": "",
+		"https://github.com/owner":                  "",
+		"https://github.com/owner/repo/extra":       "",
+		"":                                          "",
+	} {
+		if got := githubSSHURL(address); got != want {
+			t.Errorf("githubSSHURL(%q) = %q, want %q", address, got, want)
+		}
 	}
 }
 
