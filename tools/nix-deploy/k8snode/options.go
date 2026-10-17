@@ -46,9 +46,10 @@ Options:
                            node is not cordoned, skip it without changing
                            anything. When that cannot be told, the reboot goes
                            ahead. Not with --resume-maintenance.
-  --drain-timeout <dur>    kubectl drain duration; 0 waits without a limit.
-                           Default: 10m, raised to the longest grace period
-                           of the node's evictable Pods plus 2m.
+  --drain-timeout <dur>    kubectl drain duration, also the limit of the
+                           storage detach after it. Default: 10m, raised to
+                           the longest grace period of the node's evictable
+                           Pods plus 2m.
   --ready-timeout <dur>    kubectl wait duration. Default: 10m.
   --fence-timeout <dur>    Agent recovery/heartbeat wait duration. Default: 10m.
   --settle-timeout <dur>   Workload/Longhorn health wait duration. Default: 90m.
@@ -108,6 +109,9 @@ type Options struct {
 	CheckOnly         bool
 	// Needed skips a reboot the host does not need.
 	Needed bool
+	// LeaveCordonedRequested is true when the operator passed
+	// --leave-cordoned; off implies LeaveCordoned without it.
+	LeaveCordonedRequested bool
 
 	// Durations keep the operator's spelling, except that ParseArgs adds "s"
 	// to a bare number of seconds: kubectl rejects --timeout=30, and every
@@ -198,6 +202,7 @@ func ParseArgs(action string, args []string) (Options, error) {
 			opts.BypassPDB = true
 		case "--leave-cordoned":
 			opts.LeaveCordoned = true
+			opts.LeaveCordonedRequested = true
 		case "--resume-maintenance":
 			opts.ResumeMaintenance = true
 		case "--check-only":

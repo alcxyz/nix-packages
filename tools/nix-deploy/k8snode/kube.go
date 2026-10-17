@@ -192,6 +192,12 @@ type pod struct {
 		NominatedNodeName string `json:"nominatedNodeName"`
 		ContainerStatuses []struct {
 			Ready bool `json:"ready"`
+			// AllocatedResources and Resources show what the node holds
+			// for the container while an in-place resize is under way.
+			AllocatedResources map[string]string `json:"allocatedResources"`
+			Resources          struct {
+				Requests map[string]string `json:"requests"`
+			} `json:"resources"`
 			State struct {
 				Waiting *struct {
 					Reason string `json:"reason"`
@@ -208,6 +214,17 @@ type podList struct {
 // active reports whether the Pod has not finished.
 func (p pod) active() bool {
 	return p.Status.Phase != "Succeeded" && p.Status.Phase != "Failed"
+}
+
+// podReady reports whether the Pod's Ready condition is true, which also
+// takes its readiness gates into account.
+func (p pod) podReady() bool {
+	for _, c := range p.Status.Conditions {
+		if c.Type == "Ready" {
+			return c.Status == "True"
+		}
+	}
+	return false
 }
 
 // runningAndReady reports whether the Pod runs with every container Ready.

@@ -275,8 +275,9 @@ func podRequests(spec podSpec) (resources, error) {
 // roomyNode is a node that can take displaced Pods, with the CPU and
 // memory its Pods' requests leave free.
 type roomyNode struct {
-	node node
-	free resources
+	node        node
+	allocatable resources
+	free        resources
 	// placed are the Pods the check placed on it.
 	placed []pod
 }
@@ -321,7 +322,7 @@ func (o *Operation) checkDisplacedPodsFit() error {
 		if err != nil {
 			return fmt.Errorf("%s: allocatable resources: %v", n.Metadata.Name, err)
 		}
-		room = append(room, &roomyNode{node: n, free: allocatable})
+		room = append(room, &roomyNode{node: n, allocatable: allocatable, free: allocatable})
 	}
 	for _, p := range pods {
 		if !p.active() {
@@ -329,7 +330,7 @@ func (o *Operation) checkDisplacedPodsFit() error {
 		}
 		for _, r := range room {
 			if p.Spec.NodeName == r.node.Metadata.Name {
-				requests, err := podRequests(p.Spec)
+				requests, err := residentRequests(p)
 				if err != nil {
 					return fmt.Errorf("%s/%s: %v", p.Metadata.Namespace, p.Metadata.Name, err)
 				}
@@ -346,11 +347,10 @@ func (o *Operation) checkDisplacedPodsFit() error {
 	for i, r := range room {
 		before[i] = r.free
 	}
-	unplaced, barred := place(room, needed, pods)
-	unplaced = append(unplaced, barred...)
+	unplaced := placeNeeded(room, needed, pods)
 	// Another Pod no node may run waits for the target by design; only a
 	// shortage of room is worth a warning.
-	unplacedOthers, _ := place(room, others, pods)
+	unplacedOthers, _ := place(room, others, pods, false)
 
 	fmt.Fprintf(o.stdout, "remaining-node\tfree-before\tfree-after\n")
 	for i, r := range room {
@@ -369,10 +369,30 @@ func (o *Operation) checkDisplacedPodsFit() error {
 	return nil
 }
 
-// place puts the Pods, largest first, on the node with the most free CPU
-// that admits them and has room. It returns a line for each that some node
-// admits but none has room for, and one for each no node admits.
-func place(room []*roomyNode, displaced []displacedPod, pods []pod) (noRoom, barred []string) {
+// placeNeeded places the Pods the gate needs as the scheduler spreads them
+// and returns a line for each left out. When spreading leaves one without
+// room, it packs them tightly instead, so a set that fits is not refused.
+func placeNeeded(room []*roomyNode, needed []displacedPod, pods []pod) []string {
+	free := make([]resources, len(room))
+	for i, r := range room {
+		free[i] = r.free
+	}
+	noRoom, barred := place(room, needed, pods, false)
+	if len(noRoom) > 0 {
+		for i, r := range room {
+			r.free, r.placed = free[i], nil
+		}
+		noRoom, barred = place(room, needed, pods, true)
+	}
+	return append(noRoom, barred...)
+}
+
+// place puts the Pods, largest first, on the node that admits them and has
+// room with the largest share of its CPU and memory free, as the default
+// scheduler's spreading score does, or with bestFit the smallest. It
+// returns a line for each that some node admits but none has room for, and
+// one for each no node admits.
+func place(room []*roomyNode, displaced []displacedPod, pods []pod, bestFit bool) (noRoom, barred []string) {
 	displaced = slices.Clone(displaced)
 	sort.SliceStable(displaced, func(i, j int) bool {
 		a, b := displaced[i].requests, displaced[j].requests
@@ -389,7 +409,10 @@ func place(room []*roomyNode, displaced []displacedPod, pods []pod) (noRoom, bar
 				continue
 			}
 			admitted = true
-			if d.requests.fits(r.free) && (pick == nil || r.free.cpu > pick.free.cpu) {
+			if !d.requests.fits(r.free) {
+				continue
+			}
+			if pick == nil || (r.freeShare() > pick.freeShare()) != bestFit {
 				pick = r
 			}
 		}
@@ -405,6 +428,41 @@ func place(room []*roomyNode, displaced []displacedPod, pods []pod) (noRoom, bar
 		}
 	}
 	return noRoom, barred
+}
+
+// freeShare is the node's free share of CPU and memory, from 0 to 2.
+func (r *roomyNode) freeShare() float64 {
+	share := 0.0
+	if r.allocatable.cpu > 0 {
+		share += float64(r.free.cpu) / float64(r.allocatable.cpu)
+	}
+	if r.allocatable.memory > 0 {
+		share += float64(r.free.memory) / float64(r.allocatable.memory)
+	}
+	return share
+}
+
+// residentRequests is what the node holds for a Pod already on it: its
+// requests, or during an in-place resize the larger of those and what the
+// node allocated to its containers or they run with.
+func residentRequests(p pod) (resources, error) {
+	requests, err := podRequests(p.Spec)
+	if err != nil {
+		return requests, err
+	}
+	var held resources
+	for _, s := range p.Status.ContainerStatuses {
+		allocated, err := readResources(s.AllocatedResources)
+		if err != nil {
+			return requests, err
+		}
+		actual, err := readResources(s.Resources.Requests)
+		if err != nil {
+			return requests, err
+		}
+		held = held.plus(resources{max(allocated.cpu, actual.cpu), max(allocated.memory, actual.memory)})
+	}
+	return resources{max(requests.cpu, held.cpu), max(requests.memory, held.memory)}, nil
 }
 
 // claimed reports whether a one-per-node Pod would join a Pod its
@@ -477,7 +535,7 @@ func (o *Operation) displacedPodsToPlace(nodes []node, pods []pod) (needed, othe
 		if gated {
 			readyOnTarget := 0
 			for _, p := range onTarget {
-				if p.runningAndReady() {
+				if p.podReady() {
 					readyOnTarget++
 				}
 			}

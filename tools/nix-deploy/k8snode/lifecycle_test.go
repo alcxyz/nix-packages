@@ -202,13 +202,12 @@ func TestDrainFailureUncordons(t *testing.T) {
 		})
 	}
 
-	// A reboot with --leave-cordoned keeps the cordon.
-	f := newHealthyCluster(t)
-	f.drainExit = 1
-	output := runFailure(t, f, "reboot", []string{"--leave-cordoned"}, "drain failed; node disruption was not started")
-	mustNotCall(t, f, `^kubectl uncordon`)
-	if strings.Contains(output, "was uncordoned") {
-		t.Fatalf("output claims an uncordon:\n%s", output)
+	// --leave-cordoned keeps the cordon, and the error says so.
+	for _, action := range []string{"reboot", "off"} {
+		f := newHealthyCluster(t)
+		f.drainExit = 1
+		runFailure(t, f, action, []string{"--leave-cordoned"}, "drain failed; node disruption was not started; server-a remains cordoned")
+		mustNotCall(t, f, `^kubectl uncordon`)
 	}
 }
 

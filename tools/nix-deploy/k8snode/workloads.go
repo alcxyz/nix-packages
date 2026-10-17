@@ -167,9 +167,9 @@ func (o *Operation) controllerReplicas(w workload) (int, error) {
 const unschedulableGrace = 5 * time.Minute
 
 // waitForControllerReadyFloor waits for the controller to have minimumReady
-// Ready replicas. It fails early once more of its replicas have each been
-// Unschedulable for the grace than it may lack, since the rest can then no
-// longer reach the minimum.
+// Ready replicas. It fails early once its replicas that have not each been
+// Unschedulable for the grace are fewer than the minimum, since those can
+// then no longer reach it.
 func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) error {
 	deadline := o.now().Add(duration(o.opts.SettleTimeout))
 	// unschedulableSince is when each replica was first seen Unschedulable,
@@ -192,7 +192,7 @@ func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) er
 			return fmt.Errorf("%s has %d Ready replicas; maintenance requires %d", w, ready, minimumReady)
 		}
 		if found {
-			reasons, err := o.unschedulableReplicas(w, c)
+			reasons, replicas, err := o.unschedulableReplicas(w, c)
 			if err != nil {
 				return err
 			}
@@ -212,7 +212,7 @@ func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) er
 					stuck = append(stuck, reason)
 				}
 			}
-			if len(stuck) > c.desiredReplicas()-minimumReady {
+			if len(stuck) > 0 && replicas-len(stuck) < minimumReady {
 				slices.Sort(stuck)
 				return fmt.Errorf("%s has %d Ready replicas; maintenance requires %d, and the scheduler cannot place %d: %s",
 					w, ready, minimumReady, len(stuck), strings.Join(stuck, "; "))
@@ -224,37 +224,42 @@ func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) er
 	}
 }
 
-// unschedulableReplicas returns, by Pod name, the scheduler's message for
-// each Pending Pod of the controller it cannot place. A Pod nominated for a
-// node waits for the Pods it preempts and is not counted.
-func (o *Operation) unschedulableReplicas(w workload, c controller) (map[string]string, error) {
-	reasons := map[string]string{}
+// unschedulableReplicas counts the controller's live Pods, surge Pods of a
+// rollout included, and returns by Pod name the scheduler's message for
+// each Pending one it cannot place. A Pod nominated for a node waits for
+// the Pods it preempts and is not counted as unschedulable.
+func (o *Operation) unschedulableReplicas(w workload, c controller) (reasons map[string]string, replicas int, err error) {
+	reasons = map[string]string{}
 	if c.Spec.Selector == nil {
-		return reasons, nil
+		return reasons, 0, nil
 	}
 	var pods podList
 	found, err := o.readQuiet(&pods, "-n", w.Namespace, "get", "pods", "-o", "json")
 	if err != nil || !found {
-		return reasons, err
+		return reasons, 0, err
 	}
 	for _, p := range pods.Items {
-		if p.Status.Phase != "Pending" || p.Status.NominatedNodeName != "" || !pdbSelectorMatches(p.Metadata.Labels, c.Spec.Selector) {
+		if !p.active() || p.Metadata.DeletionTimestamp != nil || !pdbSelectorMatches(p.Metadata.Labels, c.Spec.Selector) {
+			continue
+		}
+		owner, ok, err := o.workloadForPod(p)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !ok || owner != w {
+			continue
+		}
+		replicas++
+		if p.Status.Phase != "Pending" || p.Status.NominatedNodeName != "" {
 			continue
 		}
 		for _, cond := range p.Status.Conditions {
-			if cond.Type != "PodScheduled" || cond.Status != "False" || cond.Reason != "Unschedulable" {
-				continue
-			}
-			owner, ok, err := o.workloadForPod(p)
-			if err != nil {
-				return nil, err
-			}
-			if ok && owner == w {
+			if cond.Type == "PodScheduled" && cond.Status == "False" && cond.Reason == "Unschedulable" {
 				reasons[p.Metadata.Name] = fmt.Sprintf("%s/%s: %s", p.Metadata.Namespace, p.Metadata.Name, cond.Message)
 			}
 		}
 	}
-	return reasons, nil
+	return reasons, replicas, nil
 }
 
 // readyMinimum is the number of Ready replicas the availability gate

@@ -17,9 +17,9 @@ with every change to the tool and add an entry here:
   node selectors, required node affinity, taints and a one-per-node
   anti-affinity, and warns when the drain's other Pods lack room after
   them; `--check-only` runs it too.
-- After the drain, the availability gate fails once more of a controller's
-  replicas have each been Unschedulable for five minutes than it may lack,
-  instead of waiting out the settle timeout.
+- After the drain, the availability gate fails once a controller's Pods
+  that have not each been Unschedulable for five minutes can no longer
+  reach its minimum, instead of waiting out the settle timeout.
 - A drain or availability gate that fails before the storage detach now
   uncordons the node, which still runs, instead of leaving it cordoned and
   short of room; later failures, an interrupt, `--resume-maintenance` and

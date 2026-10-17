@@ -37,6 +37,9 @@ type Operation struct {
 	// unschedulableGrace bounds the wait for a replica the scheduler cannot
 	// place.
 	unschedulableGrace time.Duration
+	// cordoned is set once the run holds the node's cordon: its own, or the
+	// one a resumed maintenance found.
+	cordoned bool
 	// releasable is set from this run's cordon until the storage detach,
 	// which may change the host's storage sessions: a gate that fails in
 	// between lifts the cordon again.
@@ -407,6 +410,7 @@ func (o *Operation) prepareNodeForDisruption() error {
 	}
 
 	if o.opts.ResumeMaintenance {
+		o.cordoned = true
 		if err := o.verifyResumedMaintenanceState(); err != nil {
 			return err
 		}
@@ -462,6 +466,7 @@ func (o *Operation) prepareNodeForDisruption() error {
 	if r := o.kubectl(Command{Argv: []string{"cordon", node}, Passthrough: true}); r.Status != 0 {
 		return fmt.Errorf("could not cordon %s", node)
 	}
+	o.cordoned = true
 	o.releasable = true
 
 	if o.opts.SkipDrain {
@@ -509,10 +514,16 @@ func (o *Operation) prepareNodeForDisruption() error {
 // it fails: the node still runs untouched, and keeping it cordoned only takes
 // its room from the Pods the drain displaced. From the storage detach on,
 // the node keeps its cordon, as does a node a resumed maintenance found
-// cordoned and an interrupted run, for the operator to inspect, and a
-// reboot with --leave-cordoned.
+// cordoned and an interrupted run, for the operator to inspect, and one
+// with --leave-cordoned. A kept cordon is named in the error.
 func (o *Operation) releaseCordon(err error) error {
-	if !o.releasable || o.ctx.Err() != nil || (o.opts.Action == "reboot" && o.opts.LeaveCordoned) {
+	if o.ctx.Err() != nil {
+		return err
+	}
+	if !o.releasable || o.opts.LeaveCordonedRequested {
+		if o.cordoned && !strings.Contains(err.Error(), "remains cordoned") {
+			return fmt.Errorf("%w; %s remains cordoned", err, o.opts.Node)
+		}
 		return err
 	}
 	node := o.opts.Node
