@@ -122,6 +122,10 @@ type rebootFake struct {
 	rebootCancels bool
 	cancel        context.CancelFunc
 
+	// sudos records the local sudo calls; sudoFails fails them.
+	sudos     []string
+	sudoFails bool
+
 	inv          *inventory
 	out          lockedBuffer
 	errOut       lockedBuffer
@@ -490,6 +494,15 @@ func (f *rebootFake) fleet(args ...string) (*fleetReboot, []string) {
 	r.sleep = func(ctx context.Context, d time.Duration) error { return ctx.Err() }
 	r.fake = f.command
 	r.nodeReboot = f.nodeReboot
+	r.sudo = func(ctx context.Context, args ...string) error {
+		f.lock.Lock()
+		defer f.lock.Unlock()
+		f.sudos = append(f.sudos, strings.Join(args, " "))
+		if f.sudoFails {
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
 	hosts, err := selectHosts(f.inv, f.self, statusOptions{all: opts.all, hosts: opts.hosts})
 	if err != nil {
 		f.t.Fatal(err)
@@ -1347,9 +1360,11 @@ func (f *rebootFake) interactive() {
 	f.inv.RebootGuardCommand = "guard"
 }
 
-// An interactive host's guard runs at its turn: clear goes on, blocked and
-// busy skip it without a terminal, a busy one is put to the operator on a
-// terminal, and a guard that fails counts as busy.
+// An interactive host's guard runs for the plan and again at its turn. A
+// blocked host is skipped; a busy one is put to the operator before the
+// start, and skipped with --yes. Nothing is asked once the groups run: at
+// its turn, a busy reason that was not confirmed skips the host. A guard
+// that fails counts as busy.
 func TestRebootInteractiveGuard(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1359,17 +1374,26 @@ func TestRebootInteractiveGuard(t *testing.T) {
 		answers  string
 		outcome  string
 		note     string
+		// runs counts the guard's runs, asked whether the host was put to
+		// the operator.
+		runs  int
+		asked bool
 	}{
-		{"clear", []string{"note desktop session of alc is locked"}, false, false, "", "rebooted", ""},
+		{"clear", []string{"note desktop session of alc is locked"}, false, false, "", "rebooted", "", 2, false},
 		{"busy without a terminal", []string{"busy desktop session of alc is active and unlocked"}, false, false, "", "skipped",
-			"busy: desktop session of alc is active and unlocked"},
-		{"busy, confirmed", []string{"busy Moonlight stream is running"}, false, true, "y\ny\n", "rebooted", ""},
-		{"busy, declined", []string{"busy Moonlight stream is running"}, false, true, "y\nn\n", "skipped",
-			"busy, not confirmed: Moonlight stream is running"},
-		{"blocked", []string{"block game Game.exe is running"}, false, true, "y\ny\n", "skipped", "blocked: game Game.exe is running"},
-		{"guard fails", nil, true, false, "", "skipped", "busy: the guard failed: guard: cannot read the sessions"},
+			"busy: desktop session of alc is active and unlocked", 1, false},
+		{"busy, confirmed", []string{"busy Moonlight stream is running"}, false, true, "y\ny\n", "rebooted", "", 2, true},
+		{"busy, declined", []string{"busy Moonlight stream is running"}, false, true, "n\n", "skipped",
+			"busy, not confirmed: Moonlight stream is running", 1, true},
+		{"blocked", []string{"block game Game.exe is running"}, false, true, "", "skipped", "blocked: game Game.exe is running", 1, false},
+		{"guard fails", nil, true, false, "", "skipped", "busy: the guard failed: guard: cannot read the sessions", 1, false},
 		{"busy only at its turn", []string{"", "busy desktop session of alc is active and unlocked"}, false, false, "", "skipped",
-			"busy: desktop session of alc is active and unlocked"},
+			"busy since the start: desktop session of alc is active and unlocked", 2, false},
+		{"busy for a new reason at its turn", []string{"busy Moonlight stream is running",
+			"busy Moonlight stream is running\nbusy desktop session of alc is active and unlocked"}, false, true, "y\ny\n", "skipped",
+			"busy since the start: desktop session of alc is active and unlocked", 2, true},
+		{"blocked only at its turn", []string{"busy Moonlight stream is running", "block game Game.exe is running"}, false, true, "y\ny\n",
+			"skipped", "blocked: game Game.exe is running", 2, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1394,12 +1418,18 @@ func TestRebootInteractiveGuard(t *testing.T) {
 			if rebooted != (c.outcome == "rebooted") {
 				t.Errorf("changes: %v", f.changes())
 			}
-			if guards := strings.Count(strings.Join(f.events, ","), "guard host-b"); guards != 2 {
-				t.Errorf("the guard ran %d times: %v", guards, f.events)
+			if runs := strings.Count(strings.Join(f.events, ","), "guard host-b"); runs != c.runs {
+				t.Errorf("the guard ran %d times: %v", runs, f.events)
 			}
-			asked := strings.Contains(f.out.String(), "host-b is busy (")
-			if asked != (c.terminal && c.outcome != "skipped" || c.name == "busy, declined") {
-				t.Errorf("asked %t in:\n%s", asked, f.out.String())
+			output := f.out.String()
+			question := strings.Index(output, "host-b is busy (")
+			if (question >= 0) != c.asked {
+				t.Errorf("asked %t in:\n%s", question >= 0, output)
+			}
+			// The question comes before the confirmation and the start.
+			if start := strings.Index(output, "==> rebooting"); question >= 0 && (start < question ||
+				c.outcome == "rebooted" && strings.Index(output, "reboot 1 hosts in 1 groups?") < question) {
+				t.Errorf("question at %d, start at %d in:\n%s", question, start, output)
 			}
 		})
 	}
@@ -1431,8 +1461,9 @@ func TestRebootInteractiveGuard(t *testing.T) {
 }
 
 // This machine reboots only with --include-self, on a terminal, after every
-// other group and only when none failed, after its own confirmation even
-// with --yes. The summary comes before its reboot.
+// other group and only when none failed. It is confirmed before the start
+// even with --yes, and sudo takes the password then. The summary comes
+// before its reboot.
 func TestRebootIncludeSelf(t *testing.T) {
 	setup := func(t *testing.T) *rebootFake {
 		f := newRebootFake(t)
@@ -1460,14 +1491,18 @@ func TestRebootIncludeSelf(t *testing.T) {
 	}
 	f.expectOutcomes(map[string]string{"op": "next", "host-b": "rebooted", "server-a": "rebooted"})
 	output := f.out.String()
+	question := strings.Index(output, "op is busy (T3 Code main has a running turn); reboot it, this machine, last, when no other host failed?")
+	start := strings.Index(output, "==> rebooting")
 	summary := strings.Index(output, "host         group")
-	question := strings.Index(output, "op is busy (T3 Code main has a running turn); reboot it, this machine, now?")
-	if summary < 0 || question < summary {
-		t.Errorf("summary at %d, question at %d in:\n%s", summary, question, output)
+	rebooted := strings.Index(output, "op: rebooted: the boot check reports after the boot\n")
+	if question < 0 || start < question || summary < start || rebooted < summary {
+		t.Errorf("question at %d, start at %d, summary at %d, reboot at %d in:\n%s", question, start, summary, rebooted, output)
 	}
-	if !strings.Contains(output, "group op (after every other group, and only when none failed):\n  1. op: plain host, runners forgejo-actions-runner.service, guard, this machine, last, after a confirmation\n") ||
-		!strings.Contains(output, "op: rebooted: the boot check reports after the boot\n") {
-		t.Errorf("plan or result missing in:\n%s", output)
+	if !strings.Contains(output, "group op (after every other group, and only when none failed):\n  1. op: plain host, runners forgejo-actions-runner.service, guard, this machine, last\n") {
+		t.Errorf("plan missing in:\n%s", output)
+	}
+	if !slices.Equal(f.sudos, []string{"-v"}) {
+		t.Errorf("sudo: %v", f.sudos)
 	}
 	changes := f.changes()
 	if changes[len(changes)-2] != "stop op" || changes[len(changes)-1] != "reboot op" {
@@ -1487,11 +1522,18 @@ func TestRebootIncludeSelf(t *testing.T) {
 		outcome string
 		note    string
 	}{
-		{"another host failed", func(f *rebootFake) { f.hosts["host-b"].rebootFails = true }, "y\n", 1, "not started",
+		{"another host failed", func(f *rebootFake) { f.hosts["host-b"].rebootFails = true }, "y\ny\n", 1, "not started",
 			"host-b failed; this machine reboots only after a run without failures"},
-		{"declined", func(f *rebootFake) {}, "y\nn\n", 0, "skipped", "not confirmed"},
+		{"declined", func(f *rebootFake) {}, "n\ny\n", 0, "skipped", "not confirmed"},
 		{"blocked by a game", func(f *rebootFake) { f.hosts["op"].guards = []string{"block game Game.exe is running"} }, "y\n", 0, "skipped",
 			"blocked: game Game.exe is running"},
+		{"blocked by a game at the end", func(f *rebootFake) {
+			f.hosts["op"].guards = []string{"note agent job docs is running", "block game Game.exe is running"}
+		}, "y\ny\n", 0, "skipped", "blocked: game Game.exe is running"},
+		{"busy since the start", func(f *rebootFake) {
+			f.hosts["op"].guards = []string{"note agent job docs is running", "busy T3 Code main has a running turn"}
+		}, "y\ny\n", 0, "skipped", "busy since the start: T3 Code main has a running turn"},
+		{"sudo declined", func(f *rebootFake) { f.sudoFails = true }, "y\ny\n", 0, "skipped", "sudo did not take the password"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1518,6 +1560,94 @@ func TestRebootIncludeSelf(t *testing.T) {
 	}
 	if !strings.Contains(f.out.String(), "group op (after every other group") || strings.Index(f.out.String(), "group op") < strings.Index(f.out.String(), "group host-b") {
 		t.Errorf("plan:\n%s", f.out.String())
+	}
+}
+
+// cancelReader interrupts the run when a question reads its answer.
+type cancelReader struct{ cancel context.CancelFunc }
+
+func (r cancelReader) Read([]byte) (int, error) {
+	r.cancel()
+	return 0, io.EOF
+}
+
+// The questions before the start: an interrupt there changes nothing, even
+// with --yes; this machine is not asked about when another group fails
+// before it starts; a check still checks a blocked host.
+func TestRebootQuestionsBeforeStart(t *testing.T) {
+	f := newRebootFake(t)
+	f.interactive()
+	f.inv.InteractiveHosts = append(f.inv.InteractiveHosts, "op")
+	f.terminal = true
+	r, hosts := f.fleet("--all", "--include-self", "--yes")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.in = cancelReader{cancel}
+	if status := r.run(ctx, hosts); status != 2 {
+		t.Errorf("status %d:\n%s", status, f.out.String())
+	}
+	if len(f.changes()) != 0 || len(f.marks) != 0 || len(f.sudos) != 0 ||
+		!strings.Contains(f.errOut.String(), "interrupted; nothing was changed") {
+		t.Errorf("changes %v, marks %v, sudo %v, stderr %s", f.changes(), f.marks, f.sudos, f.errOut.String())
+	}
+
+	f = newRebootFake(t)
+	f.interactive()
+	f.terminal = true
+	f.hosts["host-a"].unreachable = true
+	f.confirmation = "y\n"
+	if status := f.run("host-a", "host-b", "op", "--include-self"); status != 1 {
+		t.Errorf("status %d:\n%s", status, f.out.String())
+	}
+	if strings.Contains(f.out.String(), "this machine, last, when") || len(f.sudos) != 0 ||
+		!strings.Contains(f.out.String(), "reboot 1 hosts in 1 groups?") {
+		t.Errorf("asked about op (sudo %v):\n%s", f.sudos, f.out.String())
+	}
+	f.expectOutcomes(map[string]string{"host-a": "failed", "host-b": "rebooted", "op": "not started"})
+
+	f = newRebootFake(t)
+	f.interactive()
+	f.hosts["host-b"].guards = []string{"block game Game.exe is running"}
+	if status := f.run("host-b", "--check-only"); status != 0 {
+		t.Errorf("status %d:\n%s", status, f.out.String())
+	}
+	f.expectOutcomes(map[string]string{"host-b": "checked"})
+}
+
+// The sudo timestamp is renewed until the run stops it; a renewal that
+// fails warns once and ends the renewals.
+func TestRebootKeepsSudoFresh(t *testing.T) {
+	f := newRebootFake(t)
+	r, _ := f.fleet("host-a", "--yes")
+	r.sudoRefresh = time.Millisecond
+	renewed := make(chan struct{})
+	r.sudo = func(ctx context.Context, args ...string) error {
+		if strings.Join(args, " ") != "-n -v" {
+			t.Errorf("sudo %v", args)
+		}
+		select {
+		case renewed <- struct{}{}:
+		case <-ctx.Done():
+		}
+		return nil
+	}
+	stop := r.keepSudo(context.Background())
+	<-renewed
+	<-renewed
+	stop()
+
+	calls := 0
+	r.sudo = func(ctx context.Context, args ...string) error {
+		calls++
+		return errors.New("exit status 1")
+	}
+	stop = r.keepSudo(context.Background())
+	for !strings.Contains(f.errOut.String(), "sudo could not be kept fresh (exit status 1)") {
+		time.Sleep(time.Millisecond)
+	}
+	stop()
+	if calls != 1 {
+		t.Errorf("%d renewals after a failure", calls)
 	}
 }
 
@@ -1587,7 +1717,7 @@ func TestRebootSelfRefusalsAndNoGuard(t *testing.T) {
 	if status := f.run("op", "--include-self"); status != 0 {
 		t.Fatalf("status %d:\n%s", status, f.out.String())
 	}
-	if !strings.Contains(f.out.String(), "reboot op, this machine, now?") || strings.Contains(f.out.String(), "busy") || slices.Contains(f.events, "guard op") {
+	if !strings.Contains(f.out.String(), "reboot op, this machine, last, when no other host failed?") || strings.Contains(f.out.String(), "busy") || slices.Contains(f.events, "guard op") {
 		t.Errorf("without a guard command:\n%s", f.out.String())
 	}
 	if !slices.Contains(f.changes(), "reboot op") {

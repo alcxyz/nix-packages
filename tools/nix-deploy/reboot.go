@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"regexp"
 	"slices"
@@ -49,24 +50,31 @@ Policies:
                     active within 5 minutes after it is.
   interactive host  A host in the inventory's interactiveHosts runs its
                     rebootGuardCommand (through sudo -n on hosts reached
-                    with sudo) when the plan is made and again at its turn. A busy host (someone at the screen, a game, a
-                    stream) is put to the operator on a terminal and skipped
-                    without one or with --yes; a blocked host is skipped; a
+                    with sudo) when the plan is made and again at its turn.
+                    A blocked host is skipped. A busy host (someone at the
+                    screen, a game, a stream) is put to the operator before
+                    anything starts, and skipped with --yes; at its turn, a
+                    busy reason that was not confirmed, in the same words,
+                    skips it, so a guard names reasons in stable words. A
                     guard that fails counts as busy.
   every host        The boot ID must change, and the host must then run the
                     system it was meant to boot (reboot no; unknown warns).
                     With the inventory's bootCheck, the host's own check
                     after the boot must pass within 12 minutes; a host
                     without the check is only warned about.
-  this machine      Only with --include-self, and only on a terminal: after
-                    every other group, when none of their hosts failed, it
-                    runs its guard (a block refuses), asks even with --yes,
-                    stops its runner units and reboots. The summary comes
-                    first; its boot check reports after the boot, in
-                    nixfleet status. A Kubernetes node or a member of a
-                    gated serial group is refused: it has no gates around
-                    its own reboot. Questions discard input typed before
-                    them and read only while they wait.
+  this machine      Only with --include-self, and only on a terminal: it is
+                    put to the operator before anything starts, even with
+                    --yes, and sudo takes its password then and is kept
+                    fresh until the end. After every other group, when none
+                    of their hosts failed, it runs its guard again (a block
+                    or a busy reason that was not confirmed skips it), stops
+                    its runner units and reboots. The summary comes first;
+                    its boot check reports after the boot, in nixfleet
+                    status. A Kubernetes node or a member of a gated serial
+                    group is refused: it has no gates around its own reboot.
+  questions         Every question comes before anything starts, so the run
+                    needs no attention once confirmed. Questions discard
+                    input typed before them and read only while they wait.
   not rebooted      The operator host from another machine, and this machine
                     without --include-self: named, they are refused; --all
                     leaves them out. Hosts that are not NixOS are reported.
@@ -97,7 +105,7 @@ Options:
                  is not cordoned; an unknown verdict reboots.
   --dry-run      Print the plan and change nothing.
   --yes          Reboot without asking; busy interactive hosts are skipped,
-                 and this machine still asks.
+                 and this machine is still put to the operator.
   --include-self Reboot this machine too, last (see above).
   -h, --help     Show this help.
 
@@ -335,6 +343,8 @@ type fleetReboot struct {
 	readyInterval time.Duration
 	sshPoll       time.Duration
 	runnerPoll    time.Duration
+	// sudoRefresh is how often this machine's sudo timestamp is renewed.
+	sudoRefresh time.Duration
 	// sleep pauses between polls; tests make it instant.
 	sleep func(context.Context, time.Duration) error
 	// fake, when set, answers the host and ready commands instead of
@@ -342,6 +352,9 @@ type fleetReboot struct {
 	fake func(k8snode.Command) k8snode.Result
 	// nodeReboot reboots a Kubernetes node; tests replace it.
 	nodeReboot func(context.Context, k8snode.Options, *k8snode.Runner) int
+	// sudo runs sudo with the arguments on this machine's terminal; tests
+	// replace it.
+	sudo func(ctx context.Context, args ...string) error
 
 	// outputLock keeps lines from concurrent hosts whole.
 	outputLock sync.Mutex
@@ -349,8 +362,6 @@ type fleetReboot struct {
 	// nodes drained at once could leave the cluster without quorum or
 	// storage replicas.
 	nodeLock sync.Mutex
-	// askLock keeps one question on the terminal at a time.
-	askLock sync.Mutex
 	// marked are the nodes this run gave RebootPendingTaint. It is set
 	// before the groups start and changed only in a node's turn, under
 	// nodeLock, until they all ended.
@@ -370,9 +381,15 @@ func newFleetReboot(inv *inventory, self string, opts rebootOptions, status *sta
 		readyInterval: 10 * time.Second,
 		sshPoll:       5 * time.Second,
 		runnerPoll:    10 * time.Second,
+		sudoRefresh:   sudoRefresh,
 		sleep:         pauseContext,
 		nodeReboot: func(ctx context.Context, opts k8snode.Options, runner *k8snode.Runner) int {
 			return k8snode.New(ctx, opts, runner).Run()
+		},
+		sudo: func(ctx context.Context, args ...string) error {
+			cmd := exec.CommandContext(ctx, "sudo", args...)
+			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
+			return cmd.Run()
 		},
 	}
 }
@@ -401,10 +418,12 @@ type rebootTarget struct {
 	coreRead bool
 	// interactive hosts run the inventory's guard before their reboot, and
 	// self is this machine, rebooted last with --include-self. guard is
-	// what the guard found when the plan was made.
+	// what the guard found when the plan was made, and confirmed the busy
+	// reasons the operator then confirmed.
 	interactive bool
 	self        bool
 	guard       *guardResult
+	confirmed   []string
 	// runners are the active runner units the reboot stops.
 	runners []string
 	// skip says why the host is not rebooted, fail why its group fails
@@ -433,13 +452,29 @@ func (g *guardResult) clear() bool {
 	return len(g.busy) == 0 && len(g.block) == 0 && g.err == ""
 }
 
-// busyReason joins why the host counts as busy.
-func (g *guardResult) busyReason() string {
+// reasons are why the host counts as busy.
+func (g *guardResult) reasons() []string {
 	reasons := slices.Clone(g.busy)
 	if g.err != "" {
 		reasons = append(reasons, "the guard failed: "+g.err)
 	}
-	return strings.Join(reasons, "; ")
+	return reasons
+}
+
+// busyReason joins why the host counts as busy.
+func (g *guardResult) busyReason() string {
+	return strings.Join(g.reasons(), "; ")
+}
+
+// unconfirmed are the busy reasons the operator did not confirm.
+func (g *guardResult) unconfirmed(confirmed []string) []string {
+	var fresh []string
+	for _, reason := range g.reasons() {
+		if !slices.Contains(confirmed, reason) {
+			fresh = append(fresh, reason)
+		}
+	}
+	return fresh
 }
 
 // lines are the findings as the plan and a host's turn show them.
@@ -552,11 +587,33 @@ type rebootPlan struct {
 	cluster     clusterStatus
 }
 
+// selfTarget is this machine when --include-self planned its reboot.
+func (p *rebootPlan) selfTarget() *rebootTarget {
+	for _, g := range p.groups {
+		if g.last {
+			return g.members[0]
+		}
+	}
+	return nil
+}
+
+// failsBeforeStart reports whether a group other than this machine's fails
+// before it starts, which leaves this machine not started.
+func (p *rebootPlan) failsBeforeStart() bool {
+	for _, g := range p.groups {
+		if !g.last && g.failed() {
+			return true
+		}
+	}
+	return false
+}
+
 // size counts the hosts that will be rebooted and the groups they are in.
+// This machine does not count when another group fails before it starts.
 func (p *rebootPlan) size() (int, int) {
 	hosts, groups := 0, 0
 	for _, g := range p.groups {
-		if g.failed() {
+		if g.failed() || g.last && p.failsBeforeStart() {
 			continue
 		}
 		counted := false
@@ -588,8 +645,33 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 	}
 	count, groups := p.size()
 	if count > 0 && !f.opts.node.CheckOnly {
-		if status := f.confirm(ctx, count, groups); status != 0 {
-			return status
+		if !f.opts.yes && !f.terminal {
+			fmt.Fprintln(f.errOut, "nixfleet reboot: standard input is not a terminal to confirm on; pass --yes to reboot without asking")
+			return 2
+		}
+		if !f.askUpFront(ctx, p) {
+			fmt.Fprintln(f.errOut, "nixfleet reboot: interrupted; nothing was changed")
+			return 2
+		}
+		count, groups = p.size()
+		if count > 0 {
+			if status := f.confirm(ctx, count, groups); status != 0 {
+				return status
+			}
+		}
+		if t := p.selfTarget(); t != nil && t.skip == "" && t.fail == "" && !p.failsBeforeStart() {
+			fmt.Fprintf(f.out, "==> sudo for the reboot of %s at the end\n", t.host)
+			if err := f.sudo(ctx, "-v"); err != nil {
+				if ctx.Err() != nil {
+					fmt.Fprintln(f.errOut, "nixfleet reboot: interrupted; nothing was changed")
+					return 2
+				}
+				t.skip = "sudo did not take the password"
+				fmt.Fprintf(f.out, "==> %s is skipped: %s\n", t.host, t.skip)
+				count, groups = p.size()
+			} else {
+				defer f.keepSudo(ctx)()
+			}
 		}
 	}
 	verb := "rebooting"
@@ -624,31 +706,93 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 	return f.runLast(ctx, p, last)
 }
 
+// askUpFront puts every question of the run to the operator before
+// anything starts, so the groups never wait on the terminal or bury a
+// question under their output: each busy interactive host, and this
+// machine even with --yes, unless another group fails before it starts. A
+// host declined, or busy with --yes, is skipped; a confirmation covers the
+// busy reasons it named, which its turn checks again. It reports false when
+// an interrupt ended the questions.
+func (f *fleetReboot) askUpFront(ctx context.Context, p *rebootPlan) bool {
+	for _, g := range p.groups {
+		if g.failed() {
+			continue
+		}
+		for _, t := range g.members {
+			if t.skip != "" || t.fail != "" {
+				continue
+			}
+			busy := t.guard != nil && !t.guard.clear()
+			switch {
+			case t.self && p.failsBeforeStart():
+				continue
+			case t.self:
+				question := fmt.Sprintf("reboot %s, this machine, last, when no other host failed? Its sessions, agents and terminals end. [y/N] ", t.host)
+				if busy {
+					question = fmt.Sprintf("%s is busy (%s); reboot it, this machine, last, when no other host failed? Its sessions, agents and terminals end. [y/N] ", t.host, t.guard.busyReason())
+				}
+				if !f.ask(ctx, question) {
+					t.skip = "not confirmed"
+				}
+			case !busy:
+				continue
+			case !f.canAsk():
+				t.skip = "busy: " + t.guard.busyReason()
+				continue
+			case !f.ask(ctx, fmt.Sprintf("%s is busy (%s); reboot it at its turn? [y/N] ", t.host, t.guard.busyReason())):
+				t.skip = "busy, not confirmed: " + t.guard.busyReason()
+			}
+			if ctx.Err() != nil {
+				return false
+			}
+			if busy && t.skip == "" {
+				t.confirmed = t.guard.reasons()
+			}
+		}
+	}
+	return true
+}
+
 // confirm asks on the terminal unless --yes was given. An interrupt while
 // it waits for the answer declines.
 func (f *fleetReboot) confirm(ctx context.Context, hosts, groups int) int {
-	if f.opts.yes {
-		return 0
-	}
-	if !f.terminal {
-		fmt.Fprintln(f.errOut, "nixfleet reboot: standard input is not a terminal to confirm on; pass --yes to reboot without asking")
-		return 2
-	}
-	if f.ask(ctx, fmt.Sprintf("reboot %d hosts in %d groups? [y/N] ", hosts, groups)) {
+	if f.opts.yes || f.ask(ctx, fmt.Sprintf("reboot %d hosts in %d groups? [y/N] ", hosts, groups)) {
 		return 0
 	}
 	fmt.Fprintln(f.errOut, "nixfleet reboot: not confirmed; nothing was changed")
 	return 2
 }
 
-// ask asks a yes or no question on the terminal and reports a yes. One
-// question is asked at a time. Input typed before it is discarded, so a
-// stray line cannot answer it, and the input is read only while it waits,
-// so a later prompt (sudo's password) gets its own. An interrupt, or the end
-// of the input, declines.
+// keepSudo keeps this machine's sudo timestamp fresh until the returned
+// stop, so its reboot at the end of a long run asks for no password. When
+// a refresh fails, the reboot's sudo may ask again.
+func (f *fleetReboot) keepSudo(ctx context.Context) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for pauseContext(ctx, f.sudoRefresh) == nil {
+			if err := f.sudo(ctx, "-n", "-v"); err != nil {
+				if ctx.Err() == nil {
+					f.outputLock.Lock()
+					fmt.Fprintf(f.errOut, "nixfleet reboot: sudo could not be kept fresh (%v); this machine's reboot may ask for the password\n", err)
+					f.outputLock.Unlock()
+				}
+				return
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// ask asks a yes or no question on the terminal and reports a yes. Input
+// typed before it is discarded, so a stray line cannot answer it, and the
+// input is read only while it waits, so a later prompt (sudo's password)
+// gets its own. An interrupt, or the end of the input, declines.
 func (f *fleetReboot) ask(ctx context.Context, question string) bool {
-	f.askLock.Lock()
-	defer f.askLock.Unlock()
 	if file, ok := f.in.(*os.File); ok && f.terminal {
 		flushInput(file)
 	}
@@ -817,6 +961,10 @@ func (f *fleetReboot) plan(hosts []string) *rebootPlan {
 		for _, t := range g.members {
 			if t.guarded(f.inv) && t.skip == "" && t.fail == "" {
 				t.guard = f.runGuard(t)
+				// A check runs a blocked host's checks all the same.
+				if len(t.guard.block) > 0 && !f.opts.node.CheckOnly {
+					t.skip = "blocked: " + strings.Join(t.guard.block, "; ")
+				}
 			}
 		}
 	}
@@ -1211,7 +1359,7 @@ func (t *rebootTarget) policies(g *rebootGroup) string {
 		parts = append(parts, "guard")
 	}
 	if t.self {
-		parts = append(parts, "this machine, last, after a confirmation")
+		parts = append(parts, "this machine, last")
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1321,7 +1469,7 @@ func (f *fleetReboot) runLast(ctx context.Context, p *rebootPlan, g *rebootGroup
 	case ctx.Err() != nil:
 		t.outcome, t.reason = outcomeNotStarted, "interrupted"
 	default:
-		t.outcome, t.reason = outcomeNext, "reboots now, after its guard and a confirmation"
+		t.outcome, t.reason = outcomeNext, "reboots now, after its guard"
 	}
 	if f.printSummary(p) {
 		return 1
@@ -1469,29 +1617,32 @@ func (h *hostReboot) run() (string, string) {
 	return outcomeRebooted, ""
 }
 
-// passGuard runs an interactive host's guard at its turn, since the plan's
-// reading may be stale. A blocked host is skipped; a busy one is put to the
-// operator on a terminal, and skipped without one. It returns an empty
-// outcome when the reboot goes on.
+// passGuard runs an interactive host's guard again at its turn, since the
+// plan's reading may be stale. Nothing is asked once the groups run: a
+// blocked host is skipped, and so is one busy for a reason the operator did
+// not confirm before the start. It returns an empty outcome when the
+// reboot goes on.
 func (h *hostReboot) passGuard() (string, string) {
-	t := h.target
-	g := h.f.runGuard(t)
+	g := h.f.runGuard(h.target)
 	for _, line := range g.lines() {
 		h.log("%s", line)
 	}
+	return h.guardVerdict(g)
+}
+
+// guardVerdict skips the host for a block, or for busy reasons that were
+// not confirmed before the start.
+func (h *hostReboot) guardVerdict(g *guardResult) (string, string) {
 	switch {
-	case h.f.opts.node.CheckOnly || g.clear():
+	case h.f.opts.node.CheckOnly:
 		return "", ""
 	case len(g.block) > 0:
 		return outcomeSkipped, "blocked: " + strings.Join(g.block, "; ")
-	case !h.f.canAsk():
-		return outcomeSkipped, "busy: " + g.busyReason()
 	}
-	h.out.flush()
-	if h.f.ask(h.ctx, fmt.Sprintf("%s is busy (%s); reboot it anyway? [y/N] ", t.host, g.busyReason())) {
-		return "", ""
+	if fresh := g.unconfirmed(h.target.confirmed); len(fresh) > 0 {
+		return outcomeSkipped, "busy since the start: " + strings.Join(fresh, "; ")
 	}
-	return outcomeSkipped, "busy, not confirmed: " + g.busyReason()
+	return "", ""
 }
 
 // hostCommand runs a shell command on the host: over SSH, or locally on
@@ -1503,10 +1654,10 @@ func (h *hostReboot) hostCommand(connectTimeout, command string) []string {
 	return h.sshCommand(connectTimeout, command)
 }
 
-// runSelf reboots this machine after every other group: its guard, a
-// confirmation even with --yes, its runner units, then the reboot. Nothing
-// checks the boot from here; the host's boot check does, and nixfleet
-// status shows its result.
+// runSelf reboots this machine after every other group, as confirmed
+// before the start: its guard again, its runner units, then the reboot.
+// Nothing checks the boot from here; the host's boot check does, and
+// nixfleet status shows its result.
 func (h *hostReboot) runSelf() (string, string) {
 	t := h.target
 	h.log("%s: %s", t.host, t.policies(h.group))
@@ -1521,16 +1672,8 @@ func (h *hostReboot) runSelf() (string, string) {
 		h.log("checks passed; nothing was changed")
 		return outcomeChecked, ""
 	}
-	if len(g.block) > 0 {
-		return outcomeSkipped, "blocked: " + strings.Join(g.block, "; ")
-	}
-	h.out.flush()
-	question := fmt.Sprintf("reboot %s, this machine, now? Its sessions, agents and terminals end. [y/N] ", t.host)
-	if !g.clear() {
-		question = fmt.Sprintf("%s is busy (%s); reboot it, this machine, now? Its sessions, agents and terminals end. [y/N] ", t.host, g.busyReason())
-	}
-	if !h.f.ask(h.ctx, question) {
-		return outcomeSkipped, "not confirmed"
+	if outcome, reason := h.guardVerdict(g); outcome != "" {
+		return outcome, reason
 	}
 	if err := h.stopRunners(); err != nil {
 		h.startRunners()
@@ -1631,7 +1774,8 @@ func (h *hostReboot) sshCommand(connectTimeout, remote string) []string {
 func (h *hostReboot) privileged(command string) string {
 	switch {
 	case h.target.self:
-		// On this machine's terminal, sudo may ask for the password.
+		// The password was taken before the start and kept fresh; when
+		// that failed, sudo asks on this machine's terminal.
 		return "sudo " + command
 	case h.f.inv.usesRemoteSudo(h.target.host):
 		return "sudo -n " + command

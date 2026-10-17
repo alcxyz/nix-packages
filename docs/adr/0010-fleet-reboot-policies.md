@@ -187,3 +187,37 @@ Alternatives considered:
 - **Record the expected generation before the reboot:** the system profile
   already names what the boot should load, so the check compares against
   it and needs no state from the run.
+
+## Amendment (2026-10-17): every question before the start
+
+The first fleet run with interactive hosts showed that a question asked at a
+host's turn does not work: groups run concurrently, so a busy host asked at
+the very start of the run, and the other groups' output buried the question
+on the same line. The run waited on the operator without making that
+visible. This replaces the parts of the previous amendment that ask at a
+host's turn and at the end of the run.
+
+- **Questions come first.** After the plan, a run puts every busy
+  interactive host to the operator, then this machine with
+  `--include-self`, then asks for the confirmation of the whole run, before
+  anything changes. Once confirmed, the run needs no attention. A declined
+  host, or a busy one with `--yes`, is skipped. A host the guard blocks is
+  skipped when the plan is made (a `--check-only` run still checks it). An
+  interrupt during the questions ends the run with nothing changed. This
+  machine is not asked about when another group already fails before it
+  starts, since it then cannot reboot.
+- **A turn checks, never asks.** The guard still runs again at the host's
+  turn, since the plan's reading may be stale. A block skips the host, and
+  so does a busy reason the operator did not confirm before the start (a new
+  session, say); the reasons the operator confirmed let it go on. Reasons
+  are compared word for word, so a guard names them in stable words (no
+  durations or counters in a busy reason).
+- **This machine is confirmed before the start too**, even with `--yes`,
+  and sudo takes the password then, renewed every minute until its reboot.
+  At its turn its guard runs again under the same rule, so a game started
+  meanwhile still refuses. When the renewal fails, sudo asks at the end,
+  when no group prints any more.
+
+Holding the other groups' output while a question waits was considered: it
+keeps the question visible but still stalls the run on the operator at an
+unpredictable moment, which is what the operator wants to avoid.

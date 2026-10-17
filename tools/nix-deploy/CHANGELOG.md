@@ -9,6 +9,17 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.15.0 (2026-10-17)
+
+- `nixfleet reboot` asks every question before anything starts (#548,
+  ADR-0010 amendment): each busy interactive host, then this machine with
+  `--include-self` (even with `--yes`), then the run's confirmation, so a
+  question is no longer buried under the output of concurrent groups. A
+  host the guard blocks is skipped in the plan. At its turn the guard runs
+  again and skips the host for a block or a busy reason that was not
+  confirmed, without asking. With `--include-self`, sudo takes this
+  machine's password before the start and is renewed until its reboot.
+
 ## 0.14.0 (2026-10-16)
 
 - Interactive hosts (#548, phase 4, ADR-0010 amendment): new optional
