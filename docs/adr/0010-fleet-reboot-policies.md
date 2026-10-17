@@ -334,3 +334,42 @@ Requiring headroom for a whole node at all times was considered; it is a
 capacity policy for the cluster's manifests, which the check makes visible
 without enforcing. Lowering requests or scaling workloads down from the
 tool was rejected: it would change workloads the tool only moves.
+
+## Amendment (2026-10-17): a hook around planned reboots
+
+A planned fleet reboot trips the cluster and host health alerts of every
+node it reboots, and each fires again on recovery, so the operator learns
+nothing the run does not already know and real alerts drown among them.
+nixfleet knows when each host's maintenance starts and ends, but how the
+operator's monitoring is quieted and where progress is announced is the
+operator's setup, not this tool's.
+
+- **The inventory names a hook.** `rebootHookCommand` runs on this machine
+  through `sh`, at `run-start` (the hosts to reboot), `host-start`,
+  `host-finish` (outcome, reason, duration) and `run-finish` (a line per
+  host and whether one failed). The event and its data are environment
+  variables (`NIXFLEET_EVENT`, `NIXFLEET_HOST`, `NIXFLEET_KIND`, and so on);
+  `nixfleet reboot --help` lists them.
+- **Events pair up and never overlap.** `host-finish` follows every
+  `host-start`, after a failure or an interrupt too, so whatever a hook
+  paused is resumed. A node's events fall inside its node turn, so the next
+  node starts only after the previous one finished, after its cluster
+  checks settled. This machine's turn ends with its reboot, which comes
+  after `run-finish`, so it gets `host-finish` only when the reboot does
+  not happen; SIGTERM while its reboot command runs may be the shutdown
+  itself and sends none, while the operator's interrupt leaves it up and
+  finishes its turn. Calls are serialized, run
+  on their own clock (so an interrupted run still reports) and are bounded
+  at 60 seconds, plus up to 5 seconds for a hook that ignores the stop;
+  each runs in its own process group, which the deadline stops and which
+  is killed when the hook ends, so nothing left in that group acts after
+  its event (a helper that leaves the group, say with `setsid`, is the
+  hook's to stop).
+- **A hook never stops a reboot.** A failing hook is a warning: quiet
+  monitoring is a convenience, and a reboot that waited on it would make
+  the monitoring a gate. `--check-only` and `--dry-run` change nothing and
+  call none.
+
+Silencing monitoring from nixfleet itself was considered: it would tie a
+public tool to one monitoring stack and its credentials, which belong to
+the operator's private configuration.

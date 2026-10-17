@@ -43,6 +43,10 @@ type inventory struct {
 	// runs RebootGuardCommand on them before their reboot (ADR-0010).
 	InteractiveHosts   []string
 	RebootGuardCommand string
+	// RebootHookCommand runs on this machine at the events of a nixfleet
+	// reboot that changes hosts, to quiet monitoring and announce progress
+	// (ADR-0010). Empty runs none.
+	RebootHookCommand string
 	// BootCheck says every NixOS host checks itself after each boot and
 	// leaves the result for nixfleet status and reboot.
 	BootCheck bool
@@ -200,6 +204,10 @@ func validateInventory(fields map[string]json.RawMessage) (*inventory, bool) {
 	}
 	if raw, present := fields["rebootGuardCommand"]; present {
 		command := &inv.RebootGuardCommand
+		check(json.Unmarshal(raw, command) == nil && isString(raw) && strings.TrimSpace(*command) != "" && !strings.ContainsAny(*command, "\n\r"))
+	}
+	if raw, present := fields["rebootHookCommand"]; present {
+		command := &inv.RebootHookCommand
 		check(json.Unmarshal(raw, command) == nil && isString(raw) && strings.TrimSpace(*command) != "" && !strings.ContainsAny(*command, "\n\r"))
 	}
 	// An interactive host cannot be checked without the guard.

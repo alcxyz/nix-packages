@@ -9,6 +9,15 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.18.0 (2026-10-17)
+
+- `nixfleet reboot` runs the inventory's new `rebootHookCommand`, when set,
+  at the start and end of a run and of each host (#578, ADR-0010
+  amendment), with the event in `NIXFLEET_*` environment variables, so the
+  operator's setup can quiet monitoring and announce progress. A host's
+  finish follows its start even after a failure or an interrupt; a failing
+  hook is only a warning; `--check-only` and `--dry-run` call none.
+
 ## 0.17.0 (2026-10-17)
 
 - A node's maintenance checks, before anything changes, that the Pods the

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -99,6 +100,25 @@ drain or availability gate failed: it then still runs and is uncordoned,
 except with --leave-cordoned);
 the other groups go on. Every line a host prints starts with its name, and a summary
 of every host ends the run.
+
+With the inventory's rebootHookCommand, a run that reboots hosts runs it on
+this machine through sh, in its own process group (killed when the hook
+ends), never overlapping and for up to 60 seconds (65 for one that
+ignores the stop), at each event, with NIXFLEET_EVENT set to:
+  run-start    NIXFLEET_HOSTS lists the hosts to reboot.
+  host-start   A host's turn starts (a node's, once it holds the node turn).
+  host-finish  It ended, with NIXFLEET_OUTCOME, NIXFLEET_REASON and
+               NIXFLEET_DURATION (seconds); it follows every host-start,
+               even after a failure or an interrupt, except for this
+               machine when it reboots, or may be rebooting (SIGTERM,
+               as a shutdown sends, while its reboot command runs): its
+               turn ends with the reboot.
+  run-finish   NIXFLEET_SUMMARY has a line per host, and NIXFLEET_FAILED
+               is true or false; it comes before this machine's reboot.
+Host events set NIXFLEET_HOST, NIXFLEET_KIND (node, host or self) and
+NIXFLEET_GROUP (the serial group, or empty). A hook that fails is a
+warning; --check-only and --dry-run run none. A hook can quiet monitoring
+between a host's start and finish and announce progress.
 
 Options:
   --config FILE  The inventory; default NIX_DEPLOY_CONFIG.
@@ -313,6 +333,7 @@ func runReboot(args []string) int {
 	go func() {
 		sig := <-signals
 		received <- sig
+		f.terminated.Store(sig == syscall.SIGTERM)
 		cancel()
 	}()
 
@@ -357,6 +378,13 @@ type fleetReboot struct {
 	// sudo runs sudo with the arguments on this machine's terminal; tests
 	// replace it.
 	sudo func(ctx context.Context, args ...string) error
+	// hook runs the inventory's rebootHookCommand; tests replace it.
+	hook func(ctx context.Context, command string, env []string) error
+	// hookLock keeps hook calls from overlapping.
+	hookLock sync.Mutex
+	// terminated is set when SIGTERM, as a shutdown sends, interrupted the
+	// run, rather than the operator's interrupt.
+	terminated atomic.Bool
 
 	// outputLock keeps lines from concurrent hosts whole.
 	outputLock sync.Mutex
@@ -393,6 +421,7 @@ func newFleetReboot(inv *inventory, self string, opts rebootOptions, status *sta
 			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
 			return cmd.Run()
 		},
+		hook: runHookCommand,
 	}
 }
 
@@ -685,6 +714,9 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 		f.markPending(p)
 		defer f.clearMarks()
 	}
+	if hosts := p.rebootingHosts(); len(hosts) > 0 {
+		f.callHook(hookRunStart, map[string]string{"HOSTS": strings.Join(hosts, " ")})
+	}
 	var wait sync.WaitGroup
 	var last *rebootGroup
 	for _, g := range p.groups {
@@ -700,7 +732,11 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 	}
 	wait.Wait()
 	if last == nil {
-		if f.printSummary(p) {
+		failed := f.printSummary(p)
+		if len(p.rebootingHosts()) > 0 {
+			f.callHook(hookRunFinish, p.summaryHookVars())
+		}
+		if failed {
 			return 1
 		}
 		return 0
@@ -1473,7 +1509,11 @@ func (f *fleetReboot) runLast(ctx context.Context, p *rebootPlan, g *rebootGroup
 	default:
 		t.outcome, t.reason = outcomeNext, "reboots now, after its guard"
 	}
-	if f.printSummary(p) {
+	anyFailed := f.printSummary(p)
+	if len(p.rebootingHosts()) > 0 {
+		f.callHook(hookRunFinish, p.summaryHookVars())
+	}
+	if anyFailed {
 		return 1
 	}
 	if t.outcome != outcomeNext {
@@ -1558,7 +1598,7 @@ func (h *hostReboot) log(format string, args ...any) {
 // run is the host's sequence: boot ID, ready gate of the other members,
 // runner stop, reboot and the checks after it. It returns the outcome and
 // its reason.
-func (h *hostReboot) run() (string, string) {
+func (h *hostReboot) run() (outcome, reason string) {
 	t := h.target
 	h.log("%s: %s", t.host, t.policies(h.group))
 	if t.node {
@@ -1572,6 +1612,11 @@ func (h *hostReboot) run() (string, string) {
 			return h.failure(errStopped)
 		}
 	}
+	// The host's events pair up, the finish on every return, and a node's
+	// both fall in its turn, so the next node starts after it finished.
+	start := time.Now()
+	h.f.callHook(hookHostStart, h.hostHookVars())
+	defer func() { h.finishHook(start, outcome, reason) }()
 	if t.interactive {
 		if outcome, reason := h.passGuard(); outcome != "" {
 			return outcome, reason
@@ -1660,7 +1705,7 @@ func (h *hostReboot) hostCommand(connectTimeout, command string) []string {
 // before the start: its guard again, its runner units, then the reboot.
 // Nothing checks the boot from here; the host's boot check does, and
 // nixfleet status shows its result.
-func (h *hostReboot) runSelf() (string, string) {
+func (h *hostReboot) runSelf() (outcome, reason string) {
 	t := h.target
 	h.log("%s: %s", t.host, t.policies(h.group))
 	g := &guardResult{}
@@ -1677,6 +1722,20 @@ func (h *hostReboot) runSelf() (string, string) {
 	if outcome, reason := h.guardVerdict(g); outcome != "" {
 		return outcome, reason
 	}
+	// This machine's turn ends with its reboot, after the run; a turn that
+	// ends any other way finishes here. SIGTERM while the reboot command
+	// runs may be the shutdown itself, so it does not finish.
+	start := time.Now()
+	h.f.callHook(hookHostStart, h.hostHookVars())
+	mayBeRebooting := false
+	defer func() {
+		if outcome != outcomeRebooted && !mayBeRebooting {
+			h.finishHook(start, outcome, reason)
+		}
+	}()
+	if h.ctx.Err() != nil {
+		return h.failure(errStopped)
+	}
 	if err := h.stopRunners(); err != nil {
 		h.startRunners()
 		return h.failure(err)
@@ -1685,11 +1744,24 @@ func (h *hostReboot) runSelf() (string, string) {
 	h.out.flush()
 	r := h.runner.Run(h.ctx, k8snode.Command{Argv: h.hostCommand("10", h.privileged("systemctl reboot")), Timeout: rebootCommandBound})
 	switch {
+	case r.Status == k8snode.StatusNotStarted:
+		// Interrupted before the reboot command started: the machine
+		// stays up, so its runners start again.
+		h.startRunners()
+		return h.failure(errStopped)
+	case r.Status == 0:
+		// The reboot was queued; an interrupt now does not undo it.
+	case h.ctx.Err() != nil && !h.f.terminated.Load():
+		// The operator interrupted the command, say at a sudo prompt; the
+		// machine stays up.
+		h.startRunners()
+		return h.failure(errStopped)
 	case h.ctx.Err() != nil:
 		// The shutdown may already be stopping this run; its runner units
 		// are left to the shutdown.
+		mayBeRebooting = true
 		return h.failure(errStopped)
-	case r.Status != 0:
+	default:
 		h.startRunners()
 		return h.failure(fmt.Errorf("the reboot command failed (status %d); this machine was not rebooted", r.Status))
 	}

@@ -17,6 +17,10 @@ import (
 // cleanup that restores cluster settings.
 const statusNotStarted = -1
 
+// StatusNotStarted is the status of a command refused because the run was
+// already interrupted: it never ran.
+const StatusNotStarted = statusNotStarted
+
 // killGrace matches `timeout --kill-after=5`: a command that ignores SIGTERM
 // at its deadline or interrupt is killed five seconds later.
 const killGrace = 5 * time.Second
@@ -110,6 +114,16 @@ func (r *Runner) Run(ctx context.Context, c Command) Result {
 			return result
 		}
 		result.Status = exitErr.ExitCode()
+		return result
+	}
+	// Without a process, an interrupt after the first check kept the
+	// command from starting; a command that ran and exited cleanly
+	// succeeded, though the interrupt was reported.
+	if cmd.Process == nil && ctx.Err() != nil {
+		result.Status = statusNotStarted
+		return result
+	}
+	if cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		return result
 	}
 	fmt.Fprintf(r.Stderr, "error: %s: %v\n", c.Argv[0], err)

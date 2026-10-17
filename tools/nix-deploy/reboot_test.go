@@ -120,11 +120,22 @@ type rebootFake struct {
 	// rebootCancels as the reboot command is sent.
 	stopCancels   bool
 	rebootCancels bool
-	cancel        context.CancelFunc
+	// rebootTerminates interrupts it as a shutdown's SIGTERM would, and
+	// rebootQueuedCancels after this machine's command queued the reboot.
+	rebootTerminates    bool
+	rebootQueuedCancels bool
+	terminate           func()
+	cancel              context.CancelFunc
 
 	// sudos records the local sudo calls; sudoFails fails them.
 	sudos     []string
 	sudoFails bool
+	// hooks records the reboot hook's calls, each its environment joined
+	// by spaces; hookFails fails them.
+	hooks     []string
+	hookFails bool
+	// hookCancels interrupts the run when the hook is told this event.
+	hookCancels string
 
 	inv          *inventory
 	out          lockedBuffer
@@ -401,8 +412,15 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 		if h.rebootFails {
 			return k8snode.Result{Stderr: "Failed to reboot\n", Status: 1}
 		}
-		if f.rebootCancels {
+		if f.rebootCancels || f.rebootTerminates {
+			if f.rebootTerminates {
+				f.terminate()
+			}
 			f.cancel()
+			if argv[0] == "sh" {
+				// This machine: the signal ended the reboot command.
+				return k8snode.Result{Status: 130}
+			}
 		}
 		if h.rebootLost {
 			return k8snode.Result{Status: 255}
@@ -410,6 +428,9 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 		f.boot(h)
 		if argv[0] == "sh" {
 			// This machine: systemctl returns before the shutdown.
+			if f.rebootQueuedCancels {
+				f.cancel()
+			}
 			return k8snode.Result{}
 		}
 		h.down = 1
@@ -493,7 +514,20 @@ func (f *rebootFake) fleet(args ...string) (*fleetReboot, []string) {
 	r.terminal = f.terminal
 	r.sleep = func(ctx context.Context, d time.Duration) error { return ctx.Err() }
 	r.fake = f.command
+	f.terminate = func() { r.terminated.Store(true) }
 	r.nodeReboot = f.nodeReboot
+	r.hook = func(ctx context.Context, command string, env []string) error {
+		f.lock.Lock()
+		defer f.lock.Unlock()
+		f.hooks = append(f.hooks, command+": "+strings.Join(env, " "))
+		if f.hookCancels != "" && strings.Contains(strings.Join(env, " "), f.hookCancels) {
+			f.cancel()
+		}
+		if f.hookFails {
+			return errors.New("exit status 1: no route to the chat")
+		}
+		return ctx.Err()
+	}
 	r.sudo = func(ctx context.Context, args ...string) error {
 		f.lock.Lock()
 		defer f.lock.Unlock()

@@ -60,6 +60,7 @@ The required fields are:
 | `kubernetesCorePriorityClass` | string, optional | PriorityClass of the cluster's core services; `nixfleet reboot` reboots nodes holding fewer of its single-Pod workloads first (ADR-0010); a lowercase DNS subdomain; default empty (none count) |
 | `interactiveHosts` | unique string array, optional | Known hosts people use at the screen; `nixfleet reboot` runs `rebootGuardCommand` on them before their reboot (ADR-0010); default `[]` |
 | `rebootGuardCommand` | string, optional | Read-only command, one line, run on interactive hosts over SSH (locally on this machine); prints `busy`, `block` and `note` findings; required when `interactiveHosts` is not empty |
+| `rebootHookCommand` | string, optional | Command, one line and not blank, run on this machine through `sh` at the events of a `nixfleet reboot` that reboots hosts, to quiet monitoring and announce progress (ADR-0010); leave it out for none |
 | `bootCheck` | boolean, optional | Hosts check themselves after each boot and leave the result in `/run/nixfleet-boot-check/result`; `nixfleet status` shows it and `nixfleet reboot` waits for it; default `false` |
 
 Every host reference must resolve through `knownHosts`; aliases must not shadow
