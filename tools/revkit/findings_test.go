@@ -62,7 +62,7 @@ func (f reviewFixture) store(t *testing.T) *findingStore {
 func (f reviewFixture) findings(t *testing.T, args ...string) (string, int) {
 	t.Helper()
 	var out bytes.Buffer
-	code := findingsCommand(append(args, "--config", f.config, "--repository", "example"), &out)
+	code := findingsCommand(context.Background(), append(args, "--config", f.config, "--repository", "example"), &out)
 	return out.String(), code
 }
 
@@ -105,6 +105,9 @@ func TestRepeatRunsKnowTheirFindings(t *testing.T) {
 
 	if _, code := f.findings(t, "dismiss", "F1"); code != 2 {
 		t.Fatal("dismissed without a reason")
+	}
+	if _, code := f.findings(t, "dismiss", "--dry-run", "--reason", "x", "F1"); code != 2 {
+		t.Fatal("accepted --dry-run for dismiss")
 	}
 	if out, code := f.findings(t, "dismiss", "--reason", "intended", "F1"); code != 0 {
 		t.Fatalf("dismiss: %d %s", code, out)
@@ -612,5 +615,43 @@ func TestMatchGroups(t *testing.T) {
 	groups := matchGroups(findings, map[string]string{"b": "a", "d": "c", "c": "F9"})
 	if fmt.Sprint(groups) != "[[0 1] [2 3]]" {
 		t.Fatalf("groups = %v", groups)
+	}
+}
+
+func TestReopenUntiesAFiledFinding(t *testing.T) {
+	f := newReviewFixture(t, "")
+	if code := repoReview(context.Background(), []string{"--config", f.config, f.repo}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	withStore(storePath(f.state, "example"), func(s *findingStore) error {
+		s.find("F1").Status, s.find("F1").Issue = storeFiled, "https://forge.example/o/r/issues/3"
+		return nil
+	})
+	if _, code := f.findings(t, "dismiss", "--reason", "x", "F1"); code != 2 {
+		t.Fatal("dismissed a filed finding")
+	}
+	if out, code := f.findings(t, "reopen", "F1"); code != 0 || !strings.Contains(out, "no longer tied") {
+		t.Fatalf("reopen: %d %s", code, out)
+	}
+	if sf := f.store(t).find("F1"); sf.Status != storeOpen || sf.Issue != "" {
+		t.Fatalf("F1 = %+v", sf)
+	}
+}
+
+func TestReopenSaysNothingWhenItFails(t *testing.T) {
+	f := newReviewFixture(t, "")
+	if code := repoReview(context.Background(), []string{"--config", f.config, f.repo}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	withStore(storePath(f.state, "example"), func(s *findingStore) error {
+		s.find("F1").Status, s.find("F1").Issue = storeFiled, "https://forge.example/o/r/issues/3"
+		return nil
+	})
+	out, code := f.findings(t, "reopen", "F1", "F999")
+	if code != 2 || strings.Contains(out, "no longer tied") {
+		t.Fatalf("reopen: %d %q", code, out)
+	}
+	if sf := f.store(t).find("F1"); sf.Status != storeFiled {
+		t.Fatalf("F1 = %+v", sf)
 	}
 }

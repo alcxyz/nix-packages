@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,11 +20,21 @@ const findingsUsage = `Usage: revkit findings list [--all] [--json] [OPTIONS]
        revkit findings show [OPTIONS] ID...
        revkit findings dismiss --reason TEXT [OPTIONS] ID...
        revkit findings reopen [OPTIONS] ID...
+       revkit findings file [--dry-run] [--new] [OPTIONS] ID...
 
 The findings store of a repository holds every distinct problem its reviews
 reported, by ID (F1, F2, ...). list shows the open ones, except those the
 verifier rejected; --all shows every one. A dismissed problem stays dismissed
-when later runs report it again; reopen undoes that.
+when later runs report it again; reopen undoes that, and also unties a
+filed finding from its issue, which is left as it is.
+
+file files the given findings as issues in the repository's configured
+tracker, or links an open issue with the same title, and marks them filed.
+Only open, confirmed findings that are not security-relevant can be filed,
+at most the tracker's limit per command. An open issue with the same title
+is linked instead of filing a duplicate; --new files a new issue for each
+finding and links none (after reopen undid a wrong link) but the one revkit
+filed for that finding, and --dry-run says what it would file or link.
 
 Options: --config FILE (default $REVKIT_CONFIG) and --repository NAME
 (default: the directory name of the git checkout around the current
@@ -32,7 +43,7 @@ directory).
 
 var severityRank = map[string]int{"high": 0, "medium": 1, "low": 2}
 
-func findingsCommand(args []string, stdout io.Writer) int {
+func findingsCommand(ctx context.Context, args []string, stdout io.Writer) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprint(os.Stderr, findingsUsage)
 		if len(args) == 0 {
@@ -49,6 +60,8 @@ func findingsCommand(args []string, stdout io.Writer) int {
 	all := flags.Bool("all", false, "list every finding, whatever its status and verdict")
 	asJSON := flags.Bool("json", false, "print the findings as JSON")
 	reason := flags.String("reason", "", "why the findings are dismissed")
+	dryRun := flags.Bool("dry-run", false, "print the issues file would create")
+	fresh := flags.Bool("new", false, "file a new issue for each finding, linking only its own")
 	ids, err := parseInterspersed(flags, args[1:])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -74,7 +87,11 @@ func findingsCommand(args []string, stdout io.Writer) int {
 		}
 		*repoName = filepath.Base(strings.TrimSpace(top))
 	}
-	if _, ok := cfg.repository(*repoName); !ok {
+	if (*dryRun || *fresh) && action != "file" {
+		return fail("--dry-run and --new are only for file")
+	}
+	repo, ok := cfg.repository(*repoName)
+	if !ok {
 		return fail("repository %s is not configured; pass --repository NAME", *repoName)
 	}
 	stateDir, err := cfg.stateDir()
@@ -113,6 +130,14 @@ func findingsCommand(args []string, stdout io.Writer) int {
 			showFinding(stdout, *sf)
 		}
 		return 0
+	case "file":
+		if len(ids) == 0 {
+			return fail("file needs finding IDs")
+		}
+		if err := fileFindings(ctx, stdout, path, repo, ids, *dryRun, *fresh); err != nil {
+			return fail("%v", err)
+		}
+		return 0
 	case "dismiss", "reopen":
 		if len(ids) == 0 {
 			return fail("%s needs finding IDs", action)
@@ -120,18 +145,26 @@ func findingsCommand(args []string, stdout io.Writer) int {
 		if action == "dismiss" && strings.TrimSpace(*reason) == "" {
 			return fail("dismiss needs --reason, so later readers know why")
 		}
+		// Messages wait until the store is saved, so none claims a change
+		// a later error in the same command undid.
+		var untied []string
 		err := withStore(path, func(s *findingStore) error {
 			for _, id := range ids {
 				sf := s.find(id)
 				switch {
 				case sf == nil:
 					return fmt.Errorf("%s has no finding %s", *repoName, id)
-				case sf.Status == storeFiled:
-					return fmt.Errorf("%s is filed as %s; close the issue instead", sf.ID, sf.Issue)
+				case action == "dismiss" && sf.Status == storeFiled:
+					return fmt.Errorf("%s is filed as %s; close the issue, or reopen the finding first", sf.ID, sf.Issue)
 				case action == "dismiss":
 					sf.Status, sf.Note = storeDismissed, strings.TrimSpace(*reason)
+				case sf.Status == storeFiled:
+					// Undoes a link, for example to an unrelated issue with
+					// the same title; the issue itself is left alone.
+					untied = append(untied, fmt.Sprintf("%s: no longer tied to %s, which is left as it is; file --new files it on its own", sf.ID, sf.Issue))
+					sf.Status, sf.Issue = storeOpen, ""
 				case sf.Status != storeDismissed:
-					return fmt.Errorf("%s is not dismissed", sf.ID)
+					return fmt.Errorf("%s is neither dismissed nor filed", sf.ID)
 				default:
 					sf.Status, sf.Note = storeOpen, ""
 				}
@@ -140,6 +173,9 @@ func findingsCommand(args []string, stdout io.Writer) int {
 		})
 		if err != nil {
 			return fail("%v", err)
+		}
+		for _, line := range untied {
+			fmt.Fprintln(stdout, line)
 		}
 		fmt.Fprintf(stdout, "%s: %s\n", action, strings.Join(ids, ", "))
 		return 0

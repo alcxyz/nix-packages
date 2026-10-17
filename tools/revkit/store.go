@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,10 +48,13 @@ type storedFinding struct {
 	FirstSeen sighting `json:"firstSeen"`
 	LastSeen  sighting `json:"lastSeen"`
 	// Reviews are the reviews that reported it; Sightings counts them.
-	// DescribedBy is the review whose report the text and verdict are.
-	Reviews     []string `json:"reviews"`
-	DescribedBy string   `json:"describedBy"`
-	Sightings   int      `json:"sightings"`
+	// DescribedBy is the review whose report the text and verdict are, at
+	// DescribedCommit through DescribedLens.
+	Reviews         []string `json:"reviews"`
+	DescribedBy     string   `json:"describedBy"`
+	DescribedCommit string   `json:"describedCommit"`
+	DescribedLens   string   `json:"describedLens"`
+	Sightings       int      `json:"sightings"`
 	// Issue is the URL of the issue it was filed as; Note says why it was
 	// dismissed.
 	Issue string `json:"issue,omitempty"`
@@ -63,7 +68,11 @@ type sighting struct {
 }
 
 type findingStore struct {
-	Version  int             `json:"version"`
+	Version int `json:"version"`
+	// Store is a random ID chosen when the store is first saved; with a
+	// finding's ID it names the issue revkit filed for that finding, since
+	// every store numbers its findings from F1.
+	Store    string          `json:"store,omitempty"`
 	NextID   int             `json:"nextId"`
 	Findings []storedFinding `json:"findings"`
 }
@@ -75,7 +84,8 @@ func storePath(stateDir, repository string) string {
 
 // withStore runs change on the store at path under an exclusive lock and
 // saves it if change returns nil, so concurrent runs and commands do not
-// lose each other's updates.
+// lose each other's updates. errUnchanged from change leaves the store as it
+// was, but for an ID given to a store that had none.
 func withStore(path string, change func(*findingStore) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -94,8 +104,19 @@ func withStore(path string, change func(*findingStore) error) error {
 	if err != nil {
 		return err
 	}
-	if err := change(s); err != nil {
-		return err
+	// Stores from 0.2 have no ID yet; one is saved even if change makes no
+	// other, so the ID a filed issue names stays the store's.
+	named := s.Store == ""
+	if named {
+		random := make([]byte, 8)
+		if _, err := rand.Read(random); err != nil {
+			return err
+		}
+		s.Store = hex.EncodeToString(random)
+	}
+	changed := change(s)
+	if changed != nil && !(named && changed == errUnchanged) {
+		return changed
 	}
 	encoded, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -105,7 +126,10 @@ func withStore(path string, change func(*findingStore) error) error {
 	if err := os.WriteFile(staging, append(encoded, '\n'), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(staging, path)
+	if err := os.Rename(staging, path); err != nil {
+		return err
+	}
+	return changed
 }
 
 // readStore reads the store at path; a missing one is empty.
@@ -174,6 +198,7 @@ func (sf *storedFinding) sight(f finding, seen sighting) {
 	if describe {
 		sf.Title, sf.Severity, sf.Claim, sf.Evidence, sf.Suggestion = f.Title, f.Severity, f.Claim, f.Evidence, f.Suggestion
 		sf.Verdict, sf.Reason, sf.DescribedBy = f.Verdict, f.Reason, seen.Run
+		sf.DescribedCommit, sf.DescribedLens = seen.Commit, f.Lens
 	}
 	if sf.Lens == "" {
 		sf.Lens = f.Lens

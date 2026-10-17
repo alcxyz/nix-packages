@@ -65,6 +65,9 @@ func TestLoadConfigRejects(t *testing.T) {
 		"relative readable": {`["/nix/store"]`, `["nix/store"]`},
 		"quoted readable":   {`["/nix/store"]`, `["/nix/store\"=\"read"]`},
 		"bad matcher":       {`"timeoutSeconds": 1800`, `"matcher": {"name": "m", "client": "gemini", "model": "x", "effort": "low"}, "timeoutSeconds": 1800`},
+		"http tracker":      {`"lenses": [`, `"issues": {"url": "http://forge.example", "owner": "o", "repo": "r", "tokenFile": "/t"}, "lenses": [`},
+		"relative token":    {`"lenses": [`, `"issues": {"url": "https://forge.example", "owner": "o", "repo": "r", "tokenFile": "t"}, "lenses": [`},
+		"bad owner":         {`"lenses": [`, `"issues": {"url": "https://forge.example", "owner": "o/x", "repo": "r", "tokenFile": "/t"}, "lenses": [`},
 		"trailing content":  {`"timeoutSeconds": 1800`, `"timeoutSeconds": 1800`},
 	}
 	for name, edit := range cases {
@@ -100,5 +103,22 @@ func TestLoadConfigRejectsEmptyLists(t *testing.T) {
 		if _, err := loadConfig(writeConfig(t, string(content))); err == nil || !strings.Contains(err.Error(), "no lenses") && !strings.Contains(err.Error(), "at least one reviewer") {
 			t.Fatalf("empty %s: %v", empty, err)
 		}
+	}
+}
+
+func TestLoadConfigAcceptsATracker(t *testing.T) {
+	content := strings.Replace(validConfig, `"lenses": [`,
+		`"issues": {"url": "https://forge.example", "owner": "o", "repo": "r.x", "tokenFile": "/run/token", "limit": 2}, "lenses": [`, 1)
+	c, err := loadConfig(writeConfig(t, content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, _ := c.repository("example")
+	if repo.Issues == nil || repo.Issues.limit() != 2 {
+		t.Fatalf("issues = %+v", repo.Issues)
+	}
+	repo.Issues.Limit = 0
+	if repo.Issues.limit() != defaultIssueLimit {
+		t.Fatal("no default limit")
 	}
 }

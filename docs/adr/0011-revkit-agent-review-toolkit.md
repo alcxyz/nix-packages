@@ -1,6 +1,6 @@
 # ADR-0011: revkit, an agent review toolkit with isolated reviewers
 
-**Status:** Accepted; findings store, matching and resume added 2026-10-17
+**Status:** Accepted; findings store, matching, resume and filing added 2026-10-17
 **Date:** 2026-10-17
 **Applies to:** `tools/revkit/`
 
@@ -62,7 +62,7 @@ configuration). Unknown fields are rejected. Version 1:
 | `readablePaths` | string array, optional | Absolute paths a Codex reviewer may read besides the tree and the platform minimum, for example where its tools live |
 | `stateDir` | absolute path, optional | Trees, runs and reports; default `$XDG_STATE_HOME/revkit`; with a Codex reviewer never under `/tmp`, which its profile denies (a deny beats the grant for the tree) and where Codex refuses a home |
 | `matcher` | reviewer, optional | Groups findings that describe the same problem (amendment of 2026-10-17); without one, findings match by lens and title |
-| `repositories` | list | `{ name, context, lenses }`; `context` tells reviewers what the repository is; each lens is `{ name, prompt }` and becomes one job per reviewer |
+| `repositories` | list | `{ name, context, lenses, issues }`; `context` tells reviewers what the repository is; each lens is `{ name, prompt }` and becomes one job per reviewer; `issues`, optional, is the tracker findings are filed in: `{ url, owner, repo, tokenFile, limit }` (https only; `limit` per command, default 5) |
 
 The finding and verdict formats, and the instructions that go with them, are
 part of the program, since its parser depends on them.
@@ -261,12 +261,61 @@ Step 3 of #557. A run's findings now outlive its report.
   secrets, credentials, access control or private details in a public
   repository. The store keeps the flag.
 
-Filing, decided with the owner and implemented in a later release: a person
-picks the findings to file (`revkit findings file <ids>`), nothing is filed
-by a run itself; only `confirmed` findings are filed; issues are filed by a
-dedicated bot account with issue-write scope, not the owner's; and security
-findings are never filed anywhere until a private tracker and a hygiene lens
-exist.
+Filing, decided with the owner:
+
+- A person picks the findings to file with `revkit findings file <ids>`;
+  a run never files anything itself.
+- Only open, `confirmed` findings are filed; `partly` confirmed and
+  unverified ones stay in the store.
+- Security findings are never filed anywhere until a private tracker and a
+  hygiene lens exist; `file` refuses them.
+- Issues go to the repository's configured tracker and are filed by a
+  dedicated bot account with issue-write scope, not the owner's: the
+  consumer names that account's token file. The token is read when filing
+  starts and only sent in the Authorization header, and redirects are not
+  followed, so it cannot reach another host.
+- Before filing, every open issue of the tracker is listed, page by page
+  until an empty page (forges may cap page sizes) and from the database
+  rather than the search index (which can lag behind new issues), and an
+  issue with the same full title is linked instead of filing a duplicate,
+  including one filed earlier in the same command; two findings whose
+  titles the cap shortens to the same text stay two issues. An issue revkit
+  filed is recognised by the footer it writes (the finding's ID, a random
+  ID of its store, given once, and a 96-bit hash of the full title, as a
+  paragraph of its own that must end the body, so a quote of it does not
+  count) and matched only by that hash, never by its possibly capped
+  title; any finding with that full title links it, and the issue filed
+  for the finding itself (all three match, so another store's `F1`, such
+  as a renamed repository's, does not) links first, even under `--new`,
+  so neither a capped title nor a retry after a lost response files it
+  twice. The check
+  is best effort: a finding retitled by a later review between a lost
+  response and the retry, or an issue closed while the pages are read, can
+  still lead to a second issue. A wrong link, such as an unrelated issue
+  with the same title, is undone with `revkit findings reopen`, which
+  leaves the issue alone; `file --new` then files the finding as an
+  issue of its own and links no other. With more open
+  issues than it can check, filing refuses. One filing command runs at a
+  time per repository. It files at most the tracker's limit, stops when
+  interrupted, checks each finding against the rules again just before
+  creating or linking its issue (a run may have flagged it, or someone
+  dismissed it), and marks it filed as soon as the issue exists. The
+  store's lock is not held while the forge is called, so a change in the
+  seconds a create request takes can still let that one issue be created;
+  the command then leaves the finding unmarked and says to review the issue.
+- The issue states the claim, evidence, paths and fix, and how it was found
+  (the lens and commit of the review whose report it is, or no commit when
+  an older store cannot tell, the number of reviews, the verifier's reason) without naming models. Reviewers read a
+  repository that may hold text written to steer them, so their text goes
+  into fenced code blocks, shown exactly as written: the forge renders
+  nothing inside one and runs no mention, reference, link or short-link
+  processing on it, and the fence is longer than any backtick run in the
+  text. Escaping Markdown instead was tried and rejected: the forge's own
+  processing of the rendered text (short links, bare URLs, references)
+  still acted on it. Paths are code spans; titles, which are not Markdown,
+  get a zero-width break after `@`, `#`, `!` and in `://`, are compared
+  without the breaks, and are cut to 200 characters. `--dry-run` reads the
+  tracker and says what would be filed or linked.
 
 Considered and rejected:
 

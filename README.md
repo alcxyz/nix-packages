@@ -147,6 +147,8 @@ reviews. The package ships no reviewers or
 lenses: the consumer generates the JSON configuration (`--config` or
 `REVKIT_CONFIG`). Distinct problems are kept in a findings store per
 repository, matched by meaning with earlier runs, so a repeat run shows what
-is new; `revkit findings` lists, shows, dismisses and reopens them, and
-`repo-review --resume` reuses the jobs that completed in the last run. See [ADR-0011](docs/adr/0011-revkit-agent-review-toolkit.md)
+is new; `revkit findings` lists, shows, dismisses and reopens them, files
+the confirmed ones you pick as issues in the repository's configured tracker
+(never security-relevant ones), and `repo-review --resume` reuses the jobs
+that completed in the last run. See [ADR-0011](docs/adr/0011-revkit-agent-review-toolkit.md)
 and the [changelog](tools/revkit/CHANGELOG.md).

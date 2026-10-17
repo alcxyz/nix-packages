@@ -9,6 +9,20 @@ tool and add an entry here:
 - minor: a new command or option, or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.3.0 (2026-10-17)
+
+- `revkit findings file <ids>` files open, confirmed findings as issues in
+  the repository's configured tracker (`issues` in the configuration), or
+  links an open issue with the same title (checked across every open
+  issue), and marks each one filed as soon as its issue exists. Security
+  findings, unconfirmed ones and more than the tracker's limit per command
+  are refused; reviewer text goes into fenced code blocks, so the forge
+  acts on none of it; `--dry-run` says what it would file or link, and
+  `--new` files a new issue for each finding and links none but the one
+  revkit filed for that finding (a retry after a lost response).
+  `reopen` also unties a filed finding from its issue. Each store gets a
+  random ID, which the footer of every issue it files names.
+
 ## 0.2.0 (2026-10-17)
 
 - Findings store (#557, ADR-0011 amendment): every distinct problem a run

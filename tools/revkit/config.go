@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,6 +44,49 @@ type repository struct {
 	Name    string `json:"name"`
 	Context string `json:"context"`
 	Lenses  []lens `json:"lenses"`
+	// Issues, optional, is where `revkit findings file` files this
+	// repository's findings.
+	Issues *issueTracker `json:"issues"`
+}
+
+// issueTracker is a Forgejo or Gitea repository's issue tracker and the
+// file holding the token issues are filed with.
+type issueTracker struct {
+	URL       string `json:"url"`
+	Owner     string `json:"owner"`
+	Repo      string `json:"repo"`
+	TokenFile string `json:"tokenFile"`
+	// Limit bounds the issues one command files; default 5.
+	Limit int `json:"limit"`
+}
+
+// defaultIssueLimit bounds the issues one `findings file` command files.
+const defaultIssueLimit = 5
+
+func (t *issueTracker) limit() int {
+	if t.Limit > 0 {
+		return t.Limit
+	}
+	return defaultIssueLimit
+}
+
+var forgeNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+func (t *issueTracker) validate() error {
+	parsed, err := url.Parse(t.URL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return fmt.Errorf("issues: url %q must be an https URL of the forge", t.URL)
+	}
+	if !forgeNamePattern.MatchString(t.Owner) || !forgeNamePattern.MatchString(t.Repo) {
+		return fmt.Errorf("issues: owner and repo must be plain names")
+	}
+	if !filepath.IsAbs(t.TokenFile) {
+		return fmt.Errorf("issues: tokenFile must be an absolute path")
+	}
+	if t.Limit < 0 {
+		return fmt.Errorf("issues: limit must not be negative")
+	}
+	return nil
 }
 
 type lens struct {
@@ -139,6 +183,11 @@ func (c *config) validate() error {
 			return fmt.Errorf("repository %s is listed twice", repo.Name)
 		}
 		repositories[repo.Name] = true
+		if repo.Issues != nil {
+			if err := repo.Issues.validate(); err != nil {
+				return fmt.Errorf("repository %s: %w", repo.Name, err)
+			}
+		}
 		if len(repo.Lenses) == 0 {
 			return fmt.Errorf("repository %s has no lenses", repo.Name)
 		}
