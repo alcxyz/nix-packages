@@ -227,7 +227,9 @@ func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) er
 // unschedulableReplicas counts the controller's live Pods, surge Pods of a
 // rollout included, and returns by Pod name the scheduler's message for
 // each Pending one it cannot place. A Pod nominated for a node waits for
-// the Pods it preempts and is not counted as unschedulable.
+// the Pods it preempts and is not counted as unschedulable. A Pod whose
+// ReplicaSet cannot be read counts as a replica but never as stuck, so a
+// failed read cannot end the wait early.
 func (o *Operation) unschedulableReplicas(w workload, c controller) (reasons map[string]string, replicas int, err error) {
 	reasons = map[string]string{}
 	if c.Spec.Selector == nil {
@@ -238,19 +240,43 @@ func (o *Operation) unschedulableReplicas(w workload, c controller) (reasons map
 	if err != nil || !found {
 		return reasons, 0, err
 	}
+	// deployments are the Deployments of the ReplicaSets read, by name;
+	// "" is none, and a ReplicaSet that could not be read is absent from
+	// it but in unread.
+	deployments := map[string]string{}
+	unread := map[string]bool{}
 	for _, p := range pods.Items {
 		if !p.active() || p.Metadata.DeletionTimestamp != nil || !pdbSelectorMatches(p.Metadata.Labels, c.Spec.Selector) {
 			continue
 		}
-		owner, ok, err := o.workloadForPod(p)
-		if err != nil {
-			return nil, 0, err
-		}
-		if !ok || owner != w {
+		owner := p.Metadata.firstOwner()
+		known := true
+		switch {
+		case w.Kind == "deployment" && owner.Kind == "ReplicaSet":
+			if _, read := deployments[owner.Name]; !read && !unread[owner.Name] {
+				var rs controller
+				found, err := o.readQuiet(&rs, "-n", w.Namespace, "get", "replicaset", owner.Name, "-o", "json")
+				if err != nil {
+					return nil, 0, err
+				}
+				if !found {
+					unread[owner.Name] = true
+				} else if rsOwner := rs.Metadata.firstOwner(); rsOwner.Kind == "Deployment" {
+					deployments[owner.Name] = rsOwner.Name
+				} else {
+					deployments[owner.Name] = ""
+				}
+			}
+			if unread[owner.Name] {
+				known = false
+			} else if deployments[owner.Name] != w.Name {
+				continue
+			}
+		case !strings.EqualFold(owner.Kind, w.Kind) || owner.Name != w.Name:
 			continue
 		}
 		replicas++
-		if p.Status.Phase != "Pending" || p.Status.NominatedNodeName != "" {
+		if !known || p.Status.Phase != "Pending" || p.Status.NominatedNodeName != "" {
 			continue
 		}
 		for _, cond := range p.Status.Conditions {

@@ -268,11 +268,12 @@ The Pod-slot check before the cordon counts Pods, not CPU or memory.
   Ready replicas on other nodes fall short of the gate's minimum; not those
   of a controller pinned to the node, a Job or a DaemonSet) on the
   remaining Ready, schedulable nodes by their requests (Pod-level requests
-  where set; a resident Pod mid-resize holds the larger of its requests and
-  its allocation). It places the largest first on the node with the
-  largest free share of CPU and memory, like the default scheduler's
-  spreading, and when that leaves one out, packs them tightly instead, so a
-  set that fits is not refused. It honours node selectors, required node
+  where set; a resident container mid-resize holds the larger of its
+  request and its allocation). It places the largest first on the node
+  with the largest free share of CPU and memory, like the default
+  scheduler's spreading, and when that leaves one out, searches for any
+  placement within a bounded number of steps, so a set that fits is not
+  refused. It honours node selectors, required node
   affinity, taints and a one-per-node anti-affinity, not spread
   constraints or preferences. A needed Pod that fits nowhere stops the
   run; `--check-only` reports the same. The drain's other Pods are
@@ -287,7 +288,8 @@ The Pod-slot check before the cordon counts Pods, not CPU or memory.
   included) that have not each been reported Unschedulable for five
   minutes are fewer than its gate's minimum, the availability gate fails
   with the scheduler's reasons. A Pod of another owner and a preemptor
-  waiting for its victims do not count.
+  waiting for its victims do not count; a Pod whose ReplicaSet cannot be
+  read counts as a replica but never as stuck.
 - **A failure before the storage detach uncordons.** This replaces "cordoned
   and drained" as the safe state for a node whose drain or availability
   gate failed: it still runs untouched, and staying cordoned only takes its

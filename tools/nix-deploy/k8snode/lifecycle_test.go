@@ -249,8 +249,15 @@ func TestInterruptedDrainKeepsCordon(t *testing.T) {
 func TestResumedMaintenanceKeepsCordonOnFailure(t *testing.T) {
 	f := newHealthyCluster(t)
 	set(f.targetNode(), true, "spec", "unschedulable")
-	runFailure(t, f, "reboot", []string{"--resume-maintenance"}, "non-maintenance Pods remain on server-a")
+	runFailure(t, f, "reboot", []string{"--resume-maintenance"}, "non-maintenance Pods remain on server-a; server-a remains cordoned")
 	mustNotCall(t, f, `^kubectl uncordon`)
+
+	// A node that is not cordoned is not reported as cordoned.
+	f = newHealthyCluster(t)
+	output := runFailure(t, f, "reboot", []string{"--resume-maintenance"}, "server-a is not cordoned")
+	if strings.Contains(output, "remains cordoned") {
+		t.Fatalf("an uncordoned node reported as cordoned:\n%s", output)
+	}
 }
 
 func TestRemoteRebootFailureLeavesNodeCordoned(t *testing.T) {

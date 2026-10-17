@@ -155,6 +155,7 @@ type spreadConstraint struct {
 
 // container is the part of a container the capacity check reads.
 type container struct {
+	Name      string `json:"name"`
 	Resources struct {
 		Requests map[string]string `json:"requests"`
 	} `json:"resources"`
@@ -181,6 +182,23 @@ type podSpec struct {
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds"`
 }
 
+// containerStatus is the part of a container's status the gates read.
+type containerStatus struct {
+	Name  string `json:"name"`
+	Ready bool   `json:"ready"`
+	// AllocatedResources and Resources show what the node holds
+	// for the container while an in-place resize is under way.
+	AllocatedResources map[string]string `json:"allocatedResources"`
+	Resources          struct {
+		Requests map[string]string `json:"requests"`
+	} `json:"resources"`
+	State struct {
+		Waiting *struct {
+			Reason string `json:"reason"`
+		} `json:"waiting"`
+	} `json:"state"`
+}
+
 type pod struct {
 	Metadata objectMeta `json:"metadata"`
 	Spec     podSpec    `json:"spec"`
@@ -189,21 +207,9 @@ type pod struct {
 		Conditions []condition `json:"conditions"`
 		// NominatedNodeName is set while a preemptor waits for its
 		// victims to stop.
-		NominatedNodeName string `json:"nominatedNodeName"`
-		ContainerStatuses []struct {
-			Ready bool `json:"ready"`
-			// AllocatedResources and Resources show what the node holds
-			// for the container while an in-place resize is under way.
-			AllocatedResources map[string]string `json:"allocatedResources"`
-			Resources          struct {
-				Requests map[string]string `json:"requests"`
-			} `json:"resources"`
-			State struct {
-				Waiting *struct {
-					Reason string `json:"reason"`
-				} `json:"waiting"`
-			} `json:"state"`
-		} `json:"containerStatuses"`
+		NominatedNodeName     string            `json:"nominatedNodeName"`
+		ContainerStatuses     []containerStatus `json:"containerStatuses"`
+		InitContainerStatuses []containerStatus `json:"initContainerStatuses"`
 	} `json:"status"`
 }
 

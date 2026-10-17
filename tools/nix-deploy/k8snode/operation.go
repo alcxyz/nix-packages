@@ -410,7 +410,6 @@ func (o *Operation) prepareNodeForDisruption() error {
 	}
 
 	if o.opts.ResumeMaintenance {
-		o.cordoned = true
 		if err := o.verifyResumedMaintenanceState(); err != nil {
 			return err
 		}
@@ -581,6 +580,7 @@ func (o *Operation) verifyResumedMaintenanceState() error {
 	if err := o.verifyNodeIsCordoned(); err != nil {
 		return err
 	}
+	o.cordoned = true
 	if err := o.verifyNodeHasOnlyMaintenancePods(); err != nil {
 		return err
 	}

@@ -232,9 +232,22 @@ func readResources(list map[string]string) (resources, error) {
 // the sidecars started before it, whichever is more, or instead the
 // Pod-level request for a resource it names, plus the Pod overhead.
 func podRequests(spec podSpec) (resources, error) {
+	return heldRequests(spec, nil)
+}
+
+// heldRequests is podRequests with each container's request raised to what
+// the node holds for it, by container name, as during an in-place resize.
+func heldRequests(spec podSpec, held map[string]resources) (resources, error) {
+	request := func(c container) (resources, error) {
+		r, err := readResources(c.Resources.Requests)
+		if h, ok := held[c.Name]; ok {
+			r = resources{max(r.cpu, h.cpu), max(r.memory, h.memory)}
+		}
+		return r, err
+	}
 	var app resources
 	for _, c := range spec.Containers {
-		r, err := readResources(c.Resources.Requests)
+		r, err := request(c)
 		if err != nil {
 			return app, err
 		}
@@ -242,7 +255,7 @@ func podRequests(spec podSpec) (resources, error) {
 	}
 	var sidecars, init resources
 	for _, c := range spec.InitContainers {
-		r, err := readResources(c.Resources.Requests)
+		r, err := request(c)
 		if err != nil {
 			return app, err
 		}
@@ -350,7 +363,7 @@ func (o *Operation) checkDisplacedPodsFit() error {
 	unplaced := placeNeeded(room, needed, pods)
 	// Another Pod no node may run waits for the target by design; only a
 	// shortage of room is worth a warning.
-	unplacedOthers, _ := place(room, others, pods, false)
+	unplacedOthers, _ := place(room, others, pods)
 
 	fmt.Fprintf(o.stdout, "remaining-node\tfree-before\tfree-after\n")
 	for i, r := range room {
@@ -369,30 +382,82 @@ func (o *Operation) checkDisplacedPodsFit() error {
 	return nil
 }
 
+// packBudget bounds the search for a placement, in Pods placed and taken
+// back.
+const packBudget = 200000
+
 // placeNeeded places the Pods the gate needs as the scheduler spreads them
 // and returns a line for each left out. When spreading leaves one without
-// room, it packs them tightly instead, so a set that fits is not refused.
+// room, it searches for any placement of them, within packBudget, so a set
+// that fits is not refused; without one, the spreading's lines stand.
 func placeNeeded(room []*roomyNode, needed []displacedPod, pods []pod) []string {
 	free := make([]resources, len(room))
 	for i, r := range room {
 		free[i] = r.free
 	}
-	noRoom, barred := place(room, needed, pods, false)
-	if len(noRoom) > 0 {
+	reset := func() {
 		for i, r := range room {
 			r.free, r.placed = free[i], nil
 		}
-		noRoom, barred = place(room, needed, pods, true)
 	}
+	noRoom, barred := place(room, needed, pods)
+	if len(noRoom) == 0 {
+		return barred
+	}
+	// A Pod no node may run stays out of the search, which places the rest.
+	reset()
+	var placeable []displacedPod
+	for _, d := range needed {
+		if slices.ContainsFunc(room, func(r *roomyNode) bool { return admits(r, d, pods) }) {
+			placeable = append(placeable, d)
+		}
+	}
+	if pack(room, placeable, pods) {
+		return barred
+	}
+	reset()
+	noRoom, barred = place(room, needed, pods)
 	return append(noRoom, barred...)
 }
 
-// place puts the Pods, largest first, on the node that admits them and has
-// room with the largest share of its CPU and memory free, as the default
-// scheduler's spreading score does, or with bestFit the smallest. It
-// returns a line for each that some node admits but none has room for, and
-// one for each no node admits.
-func place(room []*roomyNode, displaced []displacedPod, pods []pod, bestFit bool) (noRoom, barred []string) {
+// pack searches depth first, largest Pod first and tightest node first, for
+// a placement of every Pod, and leaves the room as placed when it finds
+// one. It gives up after packBudget steps.
+func pack(room []*roomyNode, displaced []displacedPod, pods []pod) bool {
+	displaced = largestFirst(displaced)
+	steps := 0
+	var try func(i int) bool
+	try = func(i int) bool {
+		if i == len(displaced) {
+			return true
+		}
+		d := displaced[i]
+		var candidates []*roomyNode
+		for _, r := range room {
+			if d.requests.fits(r.free) && admits(r, d, pods) {
+				candidates = append(candidates, r)
+			}
+		}
+		sort.SliceStable(candidates, func(a, b int) bool { return candidates[a].freeShare() < candidates[b].freeShare() })
+		for _, r := range candidates {
+			if steps++; steps > packBudget {
+				return false
+			}
+			r.free = r.free.minus(d.requests)
+			r.placed = append(r.placed, d.pod)
+			if try(i + 1) {
+				return true
+			}
+			r.free = r.free.plus(d.requests)
+			r.placed = r.placed[:len(r.placed)-1]
+		}
+		return false
+	}
+	return try(0)
+}
+
+// largestFirst sorts a copy of the Pods by CPU, then memory, largest first.
+func largestFirst(displaced []displacedPod) []displacedPod {
 	displaced = slices.Clone(displaced)
 	sort.SliceStable(displaced, func(i, j int) bool {
 		a, b := displaced[i].requests, displaced[j].requests
@@ -401,18 +466,26 @@ func place(room []*roomyNode, displaced []displacedPod, pods []pod, bestFit bool
 		}
 		return a.memory > b.memory
 	})
-	for _, d := range displaced {
+	return displaced
+}
+
+// place puts the Pods, largest first, on the node that admits them and has
+// room with the largest share of its CPU and memory free, as the default
+// scheduler's spreading score does. It returns a line for each that some
+// node admits but none has room for, and one for each no node admits.
+func place(room []*roomyNode, displaced []displacedPod, pods []pod) (noRoom, barred []string) {
+	for _, d := range largestFirst(displaced) {
 		var pick *roomyNode
 		admitted := false
 		for _, r := range room {
-			if !podMatchesNode(d.pod.Spec, r.node) || !nodeAdmits(d.pod.Spec, r.node) || claimed(r, d, pods) {
+			if !admits(r, d, pods) {
 				continue
 			}
 			admitted = true
 			if !d.requests.fits(r.free) {
 				continue
 			}
-			if pick == nil || (r.freeShare() > pick.freeShare()) != bestFit {
+			if pick == nil || r.freeShare() > pick.freeShare() {
 				pick = r
 			}
 		}
@@ -443,26 +516,27 @@ func (r *roomyNode) freeShare() float64 {
 }
 
 // residentRequests is what the node holds for a Pod already on it: its
-// requests, or during an in-place resize the larger of those and what the
-// node allocated to its containers or they run with.
+// requests, with each container's raised during an in-place resize to what
+// the node allocated to it or it runs with, as the scheduler counts them.
 func residentRequests(p pod) (resources, error) {
-	requests, err := podRequests(p.Spec)
-	if err != nil {
-		return requests, err
-	}
-	var held resources
-	for _, s := range p.Status.ContainerStatuses {
+	held := map[string]resources{}
+	for _, s := range append(slices.Clone(p.Status.ContainerStatuses), p.Status.InitContainerStatuses...) {
 		allocated, err := readResources(s.AllocatedResources)
 		if err != nil {
-			return requests, err
+			return resources{}, err
 		}
 		actual, err := readResources(s.Resources.Requests)
 		if err != nil {
-			return requests, err
+			return resources{}, err
 		}
-		held = held.plus(resources{max(allocated.cpu, actual.cpu), max(allocated.memory, actual.memory)})
+		held[s.Name] = resources{max(allocated.cpu, actual.cpu), max(allocated.memory, actual.memory)}
 	}
-	return resources{max(requests.cpu, held.cpu), max(requests.memory, held.memory)}, nil
+	return heldRequests(p.Spec, held)
+}
+
+// admits reports whether the node may run the Pod, room aside.
+func admits(r *roomyNode, d displacedPod, pods []pod) bool {
+	return podMatchesNode(d.pod.Spec, r.node) && nodeAdmits(d.pod.Spec, r.node) && !claimed(r, d, pods)
 }
 
 // claimed reports whether a one-per-node Pod would join a Pod its

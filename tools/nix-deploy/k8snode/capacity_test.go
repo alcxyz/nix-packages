@@ -1,6 +1,7 @@
 package k8snode
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -314,6 +315,20 @@ func TestUnschedulableReplicasCountSeparately(t *testing.T) {
 		t.Fatalf("a surge Pod failed fast: %v", err)
 	}
 
+	// A replica whose ReplicaSet cannot be read still counts toward the
+	// minimum, though it is never taken for stuck.
+	unread := owned(decode(t, `{"metadata": {"namespace": "default", "name": "web-u", "labels": {"app": "web"}},
+	  "spec": {"nodeName": "server-c"}, "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "True"}]}}`))
+	set(unread, "web-6e", "metadata", "ownerReferences", 0, "name")
+	if err := wait(3, 2, func(int) []map[string]any { return []map[string]any{ready, unread, a} }); failsFast(err) {
+		t.Fatalf("a replica with an unreadable ReplicaSet was dropped: %v", err)
+	}
+	unreadStuck := unschedulable("web-v")
+	set(unreadStuck, "web-6e", "metadata", "ownerReferences", 0, "name")
+	if err := wait(2, 2, func(int) []map[string]any { return []map[string]any{ready, unreadStuck} }); failsFast(err) {
+		t.Fatalf("a Pod with an unreadable ReplicaSet was taken for stuck: %v", err)
+	}
+
 	// A Job's Pod with the same labels, and a nominated preemptor.
 	job := unschedulable("backup-1")
 	set(job, []any{map[string]any{"kind": "Job", "name": "backup"}}, "metadata", "ownerReferences")
@@ -381,34 +396,63 @@ func TestDrainTimeoutCoversGracePeriod(t *testing.T) {
 }
 
 // Spreading the Pods can leave one out of a set that fits; the check then
-// packs them tightly instead.
-func TestPlaceNeededPacksWhenSpreadingFails(t *testing.T) {
+// searches for a placement, and refuses only a set that does not fit.
+func TestPlaceNeededSearchesWhenSpreadingFails(t *testing.T) {
 	node := func(name string, cpu int64) *roomyNode {
 		var n node
 		n.Metadata.Name = name
 		r := resources{cpu, 16 << 30}
 		return &roomyNode{node: n, allocatable: r, free: r}
 	}
-	pod := func(name string, cpu int64) displacedPod {
-		var p pod
-		p.Metadata.Namespace, p.Metadata.Name = "default", name
-		return displacedPod{pod: p, requests: resources{cpu, 1 << 30}}
+	pods := func(cpus ...int64) []displacedPod {
+		var displaced []displacedPod
+		for i, cpu := range cpus {
+			var p pod
+			p.Metadata.Namespace, p.Metadata.Name = "default", fmt.Sprintf("p%d", i)
+			displaced = append(displaced, displacedPod{pod: p, requests: resources{cpu, 1 << 30}})
+		}
+		return displaced
 	}
-	needed := []displacedPod{pod("a", 3000), pod("b", 2000), pod("c", 2000)}
-	room := []*roomyNode{node("server-b", 4000), node("server-c", 3000)}
-	if noRoom, barred := place(room, needed, nil, false); len(noRoom) != 1 || len(barred) != 0 {
-		t.Fatalf("spreading placed what it should not: %v %v", noRoom, barred)
+	cases := []struct {
+		name     string
+		nodes    []int64
+		pods     []int64
+		spread   int
+		unplaced int
+	}{
+		{"tighter fit", []int64{4000, 3000}, []int64{3000, 2000, 2000}, 1, 0},
+		{"neither greedy order", []int64{10000, 10000}, []int64{5000, 4000, 3000, 2000, 2000, 2000, 2000}, 1, 0},
+		{"too much", []int64{4000, 3000}, []int64{3000, 2000, 2000, 100}, 1, 1},
 	}
-	room = []*roomyNode{node("server-b", 4000), node("server-c", 3000)}
-	if unplaced := placeNeeded(room, needed, nil); len(unplaced) != 0 {
-		t.Fatalf("a set that fits was refused: %v", unplaced)
-	}
-	if room[0].free.cpu != 0 || room[1].free.cpu != 0 || len(room[0].placed) != 2 {
-		t.Errorf("packing: %v %v", room[0], room[1])
-	}
-	room = []*roomyNode{node("server-b", 4000), node("server-c", 3000)}
-	if unplaced := placeNeeded(room, append(needed, pod("d", 100)), nil); len(unplaced) != 1 {
-		t.Fatalf("a set that does not fit passed: %v", unplaced)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var room []*roomyNode
+			for i, cpu := range c.nodes {
+				room = append(room, node(fmt.Sprintf("server-%d", i), cpu))
+			}
+			if noRoom, _ := place(room, pods(c.pods...), nil); len(noRoom) != c.spread {
+				t.Fatalf("spreading left out %v", noRoom)
+			}
+			for _, r := range room {
+				r.free, r.placed = r.allocatable, nil
+			}
+			unplaced := placeNeeded(room, pods(c.pods...), nil)
+			if len(unplaced) != c.unplaced {
+				t.Fatalf("unplaced %v", unplaced)
+			}
+			if c.unplaced == 0 {
+				placed := 0
+				for _, r := range room {
+					if r.free.cpu < 0 {
+						t.Errorf("%s overcommitted: %v", r.node.Metadata.Name, r.free)
+					}
+					placed += len(r.placed)
+				}
+				if placed != len(c.pods) {
+					t.Errorf("placed %d of %d", placed, len(c.pods))
+				}
+			}
+		})
 	}
 }
 
@@ -428,6 +472,38 @@ func TestDisplacedPodsCountPodReadiness(t *testing.T) {
 	set(f.pods[0], []any{map[string]any{"type": "Ready", "status": "False"}}, "status", "conditions")
 	output := run(t, f, "reboot", "--check-only")
 	mustContain(t, output, "needed-pods\t0\tunplaced\t0\t")
+}
+
+// The scheduler holds, per container, the larger of its request and what
+// the node allocated to it or it runs with, then adds the Pod overhead.
+func TestResidentRequestsPerContainer(t *testing.T) {
+	var p pod
+	newContainer := func(name, cpu string) container {
+		var c container
+		c.Name = name
+		c.Resources.Requests = map[string]string{"cpu": cpu}
+		return c
+	}
+	p.Spec.Containers = []container{newContainer("a", "2"), newContainer("b", "1")}
+	p.Spec.Overhead = map[string]string{"cpu": "100m"}
+	var a, b containerStatus
+	a.Name, a.AllocatedResources = "a", map[string]string{"cpu": "1"}
+	b.Name = "b"
+	b.Resources.Requests = map[string]string{"cpu": "3"}
+	p.Status.ContainerStatuses = []containerStatus{a, b}
+	got, err := residentRequests(p)
+	if err != nil || got.cpu != 5100 {
+		t.Fatalf("residentRequests = %v, %v; want 5100m", got, err)
+	}
+	// A sidecar init container's status counts too.
+	p.Spec.InitContainers = []container{newContainer("s", "100m")}
+	p.Spec.InitContainers[0].RestartPolicy = "Always"
+	var s containerStatus
+	s.Name, s.AllocatedResources = "s", map[string]string{"cpu": "1"}
+	p.Status.InitContainerStatuses = []containerStatus{s}
+	if got, err := residentRequests(p); err != nil || got.cpu != 6100 {
+		t.Fatalf("with sidecar: %v, %v; want 6100m", got, err)
+	}
 }
 
 // A Pod in the middle of an in-place resize holds the larger of its new
