@@ -15,8 +15,9 @@ with every change to the tool and add an entry here:
   availability gate needs after its drain fit on the remaining nodes by
   their CPU and memory requests (#548, ADR-0010 amendment). It honours
   node selectors, required node affinity, taints and a one-per-node
-  anti-affinity, and warns when the drain's other Pods lack room after
-  them; `--check-only` runs it too.
+  anti-affinity, searches for a placement when spreading leaves one out
+  (warning when the search cannot settle it), and warns when the drain's
+  other Pods lack room after them; `--check-only` runs it too.
 - After the drain, the availability gate fails once a controller's Pods
   that have not each been Unschedulable for five minutes can no longer
   reach its minimum, instead of waiting out the settle timeout.

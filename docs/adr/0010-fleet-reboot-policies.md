@@ -269,14 +269,16 @@ The Pod-slot check before the cordon counts Pods, not CPU or memory.
   of a controller pinned to the node, a Job or a DaemonSet) on the
   remaining Ready, schedulable nodes by their requests (Pod-level requests
   where set; a resident container mid-resize holds the larger of its
-  request and its allocation). It places the largest first on the node
-  with the largest free share of CPU and memory, like the default
-  scheduler's spreading, and when that leaves one out, searches for any
-  placement within a bounded number of steps, so a set that fits is not
-  refused. It honours node selectors, required node
-  affinity, taints and a one-per-node anti-affinity, not spread
-  constraints or preferences. A needed Pod that fits nowhere stops the
-  run; `--check-only` reports the same. The drain's other Pods are
+  request and its allocation, or only its allocation when the resize is
+  infeasible). It places the largest first on the node with the largest
+  free share of CPU and memory, like the default scheduler's spreading,
+  and when that leaves one out, searches for any placement within a
+  bounded number of steps, the Pods with the fewest nodes first. It
+  honours node selectors, required node affinity, taints and a
+  one-per-node anti-affinity, not spread constraints or preferences. A
+  needed Pod that no node may run, or that the search settles fits
+  nowhere, stops the run; one the search cannot settle within its steps
+  is a warning. `--check-only` reports the same. The drain's other Pods are
   placed after them, and those some node may run but none has room for are
   only warned about: the scheduler places Pods in no such order, so they
   may take the room first. (One no node may run, such as a one-per-node
