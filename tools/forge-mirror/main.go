@@ -16,25 +16,12 @@ import (
 	"strings"
 )
 
-const (
-	defaultCodebergURL = "https://codeberg.org"
-)
-
 func configuredGithubPrimaryRepos() (map[string]bool, error) {
 	return configuredRepoNames(
 		"github-primary",
 		"FORGE_MIRROR_GITHUB_PRIMARY_REPOS",
 		"FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE",
 		defaultGithubPrimaryReposFile(),
-	)
-}
-
-func configuredCodebergRepos() (map[string]bool, error) {
-	return configuredRepoNames(
-		"Codeberg mirror",
-		"FORGE_MIRROR_CODEBERG_REPOS",
-		"FORGE_MIRROR_CODEBERG_REPOS_FILE",
-		"",
 	)
 }
 
@@ -305,23 +292,6 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "mirror-codeberg":
-		if token == "" {
-			token = readTokenFile()
-		}
-		if token == "" {
-			fmt.Fprintln(os.Stderr, "FORGEJO_TOKEN or FORGEJO_TOKEN_FILE is required for mirror-codeberg")
-			os.Exit(1)
-		}
-		var names []string
-		if len(os.Args) > 2 {
-			names = os.Args[2:]
-		}
-		if err := cmdMirrorCodeberg(forgejoURL, forgejoUser, commandEnv["CODEBERG_USER"], token, names); err != nil {
-			fmt.Fprintf(os.Stderr, "mirror-codeberg: %v\n", err)
-			os.Exit(1)
-		}
-
 	case "status":
 		var scanPaths []string
 		if len(os.Args) > 2 {
@@ -401,7 +371,6 @@ Commands:
   recreate  <names|--all> Delete and re-create repos as regular (non-mirror) repos
   pull      [names...]    Fetch from GitHub and push to Forgejo (all repos if no names)
   mirror-github [--refresh-existing] [names...|--all] Configure Forgejo push mirrors to GitHub (all repos if no names)
-  mirror-codeberg [names...] Configure Forgejo push mirrors to Codeberg (allowlisted repos only)
   status    [paths...]    Show mirror and push-url status for local repos
 
 Environment:
@@ -428,14 +397,7 @@ Environment:
                          Required by mirror-github/audit.
   FORGE_MIRROR_REQUIRED_PRIVATE_REPOS Comma/space/newline-separated repos required to be private
   FORGE_MIRROR_REQUIRED_PRIVATE_REPOS_FILE File containing repos required to be private
-                         Required by audit.
-  FORGE_MIRROR_CODEBERG_REPOS Comma/space/newline-separated repos eligible for Codeberg mirrors
-  FORGE_MIRROR_CODEBERG_REPOS_FILE File containing repos eligible for Codeberg mirrors
-                         Required by mirror-codeberg.
-  CODEBERG_URL         Codeberg base URL (default: https://codeberg.org)
-  CODEBERG_USER        Codeberg account name
-  CODEBERG_MIRROR_PAT  Codeberg PAT for Forgejo push mirrors
-  CODEBERG_MIRROR_PAT_FILE Path to file containing Codeberg PAT`)
+                         Required by audit.`)
 }
 
 var commandEnvironmentKeys = map[string][]string{
@@ -446,7 +408,6 @@ var commandEnvironmentKeys = map[string][]string{
 	"recreate":          {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
 	"pull":              {"FORGEJO_URL", "FORGEJO_USER"},
 	"mirror-github":     {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
-	"mirror-codeberg":   {"FORGEJO_URL", "FORGEJO_USER", "CODEBERG_USER"},
 	"status":            {"FORGEJO_URL", "FORGEJO_USER", "FORGEJO_SSH_HOST"},
 	"audit":             {"FORGEJO_URL", "FORGEJO_USER", "GITHUB_USER"},
 	"credential-helper": {"FORGEJO_USER"},
@@ -867,10 +828,6 @@ func getGitHubPAT() string {
 	return strings.TrimSpace(string(out))
 }
 
-func getCodebergPAT() string {
-	return readSecretEnv("CODEBERG_MIRROR_PAT", "CODEBERG_MIRROR_PAT_FILE")
-}
-
 // --- mirror-github command ---
 
 func parseMirrorArgs(args []string) (bool, []string) {
@@ -961,67 +918,6 @@ func filterGitHubMirrorRepos(repos []forgejoRepo, githubPrimaryRepos, githubDeni
 			continue
 		}
 		filtered = append(filtered, repo)
-	}
-	return filtered
-}
-
-func cmdMirrorCodeberg(forgejoURL, forgejoUser, codebergUser, token string, names []string) error {
-	codebergRepos, err := configuredCodebergRepos()
-	if err != nil {
-		return err
-	}
-	codebergToken := getCodebergPAT()
-	if codebergToken == "" {
-		return fmt.Errorf("CODEBERG_MIRROR_PAT or CODEBERG_MIRROR_PAT_FILE is required")
-	}
-
-	repos, err := fetchForgejoRepos(forgejoURL, forgejoUser, token)
-	if err != nil {
-		return fmt.Errorf("fetching repos: %w", err)
-	}
-
-	filteredNames, err := filterCodebergRepoNames(names, codebergRepos)
-	if err != nil {
-		return err
-	}
-	filteredRepos := filterCodebergRepos(repos, codebergRepos)
-
-	return cmdMirrorRemote(
-		forgejoURL,
-		forgejoUser,
-		token,
-		filteredRepos,
-		filteredNames,
-		"mirror-codeberg",
-		"Codeberg",
-		codebergMirrorTarget(envOr("CODEBERG_URL", defaultCodebergURL), codebergUser),
-		codebergUser,
-		codebergToken,
-		false,
-	)
-}
-
-func filterCodebergRepoNames(names []string, codebergRepos map[string]bool) ([]string, error) {
-	if len(names) == 0 {
-		return nil, nil
-	}
-
-	filtered := make([]string, 0, len(names))
-	for _, name := range names {
-		if !codebergRepos[strings.ToLower(name)] {
-			return nil, fmt.Errorf("repo %q is not allowlisted for Codeberg", name)
-		}
-		filtered = append(filtered, name)
-	}
-	return filtered, nil
-}
-
-func filterCodebergRepos(repos []forgejoRepo, codebergRepos map[string]bool) []forgejoRepo {
-	filtered := make([]forgejoRepo, 0, len(repos))
-	for _, repo := range repos {
-		if codebergRepos[strings.ToLower(repo.Name)] {
-			filtered = append(filtered, repo)
-		}
 	}
 	return filtered
 }
@@ -2162,23 +2058,9 @@ func readSecretEnv(valueKey, fileKey string) string {
 	return strings.TrimSpace(string(data))
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 func githubMirrorTarget(githubUser string) func(string) string {
 	return func(repoName string) string {
 		return fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repoName)
-	}
-}
-
-func codebergMirrorTarget(codebergURL, codebergUser string) func(string) string {
-	base := strings.TrimSuffix(codebergURL, "/")
-	return func(repoName string) string {
-		return fmt.Sprintf("%s/%s/%s.git", base, codebergUser, repoName)
 	}
 }
 

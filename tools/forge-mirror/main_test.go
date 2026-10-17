@@ -52,8 +52,6 @@ func isolatedMirrorConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS", "")
 	t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE", "")
-	t.Setenv("FORGE_MIRROR_CODEBERG_REPOS", "")
-	t.Setenv("FORGE_MIRROR_CODEBERG_REPOS_FILE", "")
 	t.Setenv("FORGE_MIRROR_GITHUB_DENIED_REPOS", "")
 	t.Setenv("FORGE_MIRROR_GITHUB_DENIED_REPOS_FILE", "")
 	t.Setenv("FORGE_MIRROR_REQUIRED_PRIVATE_REPOS", "")
@@ -65,10 +63,6 @@ func isolatedMirrorConfig(t *testing.T) {
 	t.Setenv("GITHUB_USER", "test-user")
 	t.Setenv("FORGEJO_TOKEN", "test-token")
 	t.Setenv("FORGEJO_TOKEN_FILE", "")
-	t.Setenv("CODEBERG_MIRROR_PAT", "test-codeberg-token")
-	t.Setenv("CODEBERG_MIRROR_PAT_FILE", "")
-	t.Setenv("CODEBERG_URL", "https://codeberg.org")
-	t.Setenv("CODEBERG_USER", "test-user")
 	previousClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Hostname() != "127.0.0.1" {
@@ -168,7 +162,6 @@ func TestCommandEnvironmentRequiresOnlyConsumedScalars(t *testing.T) {
 		"FORGEJO_USER":     "forge-user",
 		"FORGEJO_SSH_HOST": "ssh.forge.test",
 		"GITHUB_USER":      "github-user",
-		"CODEBERG_USER":    "codeberg-user",
 	}
 	for command, requiredKeys := range commandEnvironmentKeys {
 		t.Run(command, func(t *testing.T) {
@@ -276,7 +269,7 @@ func TestPrimaryNeverMakesPullMirrorOriginAndRestoresItsSource(t *testing.T) {
 		{"name":"unlisted","full_name":"forge-user/unlisted","mirror":true,"original_url":"https://github.com/owner/unlisted.git"},
 		{"name":"pushed","full_name":"forge-user/pushed","mirror":true,"original_url":"https://github.com/owner/pushed.git"},
 		{"name":"shared","full_name":"forge-user/shared","mirror":true,"original_url":"https://github.com/owner/shared.git"},
-		{"name":"elsewhere","full_name":"forge-user/elsewhere","mirror":true,"original_url":"https://codeberg.org/owner/elsewhere.git"},
+		{"name":"elsewhere","full_name":"forge-user/elsewhere","mirror":true,"original_url":"https://forge.example/owner/elsewhere.git"},
 		{"name":"orgmirror","full_name":"acme/orgmirror","mirror":true,"original_url":"https://github.com/upstream/orgmirror.git"},
 		{"name":"orgmirror","full_name":"forge-user/orgmirror"},
 		{"name":"foreign","full_name":"acme/foreign","mirror":true,"original_url":"https://github.com/upstream/foreign.git"},
@@ -408,7 +401,7 @@ func TestGitHubSSHURL(t *testing.T) {
 		"ssh://git@github.com/owner/repo.git":       "git@github.com:owner/repo.git",
 		"git@github.com:owner/repo.git":             "git@github.com:owner/repo.git",
 		"https://GitHub.com/owner/repo/":            "git@github.com:owner/repo.git",
-		"https://codeberg.org/owner/repo.git":       "",
+		"https://forge.example/owner/repo.git":      "",
 		"https://github.com.example/owner/repo.git": "",
 		"https://github.com/owner":                  "",
 		"https://github.com/owner/repo/extra":       "",
@@ -1014,13 +1007,6 @@ func TestAdditionalPolicyInputsFailBeforeNetwork(t *testing.T) {
 			command:   func(base string) error { return cmdAudit(base, "forge-user", "github-user", "token", nil) },
 			errorText: "required-private",
 		},
-		{
-			name:      "mirror-codeberg-membership",
-			valueKey:  "FORGE_MIRROR_CODEBERG_REPOS",
-			fileKey:   "FORGE_MIRROR_CODEBERG_REPOS_FILE",
-			command:   func(base string) error { return cmdMirrorCodeberg(base, "forge-user", "codeberg-user", "token", nil) },
-			errorText: "Codeberg mirror",
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1135,7 +1121,7 @@ func TestMirrorGitHubBulkPreservesForgejoFirst(t *testing.T) {
 }
 
 func TestAuditGitHubPrimaryDirectionOnly(t *testing.T) {
-	for _, address := range []string{"", "https://codeberg.org/test-user/public-app.git", "https://github.com/another-owner/renamed", "git@github.com:test-user/public-app.git", "ssh://git@GitHub.com/test-user/public-app.git"} {
+	for _, address := range []string{"", "https://forge.example/test-user/public-app.git", "https://github.com/another-owner/renamed", "git@github.com:test-user/public-app.git", "ssh://git@GitHub.com/test-user/public-app.git"} {
 		t.Run(address, func(t *testing.T) {
 			isolatedMirrorConfig(t)
 			t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS", "public-app")
@@ -1160,7 +1146,7 @@ func TestAuditGitHubPrimaryDirectionOnly(t *testing.T) {
 			}))
 			defer server.Close()
 			err := cmdAudit(server.URL, "test-user", "test-user", "test-token", nil)
-			wantDrift := address != "" && !strings.Contains(address, "codeberg.org")
+			wantDrift := address != "" && !strings.Contains(address, "forge.example")
 			if (err != nil) != wantDrift {
 				t.Fatalf("expected drift=%v, got %v", wantDrift, err)
 			}
@@ -1177,7 +1163,7 @@ func TestFetchPushMirrorsPaginatesAndFailsClosed(t *testing.T) {
 				}
 				switch r.URL.Query().Get("page") {
 				case "1":
-					fmt.Fprint(w, `[{"remote_address":"https://codeberg.org/test-user/public-app.git"}]`)
+					fmt.Fprint(w, `[{"remote_address":"https://forge.example/test-user/public-app.git"}]`)
 				case "2":
 					switch secondPage {
 					case "mirror":
@@ -1210,7 +1196,7 @@ func TestIsGitHubRemote(t *testing.T) {
 			t.Errorf("not recognized: %s", address)
 		}
 	}
-	for _, address := range []string{"https://codeberg.org/a/b.git", "https://github.com.example.org/a/b.git", "https://example.org/github.com/a/b", "https://github.com@example.org/a/b", "bad%url"} {
+	for _, address := range []string{"https://forge.example/a/b.git", "https://github.com.example.org/a/b.git", "https://example.org/github.com/a/b", "https://github.com@example.org/a/b", "bad%url"} {
 		if isGitHubRemote(address) {
 			t.Errorf("incorrectly recognized: %s", address)
 		}
@@ -1269,46 +1255,6 @@ func TestBulkConversionSkipsGitHubPrimary(t *testing.T) {
 				t.Fatalf("deleted=%d migrated=%d err=%v", deleted, migrated, err)
 			}
 		})
-	}
-}
-
-func TestCodebergMirroringDoesNotRequireGitHubPrimaryPolicy(t *testing.T) {
-	isolatedMirrorConfig(t)
-	t.Setenv("FORGE_MIRROR_CODEBERG_REPOS", "public-app")
-	created := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v1/repos/search":
-			if r.URL.Query().Get("page") == "1" {
-				fmt.Fprint(w, `{"data":[{"name":"public-app"},{"name":"not-allowlisted"}]}`)
-			} else {
-				fmt.Fprint(w, `{"data":[]}`)
-			}
-		case r.URL.Path == "/api/v1/repos/test-user/public-app/push_mirrors" && r.Method == "GET":
-			fmt.Fprint(w, `[]`)
-		case r.URL.Path == "/api/v1/repos/test-user/public-app/push_mirrors" && r.Method == "POST":
-			var payload struct {
-				Address string `json:"remote_address"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Error(err)
-			}
-			if payload.Address != "https://codeberg.org/test-user/public-app.git" {
-				t.Errorf("unexpected Codeberg target %q", payload.Address)
-			}
-			created++
-			w.WriteHeader(http.StatusCreated)
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			http.Error(w, "unexpected request", http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-	if err := cmdMirrorCodeberg(server.URL, "test-user", "test-user", "test-token", nil); err != nil {
-		t.Fatal(err)
-	}
-	if created != 1 {
-		t.Fatalf("created %d mirrors", created)
 	}
 }
 
