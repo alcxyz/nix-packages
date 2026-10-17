@@ -140,6 +140,22 @@ func (o *Operation) workloadRequiresTargetNode(w workload) (bool, error) {
 	return requiresTargetNode(o.opts.Node, c.Spec.Template.Spec, nodes.Items), nil
 }
 
+// selectorMatches applies a label selector as Kubernetes does: an empty
+// one selects every Pod, and NotIn and DoesNotExist select a Pod without
+// the label. A nil selector selects none.
+func selectorMatches(labels map[string]string, s *labelSelector) bool {
+	if s == nil || !labelsMatch(labels, s.MatchLabels) {
+		return false
+	}
+	for _, r := range s.MatchExpressions {
+		value, present := labels[r.Key]
+		if !requirementMatches(value, present, r) {
+			return false
+		}
+	}
+	return true
+}
+
 // labelsMatch reports whether labels carry every key and value of match.
 func labelsMatch(labels, match map[string]string) bool {
 	for key, value := range match {

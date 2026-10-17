@@ -34,6 +34,18 @@ type Operation struct {
 	poll time.Duration
 	// fenceStopTimeout bounds the wait for the agent to publish mode=stopped.
 	fenceStopTimeout time.Duration
+	// unschedulableGrace bounds the wait for a replica the scheduler cannot
+	// place.
+	unschedulableGrace time.Duration
+	// limitRanges caches each namespace's LimitRanges for the run.
+	limitRanges map[string][]limitRange
+	// cordoned is set once the run holds the node's cordon: its own, or the
+	// one a resumed maintenance found.
+	cordoned bool
+	// releasable is set from this run's cordon until the storage detach,
+	// which may change the host's storage sessions: a gate that fails in
+	// between lifts the cordon again.
+	releasable bool
 
 	// workloads are the controllers displaced by the drain, or reconstructed
 	// from Pending Pods, that must settle once the node returns.
@@ -51,15 +63,16 @@ type Operation struct {
 // once ctx is done.
 func New(ctx context.Context, opts Options, runner *Runner) *Operation {
 	return &Operation{
-		opts:             opts,
-		runner:           runner,
-		ctx:              ctx,
-		stdout:           runner.Stdout,
-		stderr:           runner.Stderr,
-		now:              time.Now,
-		sleep:            sleepContext,
-		poll:             5 * time.Second,
-		fenceStopTimeout: 60 * time.Second,
+		opts:               opts,
+		runner:             runner,
+		ctx:                ctx,
+		stdout:             runner.Stdout,
+		stderr:             runner.Stderr,
+		now:                time.Now,
+		sleep:              sleepContext,
+		poll:               5 * time.Second,
+		fenceStopTimeout:   60 * time.Second,
+		unschedulableGrace: unschedulableGrace,
 	}
 }
 
@@ -166,7 +179,7 @@ func (o *Operation) expired(deadline time.Time) bool {
 
 func (o *Operation) reboot() error {
 	if err := o.prepareNodeForDisruption(); err != nil {
-		return err
+		return o.releaseCordon(err)
 	}
 	if err := o.stopFenceAgent(); err != nil {
 		return err
@@ -220,7 +233,7 @@ func (o *Operation) reboot() error {
 
 func (o *Operation) powerOff() error {
 	if err := o.prepareNodeForDisruption(); err != nil {
-		return err
+		return o.releaseCordon(err)
 	}
 	if err := o.stopFenceAgent(); err != nil {
 		return err
@@ -354,6 +367,11 @@ func (o *Operation) checkOnly() error {
 		if err := o.checkStableNodePodSlots(); err != nil {
 			return err
 		}
+		if !o.opts.SkipDrain {
+			if err := o.checkDisplacedPodsFit(); err != nil {
+				return err
+			}
+		}
 	}
 	o.log("checks passed; no changes were made")
 	return nil
@@ -427,6 +445,11 @@ func (o *Operation) prepareNodeForDisruption() error {
 	if err := o.checkStableNodePodSlots(); err != nil {
 		return err
 	}
+	if !o.opts.SkipDrain {
+		if err := o.checkDisplacedPodsFit(); err != nil {
+			return err
+		}
+	}
 	if err := o.switchCNPGPrimariesOffNode(); err != nil {
 		return err
 	}
@@ -444,15 +467,21 @@ func (o *Operation) prepareNodeForDisruption() error {
 	if r := o.kubectl(Command{Argv: []string{"cordon", node}, Passthrough: true}); r.Status != 0 {
 		return fmt.Errorf("could not cordon %s", node)
 	}
+	o.cordoned = true
+	o.releasable = true
 
 	if o.opts.SkipDrain {
 		o.log("skipping drain by request")
 	} else {
+		timeout, err := o.drainTimeout()
+		if err != nil {
+			return err
+		}
 		argv := []string{"drain", node,
 			"--ignore-daemonsets",
 			"--delete-emptydir-data",
 			"--pod-selector=longhorn.io/component!=instance-manager",
-			"--timeout=" + o.opts.DrainTimeout,
+			"--timeout=" + timeout,
 		}
 		if o.opts.ForceDrain {
 			argv = append(argv, "--force")
@@ -462,7 +491,7 @@ func (o *Operation) prepareNodeForDisruption() error {
 		}
 		o.log("draining %s", node)
 		if r := o.kubectl(Command{Argv: argv, Passthrough: true}); r.Status != 0 {
-			return fmt.Errorf("drain failed; node disruption was not started and %s remains cordoned", node)
+			return fmt.Errorf("drain failed; node disruption was not started")
 		}
 		if err := o.waitForDisplacedWorkloadSurvivability(); err != nil {
 			return err
@@ -472,6 +501,7 @@ func (o *Operation) prepareNodeForDisruption() error {
 		}
 	}
 
+	o.releasable = false
 	if err := o.waitForNodeStorageDetach(); err != nil {
 		return err
 	}
@@ -481,11 +511,80 @@ func (o *Operation) prepareNodeForDisruption() error {
 	return o.waitForCNPGSurvivability()
 }
 
+// releaseCordon uncordons the node when the drain or a workload gate after
+// it fails: the node still runs untouched, and keeping it cordoned only takes
+// its room from the Pods the drain displaced. From the storage detach on,
+// the node keeps its cordon, as does a node a resumed maintenance found
+// cordoned and an interrupted run, for the operator to inspect, and one
+// with --leave-cordoned. A kept cordon is named in the error.
+func (o *Operation) releaseCordon(err error) error {
+	if o.ctx.Err() != nil {
+		return err
+	}
+	if !o.releasable || o.opts.LeaveCordonedRequested {
+		if o.cordoned && !strings.Contains(err.Error(), "remains cordoned") {
+			return fmt.Errorf("%w; %s remains cordoned", err, o.opts.Node)
+		}
+		return err
+	}
+	node := o.opts.Node
+	o.log("uncordoning %s: maintenance stopped before the power action", node)
+	if r := o.kubectl(Command{Argv: []string{"uncordon", node}, Passthrough: true}); r.Status != 0 {
+		return fmt.Errorf("%w; could not uncordon %s, which remains cordoned", err, node)
+	}
+	return fmt.Errorf("%w; %s was uncordoned", err, node)
+}
+
+// drainMargin is the time a drain gets beyond the longest grace period of
+// the Pods it evicts.
+const drainMargin = 2 * time.Minute
+
+// drainTimeout is the drain's timeout: the operator's --drain-timeout, or
+// the default raised to cover the longest grace period of the node's
+// evictable Pods plus drainMargin, since the drain waits for each to stop.
+func (o *Operation) drainTimeout() (string, error) {
+	pods, err := o.listNodePods()
+	if err != nil {
+		return "", err
+	}
+	var longest int64
+	slowest := ""
+	for _, p := range pods {
+		// kubectl drain skips DaemonSet and mirror Pods.
+		if !p.active() || p.Metadata.hasOwner("DaemonSet") || isMirror(p) ||
+			p.Metadata.Labels["longhorn.io/component"] == "instance-manager" {
+			continue
+		}
+		grace := int64(30)
+		if p.Spec.TerminationGracePeriodSeconds != nil {
+			grace = *p.Spec.TerminationGracePeriodSeconds
+		}
+		if grace > longest {
+			longest = grace
+			slowest = p.Metadata.Namespace + "/" + p.Metadata.Name
+		}
+	}
+	timeout := duration(o.opts.DrainTimeout)
+	needed := time.Duration(longest)*time.Second + drainMargin
+	// kubectl drain waits without a limit for a zero timeout.
+	if timeout == 0 || needed <= timeout {
+		return o.opts.DrainTimeout, nil
+	}
+	if o.opts.DrainTimeoutSet {
+		o.log("warning: %s may take %ds to stop; with a %s margin that is more than the drain timeout of %s", slowest, longest, drainMargin, o.opts.DrainTimeout)
+		return o.opts.DrainTimeout, nil
+	}
+	raised := fmt.Sprintf("%ds", int64(needed/time.Second))
+	o.log("raising the drain timeout to %s: %s may take %ds to stop", raised, slowest, longest)
+	return raised, nil
+}
+
 func (o *Operation) verifyResumedMaintenanceState() error {
 	o.log("validating resumed maintenance state for %s", o.opts.Node)
 	if err := o.verifyNodeIsCordoned(); err != nil {
 		return err
 	}
+	o.cordoned = true
 	if err := o.verifyNodeHasOnlyMaintenancePods(); err != nil {
 		return err
 	}

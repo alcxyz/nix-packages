@@ -252,3 +252,85 @@ not show this; only the primary's `pg_stat_replication` does.
   a drain never leaves their synchronous primary without a standby to
   confirm its commits. A two-instance cluster keeps no replica with one
   node down; requiring one would make it impossible to maintain.
+
+## Amendment (2026-10-17): room before the drain
+
+The first fleet run drained a node whose Pods the other nodes could not
+hold: the scheduler places Pods by their CPU requests, and the remaining
+nodes' free requests fell short. The availability gate then waited the full
+settle timeout (90 minutes) for replicas that could never start, and the
+failure left the node cordoned, which kept its room from those same Pods.
+The Pod-slot check before the cordon counts Pods, not CPU or memory.
+
+- **The needed Pods must fit before anything changes.** Before the
+  database switchover and the cordon, a run places the Pods the
+  availability gate will need elsewhere on the remaining Ready, schedulable
+  nodes. `--check-only` reports the same.
+  - *Which Pods:* per controller, as many as its Ready replicas on other
+    nodes fall short of the gate's minimum: those some remaining node may
+    run, smallest first, or for an ordered StatefulSet the lowest ordinals,
+    which it recreates first; not those of a controller pinned to the node
+    or tolerating its cordon, a Job or a DaemonSet.
+  - *Their size:* an upper bound on the replacement, from the union of the
+    Pod, which carries what admission added (LimitRange defaults, injected
+    sidecars, RuntimeClass overhead), and the template that recreates it
+    (its own ReplicaSet's, or for a StatefulSet the revision its ordinal
+    gets), which an in-place resize does not change: every container at the
+    larger of its two requests (as on admission, a limit standing in for a
+    missing request, per container and at Pod level, and then the largest
+    of the namespace's LimitRange defaults; a template that relies on them
+    stops the check when they cannot be read, as does a recreating
+    ReplicaSet, StatefulSet or revision that cannot be read), each init container beside the sidecars that
+    start before it on either side, and the larger Pod-level request. It is
+    exact when the Pod matches the template. Pods already on a node hold
+    what the node allocated them during a resize, or only that, for the
+    resources it reports, when the resize is infeasible.
+  - *Where:* the largest first on the node with the largest free share of
+    CPU and memory, like the default scheduler's spreading; when that
+    leaves one out, a search for any placement within a bounded number of
+    steps, the Pods with the fewest nodes first. A total beyond the nodes'
+    free room settles it at once, and interchangeable Pods (same namespace,
+    labels and requests, no anti-affinity of their own) are tried in each
+    arrangement once. It honours node selectors, required node affinity,
+    taints and required hostname anti-affinity both ways (the Pod's and the
+    running and placed Pods').
+  - *Outcome:* a needed Pod no node may run, or that the search settles
+    fits nowhere, stops the run; one the search cannot settle within its
+    steps is a warning. The drain's other Pods are placed after them, and
+    those some node may run but none has room for are only warned about,
+    since the scheduler places Pods in no such order. (One no node may run,
+    such as a one-per-node replica with too few nodes left, waits for the
+    node by design.)
+  - *Limits:* placement uses the running Pod's constraints, not a changed
+    template's, and leaves out spread constraints, preferences, required Pod
+    affinity, host ports, volume node affinity and extended resources; the needed replicas are chosen by whether some node may
+    run them and by size (CPU, then memory), not by room, so a refusal can
+    name a replica while another would have fit; and the size may exceed
+    the replacement's. The check therefore catches a shortage early but
+    guarantees nothing; the gate after the drain still decides.
+- **An unplaceable replica fails fast.** After the drain, nothing frees room
+  on its own. Once a controller's live Pods (a rollout's surge Pods
+  included) that have not each been reported Unschedulable for five
+  minutes are fewer than its gate's minimum, the availability gate fails
+  with the scheduler's reasons. A Pod of another owner and a preemptor
+  waiting for its victims do not count; a Pod whose ReplicaSet cannot be
+  read counts as a replica but never as stuck.
+- **A failure before the storage detach uncordons.** This replaces "cordoned
+  and drained" as the safe state for a node whose drain or availability
+  gate failed: it still runs untouched, and staying cordoned only takes its
+  room away. From the storage detach on, which may change the host's
+  storage sessions, the node keeps its cordon, and so does a node that
+  `--resume-maintenance` found cordoned and a run with `--leave-cordoned`,
+  whose error then says it remains cordoned, and a run that was
+  interrupted, which says the node may need inspection.
+- **The drain outlasts the slowest Pod.** Without `--drain-timeout`, the
+  drain timeout grows to the longest grace period of the node's evictable
+  Pods plus two minutes, since the drain waits for each to stop; a shorter
+  chosen timeout is kept with a warning, and zero is passed on unchanged.
+
+Requiring room for every displaced Pod was considered: it would refuse
+maintenance whenever a replica the gate may lose does not fit.
+Requiring headroom for a whole node at all times was considered; it is a
+capacity policy for the cluster's manifests, which the check makes visible
+without enforcing. Lowering requests or scaling workloads down from the
+tool was rejected: it would change workloads the tool only moves.

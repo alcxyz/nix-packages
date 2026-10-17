@@ -48,6 +48,7 @@ type fakeCluster struct {
 	backup      map[string]any
 	attachments []map[string]any
 	pdbs        []map[string]any
+	limitRanges []map[string]any
 	cnpg        bool
 	clusters    []map[string]any
 	// standbys overrides, by replica Pod name, the "state|lag" a primary
@@ -206,10 +207,12 @@ func (f *fakeCluster) kubectl(args []string, line string) Result {
 		return list(f.podsWhere(func(p map[string]any) bool { return get(p, "spec", "nodeName") == name }))
 	case command == "get pods --all-namespaces --field-selector status.phase=Pending -o json":
 		return list(f.podsWhere(func(p map[string]any) bool { return get(p, "status", "phase") == "Pending" }))
+	case len(args) == 6 && args[0] == "-n" && args[2] == "get" && args[3] == "limitranges":
+		return list(f.limitRanges)
 	case len(args) == 6 && args[0] == "-n" && args[2] == "get" && args[3] == "pods":
 		return list(f.podsWhere(func(p map[string]any) bool { return get(p, "metadata", "namespace") == args[1] }))
-	case len(args) == 7 && args[0] == "-n" && args[2] == "get" && args[3] == "replicaset":
-		return f.controller(args[1], "replicaset/"+args[4])
+	case len(args) == 7 && args[0] == "-n" && args[2] == "get" && (args[3] == "replicaset" || args[3] == "statefulset" || args[3] == "controllerrevision"):
+		return f.controller(args[1], args[3]+"/"+args[4])
 	case len(args) == 6 && args[0] == "-n" && args[2] == "get" && strings.Contains(args[3], "/"):
 		return f.controller(args[1], args[3])
 	case len(args) >= 4 && args[0] == "-n" && args[2] == "rollout" && args[3] == "status":

@@ -9,6 +9,7 @@ import "fmt"
 type objectMeta struct {
 	Name              string            `json:"name"`
 	Namespace         string            `json:"namespace"`
+	UID               string            `json:"uid"`
 	Labels            map[string]string `json:"labels"`
 	Annotations       map[string]string `json:"annotations"`
 	OwnerReferences   []ownerReference  `json:"ownerReferences"`
@@ -39,9 +40,10 @@ func (m objectMeta) firstOwner() ownerReference {
 }
 
 type condition struct {
-	Type   string `json:"type"`
-	Status string `json:"status"`
-	Reason string `json:"reason"`
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
 }
 
 type taint struct {
@@ -152,27 +154,74 @@ type spreadConstraint struct {
 	MatchLabelKeys     []string       `json:"matchLabelKeys"`
 }
 
+// container is the part of a container the capacity check reads.
+type container struct {
+	Name      string `json:"name"`
+	Resources struct {
+		Requests map[string]string `json:"requests"`
+		Limits   map[string]string `json:"limits"`
+	} `json:"resources"`
+	// RestartPolicy Always marks a sidecar init container, which keeps
+	// running beside the app containers.
+	RestartPolicy string `json:"restartPolicy"`
+}
+
 type podSpec struct {
 	NodeName                  string             `json:"nodeName"`
 	NodeSelector              map[string]string  `json:"nodeSelector"`
 	Affinity                  *affinity          `json:"affinity"`
 	Tolerations               []toleration       `json:"tolerations"`
 	TopologySpreadConstraints []spreadConstraint `json:"topologySpreadConstraints"`
+	Containers                []container        `json:"containers"`
+	InitContainers            []container        `json:"initContainers"`
+	Overhead                  map[string]string  `json:"overhead"`
+	// Resources are Pod-level requests, which replace the containers' sum
+	// for each resource they name, and limits.
+	Resources struct {
+		Requests map[string]string `json:"requests"`
+		Limits   map[string]string `json:"limits"`
+	} `json:"resources"`
+	// TerminationGracePeriodSeconds defaults to 30 when nil.
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds"`
+}
+
+// containerStatus is the part of a container's status the gates read.
+type containerStatus struct {
+	Name  string `json:"name"`
+	Ready bool   `json:"ready"`
+	// AllocatedResources and Resources show what the node holds
+	// for the container while an in-place resize is under way.
+	AllocatedResources map[string]string `json:"allocatedResources"`
+	Resources          struct {
+		Requests map[string]string `json:"requests"`
+	} `json:"resources"`
+	State struct {
+		Waiting *struct {
+			Reason string `json:"reason"`
+		} `json:"waiting"`
+	} `json:"state"`
 }
 
 type pod struct {
 	Metadata objectMeta `json:"metadata"`
 	Spec     podSpec    `json:"spec"`
 	Status   struct {
-		Phase             string `json:"phase"`
-		ContainerStatuses []struct {
-			Ready bool `json:"ready"`
-			State struct {
-				Waiting *struct {
-					Reason string `json:"reason"`
-				} `json:"waiting"`
-			} `json:"state"`
-		} `json:"containerStatuses"`
+		Phase      string      `json:"phase"`
+		Conditions []condition `json:"conditions"`
+		// Resources and AllocatedResources are the Pod-level requests the
+		// node holds during a Pod-level in-place resize.
+		Resources struct {
+			Requests map[string]string `json:"requests"`
+		} `json:"resources"`
+		AllocatedResources map[string]string `json:"allocatedResources"`
+		// Resize is Infeasible, in older releases, for a resize the node
+		// cannot grant; newer ones use the PodResizePending condition.
+		Resize string `json:"resize"`
+		// NominatedNodeName is set while a preemptor waits for its
+		// victims to stop.
+		NominatedNodeName     string            `json:"nominatedNodeName"`
+		ContainerStatuses     []containerStatus `json:"containerStatuses"`
+		InitContainerStatuses []containerStatus `json:"initContainerStatuses"`
 	} `json:"status"`
 }
 
@@ -183,6 +232,17 @@ type podList struct {
 // active reports whether the Pod has not finished.
 func (p pod) active() bool {
 	return p.Status.Phase != "Succeeded" && p.Status.Phase != "Failed"
+}
+
+// podReady reports whether the Pod's Ready condition is true, which also
+// takes its readiness gates into account.
+func (p pod) podReady() bool {
+	for _, c := range p.Status.Conditions {
+		if c.Type == "Ready" {
+			return c.Status == "True"
+		}
+	}
+	return false
 }
 
 // runningAndReady reports whether the Pod runs with every container Ready.
@@ -268,6 +328,13 @@ func (o *Operation) listAllPods() ([]pod, error) {
 	var pods podList
 	err := o.getJSON(&pods, "get", "pods", "--all-namespaces", "-o", "json")
 	return pods.Items, err
+}
+
+// isMirror reports whether the Pod mirrors a static Pod, which kubectl
+// drain skips: it carries the mirror annotation, whatever its value.
+func isMirror(p pod) bool {
+	_, ok := p.Metadata.Annotations["kubernetes.io/config.mirror"]
+	return ok
 }
 
 // listNodePods lists the Pods bound to the target node.

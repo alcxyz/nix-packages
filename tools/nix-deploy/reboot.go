@@ -94,8 +94,10 @@ that reboots a node takes off every mark it does not set. A group fails
 before anything in it changes when a host cannot be read, a node is
 refused, or the cluster's nodes (or, for a group with nodes, its Pods)
 cannot be read. A failure stops the rest of its
-group and leaves the host as it is (a node cordoned and drained); the other
-groups go on. Every line a host prints starts with its name, and a summary
+group and leaves the host as it is (a node cordoned and drained, unless its
+drain or availability gate failed: it then still runs and is uncordoned,
+except with --leave-cordoned);
+the other groups go on. Every line a host prints starts with its name, and a summary
 of every host ends the run.
 
 Options:
@@ -1743,8 +1745,8 @@ func (h *hostReboot) waitBootCheck() error {
 }
 
 // endTurn takes the reboot mark off a node whose turn ended, whatever its
-// outcome: it no longer waits for a reboot, and one that failed stays
-// cordoned.
+// outcome: it no longer waits for a reboot, whether or not a failure left
+// it cordoned.
 func (h *hostReboot) endTurn() {
 	if !slices.Contains(h.f.marked, h.target.host) {
 		return

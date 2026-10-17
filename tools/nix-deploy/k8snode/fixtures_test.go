@@ -23,7 +23,7 @@ func serverNode(t *testing.T, name, address string) map[string]any {
 	  "status": {
 	    "conditions": [{"type": "Ready", "status": "True"}],
 	    "addresses": [{"type": "InternalIP", "address": %[2]q}],
-	    "allocatable": {"pods": "110"}
+	    "allocatable": {"pods": "110", "cpu": "4", "memory": "16Gi"}
 	  }
 	}`, name, address))
 }
@@ -37,7 +37,8 @@ func readyPod(t *testing.T, namespace, name, node, ownerKind, ownerName string, 
 	return decode(t, fmt.Sprintf(`{
 	  "metadata": {"namespace": %q, "name": %q, "labels": %s, "ownerReferences": %s},
 	  "spec": {"nodeName": %q},
-	  "status": {"phase": "Running", "containerStatuses": [{"ready": true, "state": {"running": {}}}]}
+	  "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}],
+	    "containerStatuses": [{"ready": true, "state": {"running": {}}}]}
 	}`, namespace, name, labels, owners, node))
 }
 

@@ -65,7 +65,6 @@ func TestRebootLifecycle(t *testing.T) {
 		`^kubectl get nodes -l workload-class=stable`,
 		`^kubectl cordon server-a$`,
 		`^kubectl drain server-a --ignore-daemonsets --delete-emptydir-data --pod-selector=longhorn.io/component!=instance-manager --timeout=10m$`,
-		`^kubectl -n default get deployment/web -o json`,
 		`^kubectl get volumeattachments`,
 		`cleanup_sessions=true`,
 		`^ssh -o BatchMode=yes root@server-a cat /proc/sys/kernel/random/boot_id$`,
@@ -80,6 +79,12 @@ func TestRebootLifecycle(t *testing.T) {
 	mustContain(t, output, "==> done")
 	if get(f.targetNode(), "spec", "unschedulable") != false {
 		t.Fatal("node left cordoned")
+	}
+	// The availability gate reads the Deployment again after the drain.
+	drain := f.callIndex(`^kubectl drain server-a`)
+	gate := slices.IndexFunc(f.calls[drain:], func(c call) bool { return c.line == "kubectl -n default get deployment/web -o json" })
+	if gate < 0 || drain+gate > f.callIndex(`^kubectl get volumeattachments`) {
+		t.Fatalf("no availability gate between the drain and the storage detach:\n%s", f.callLog())
 	}
 	if f.settings[rebuildLimitSetting] != "0" {
 		t.Fatalf("rebuild limit %q", f.settings[rebuildLimitSetting])
@@ -180,15 +185,79 @@ func TestPrivilegeFailureChangesNothing(t *testing.T) {
 	}
 }
 
-func TestDrainFailureLeavesNodeCordoned(t *testing.T) {
+// A drain that fails leaves the node running untouched, so the run lifts
+// its cordon and the cluster gets the node's room back.
+func TestDrainFailureUncordons(t *testing.T) {
+	for _, action := range []string{"reboot", "off"} {
+		t.Run(action, func(t *testing.T) {
+			f := newHealthyCluster(t)
+			f.drainExit = 1
+			runFailure(t, f, action, nil, "drain failed; node disruption was not started; server-a was uncordoned")
+			if get(f.targetNode(), "spec", "unschedulable") != false {
+				t.Fatal("node left cordoned")
+			}
+			requireOrder(t, f, `^kubectl cordon server-a$`, `^kubectl drain server-a`, `^kubectl uncordon server-a$`)
+			mustNotCall(t, f, regexp.QuoteMeta(rebootCommand))
+			mustNotCall(t, f, `poweroff`)
+		})
+	}
+
+	// --leave-cordoned keeps the cordon, and the error says so.
+	for _, action := range []string{"reboot", "off"} {
+		f := newHealthyCluster(t)
+		f.drainExit = 1
+		runFailure(t, f, action, []string{"--leave-cordoned"}, "drain failed; node disruption was not started; server-a remains cordoned")
+		mustNotCall(t, f, `^kubectl uncordon`)
+	}
+}
+
+// When the uncordon fails too, the error says the node stays cordoned.
+func TestDrainFailureReportsFailedUncordon(t *testing.T) {
 	f := newHealthyCluster(t)
 	f.drainExit = 1
-	runFailure(t, f, "reboot", nil, "drain failed; node disruption was not started and server-a remains cordoned")
-	if get(f.targetNode(), "spec", "unschedulable") != true {
-		t.Fatal("node not left cordoned")
+	f.respond = func(c Command, line string) (Result, bool) {
+		if line == "kubectl uncordon server-a" {
+			return Result{Status: 1}, true
+		}
+		return Result{}, false
 	}
+	runFailure(t, f, "reboot", nil, "drain failed; node disruption was not started; could not uncordon server-a, which remains cordoned")
+}
+
+// An interrupted drain keeps the cordon for the operator to inspect.
+func TestInterruptedDrainKeepsCordon(t *testing.T) {
+	f := newHealthyCluster(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.respond = func(c Command, line string) (Result, bool) {
+		if strings.HasPrefix(line, "kubectl drain ") {
+			cancel()
+			return Result{Status: 1}, true
+		}
+		return Result{}, false
+	}
+	o, output := newOperation(f, options(t, "reboot", "server-a"))
+	o.ctx = ctx
+	expectRunFailure(t, o, output, "interrupted; server-a may need inspection")
 	mustNotCall(t, f, `^kubectl uncordon`)
-	mustNotCall(t, f, regexp.QuoteMeta(rebootCommand))
+	if strings.Contains(output.String(), "uncordon") {
+		t.Fatalf("an interrupted run tried to uncordon:\n%s", output)
+	}
+}
+
+// A resumed maintenance never lifts the cordon it found.
+func TestResumedMaintenanceKeepsCordonOnFailure(t *testing.T) {
+	f := newHealthyCluster(t)
+	set(f.targetNode(), true, "spec", "unschedulable")
+	runFailure(t, f, "reboot", []string{"--resume-maintenance"}, "non-maintenance Pods remain on server-a; server-a remains cordoned")
+	mustNotCall(t, f, `^kubectl uncordon`)
+
+	// A node that is not cordoned is not reported as cordoned.
+	f = newHealthyCluster(t)
+	output := runFailure(t, f, "reboot", []string{"--resume-maintenance"}, "server-a is not cordoned")
+	if strings.Contains(output, "remains cordoned") {
+		t.Fatalf("an uncordoned node reported as cordoned:\n%s", output)
+	}
 }
 
 func TestRemoteRebootFailureLeavesNodeCordoned(t *testing.T) {
