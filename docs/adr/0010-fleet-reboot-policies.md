@@ -252,3 +252,42 @@ not show this; only the primary's `pg_stat_replication` does.
   a drain never leaves their synchronous primary without a standby to
   confirm its commits. A two-instance cluster keeps no replica with one
   node down; requiring one would make it impossible to maintain.
+
+## Amendment (2026-10-17): room before the drain
+
+The first fleet run drained a node whose Pods the other nodes could not
+hold: the scheduler places Pods by their CPU requests, and the remaining
+nodes' free requests fell short. The availability gate then waited the full
+settle timeout (90 minutes) for replicas that could never start, and the
+failure left the node cordoned, which kept its room from those same Pods.
+The Pod-slot check before the cordon counts Pods, not CPU or memory.
+
+- **The Pods must fit before anything changes.** Before the database
+  switchover and the cordon, a run places the Pods the availability gate
+  will need elsewhere (per controller, as many as its Ready replicas on
+  other nodes fall short of the gate's minimum; not those of a controller
+  pinned to the node, a Job or a DaemonSet) on the remaining Ready,
+  schedulable nodes by their requests. It places the largest first on the
+  node with the most free CPU, like the default scheduler's spreading, and
+  honours node selectors, required node affinity, taints and a one-per-node
+  anti-affinity, not spread constraints or preferences. A Pod that fits
+  nowhere stops the run; `--check-only` reports the same. The gate after
+  the drain still decides.
+- **An unplaceable replica fails fast.** After the drain, nothing frees room
+  on its own, so a replica the scheduler reports Unschedulable for five
+  minutes fails the availability gate with the scheduler's reason.
+- **A failure before the storage detach uncordons.** This replaces "cordoned
+  and drained" as the safe state for a node whose drain or availability
+  gate failed: it still runs untouched, and staying cordoned only takes its
+  room away. From the storage detach on, which may change the host's
+  storage sessions, the node keeps its cordon, and so does a node that
+  `--resume-maintenance` found cordoned and a run that was interrupted.
+- **The drain outlasts the slowest Pod.** Without `--drain-timeout`, the
+  drain timeout grows to the longest grace period of the node's evictable
+  Pods plus two minutes, since the drain waits for each to stop; a shorter
+  chosen timeout is kept with a warning.
+
+Requiring headroom for a whole node at all times was considered; it is a
+capacity policy for the cluster's manifests, which the check makes visible
+without enforcing. Lowering requests or scaling workloads down from the
+tool was rejected: it would change workloads the tool only moves.

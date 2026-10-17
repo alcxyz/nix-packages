@@ -39,9 +39,10 @@ func (m objectMeta) firstOwner() ownerReference {
 }
 
 type condition struct {
-	Type   string `json:"type"`
-	Status string `json:"status"`
-	Reason string `json:"reason"`
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
 }
 
 type taint struct {
@@ -152,19 +153,35 @@ type spreadConstraint struct {
 	MatchLabelKeys     []string       `json:"matchLabelKeys"`
 }
 
+// container is the part of a container the capacity check reads.
+type container struct {
+	Resources struct {
+		Requests map[string]string `json:"requests"`
+	} `json:"resources"`
+	// RestartPolicy Always marks a sidecar init container, which keeps
+	// running beside the app containers.
+	RestartPolicy string `json:"restartPolicy"`
+}
+
 type podSpec struct {
 	NodeName                  string             `json:"nodeName"`
 	NodeSelector              map[string]string  `json:"nodeSelector"`
 	Affinity                  *affinity          `json:"affinity"`
 	Tolerations               []toleration       `json:"tolerations"`
 	TopologySpreadConstraints []spreadConstraint `json:"topologySpreadConstraints"`
+	Containers                []container        `json:"containers"`
+	InitContainers            []container        `json:"initContainers"`
+	Overhead                  map[string]string  `json:"overhead"`
+	// TerminationGracePeriodSeconds defaults to 30 when nil.
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds"`
 }
 
 type pod struct {
 	Metadata objectMeta `json:"metadata"`
 	Spec     podSpec    `json:"spec"`
 	Status   struct {
-		Phase             string `json:"phase"`
+		Phase             string      `json:"phase"`
+		Conditions        []condition `json:"conditions"`
 		ContainerStatuses []struct {
 			Ready bool `json:"ready"`
 			State struct {

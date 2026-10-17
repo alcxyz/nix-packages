@@ -23,7 +23,7 @@ func serverNode(t *testing.T, name, address string) map[string]any {
 	  "status": {
 	    "conditions": [{"type": "Ready", "status": "True"}],
 	    "addresses": [{"type": "InternalIP", "address": %[2]q}],
-	    "allocatable": {"pods": "110"}
+	    "allocatable": {"pods": "110", "cpu": "4", "memory": "16Gi"}
 	  }
 	}`, name, address))
 }

@@ -9,6 +9,25 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.17.0 (2026-10-17)
+
+- A node's maintenance checks, before anything changes, that the Pods its
+  drain displaces fit on the remaining nodes by their CPU and memory
+  requests (#548, ADR-0010 amendment). It counts only the Pods the
+  availability gate needs elsewhere and honours node selectors, required
+  node affinity, taints and a one-per-node anti-affinity; `--check-only`
+  runs it too.
+- After the drain, a replica the scheduler reports Unschedulable for five
+  minutes fails the availability gate, instead of waiting out the settle
+  timeout.
+- A drain or availability gate that fails before the storage detach now
+  uncordons the node, which still runs, instead of leaving it cordoned and
+  short of room; later failures, an interrupt and `--resume-maintenance`
+  keep the cordon.
+- Without `--drain-timeout`, the drain timeout grows to the longest grace
+  period of the node's evictable Pods plus two minutes; a chosen timeout
+  that is shorter is kept with a warning.
+
 ## 0.16.0 (2026-10-17)
 
 - Database switchovers and health gates ask each CloudNativePG primary which

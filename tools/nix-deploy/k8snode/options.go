@@ -45,7 +45,9 @@ Options:
                            node is not cordoned, skip it without changing
                            anything. When that cannot be told, the reboot goes
                            ahead. Not with --resume-maintenance.
-  --drain-timeout <dur>    kubectl drain duration. Default: 10m.
+  --drain-timeout <dur>    kubectl drain duration. Default: 10m, raised to
+                           the longest grace period of the node's evictable
+                           Pods plus 2m.
   --ready-timeout <dur>    kubectl wait duration. Default: 10m.
   --fence-timeout <dur>    Agent recovery/heartbeat wait duration. Default: 10m.
   --settle-timeout <dur>   Workload/Longhorn health wait duration. Default: 90m.
@@ -108,6 +110,8 @@ type Options struct {
 	ReadyTimeout  string
 	FenceTimeout  string
 	SettleTimeout string
+	// DrainTimeoutSet is true when the operator chose the drain timeout.
+	DrainTimeoutSet bool
 
 	SSHTimeoutSeconds           int
 	RequireLonghornBackupTarget bool
@@ -196,6 +200,7 @@ func ParseArgs(action string, args []string) (Options, error) {
 			opts.Needed = true
 		case "--drain-timeout":
 			opts.DrainTimeout, err = value()
+			opts.DrainTimeoutSet = true
 		case "--ready-timeout":
 			opts.ReadyTimeout, err = value()
 		case "--fence-timeout":

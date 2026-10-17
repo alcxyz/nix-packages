@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 )
 
 // workloadForPod returns the controller that owns a Pod, resolving a
@@ -159,8 +160,15 @@ func (o *Operation) controllerReplicas(w workload) (int, error) {
 	return c.desiredReplicas(), nil
 }
 
+// unschedulableGrace is how long a replica the scheduler cannot place may
+// wait before the availability gate gives up on it. After the drain nothing
+// frees room on its own, so waiting out the settle timeout only keeps the
+// node cordoned.
+const unschedulableGrace = 5 * time.Minute
+
 func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) error {
 	deadline := o.now().Add(duration(o.opts.SettleTimeout))
+	var unschedulableSince time.Time
 	for {
 		ready := 0
 		var c controller
@@ -177,10 +185,80 @@ func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) er
 		if o.expired(deadline) {
 			return fmt.Errorf("%s has %d Ready replicas; maintenance requires %d", w, ready, minimumReady)
 		}
+		reason := ""
+		if found {
+			if reason, err = o.unschedulableReplica(w, c); err != nil {
+				return err
+			}
+		}
+		switch {
+		case reason == "":
+			unschedulableSince = time.Time{}
+		case unschedulableSince.IsZero():
+			unschedulableSince = o.now()
+		case !o.now().Before(unschedulableSince.Add(o.unschedulableGrace)):
+			return fmt.Errorf("%s has %d Ready replicas; maintenance requires %d, and the scheduler cannot place one: %s", w, ready, minimumReady, reason)
+		}
 		if err := o.pause(); err != nil {
 			return err
 		}
 	}
+}
+
+// unschedulableReplica returns the scheduler's message for a Pending Pod of
+// the controller it cannot place, or "" when there is none.
+func (o *Operation) unschedulableReplica(w workload, c controller) (string, error) {
+	var pods podList
+	found, err := o.readQuiet(&pods, "-n", w.Namespace, "get", "pods", "-o", "json")
+	if err != nil || !found {
+		return "", err
+	}
+	for _, p := range pods.Items {
+		if p.Status.Phase != "Pending" || c.Spec.Selector == nil || !pdbSelectorMatches(p.Metadata.Labels, c.Spec.Selector) {
+			continue
+		}
+		for _, cond := range p.Status.Conditions {
+			if cond.Type == "PodScheduled" && cond.Status == "False" && cond.Reason == "Unschedulable" {
+				return fmt.Sprintf("%s/%s: %s", p.Metadata.Namespace, p.Metadata.Name, cond.Message), nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// readyMinimum is the number of Ready replicas the availability gate
+// requires of a displaced controller while the node is out, and its desired
+// count. gated is false for kinds a dedicated gate covers, such as database
+// clusters.
+func (o *Operation) readyMinimum(w workload) (minimum, desired int, gated bool, err error) {
+	switch w.Kind {
+	case "deployment", "replicaset", "statefulset":
+	default:
+		return 0, 0, false, nil
+	}
+	desired, err = o.controllerReplicas(w)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	switch w.Kind {
+	case "deployment":
+		floor, ok, err := o.deploymentReadyFloor(w)
+		if err != nil {
+			return 0, 0, false, err
+		}
+		minimum = desired
+		if ok {
+			minimum = floor
+		}
+	case "replicaset":
+		minimum = desired
+	case "statefulset":
+		minimum = 1
+		if desired > 1 {
+			minimum = desired - 1
+		}
+	}
+	return minimum, desired, true, nil
 }
 
 // waitForDisplacedWorkloadSurvivability waits, after the drain, for every
@@ -201,47 +279,19 @@ func (o *Operation) waitForDisplacedWorkloadSurvivability() error {
 			o.log("deferring target-pinned %s until %s returns", w, o.opts.Node)
 			continue
 		}
-		switch w.Kind {
-		case "deployment":
-			desired, err := o.controllerReplicas(w)
-			if err != nil {
-				return err
-			}
-			minimumReady, ok, err := o.deploymentReadyFloor(w)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				minimumReady = desired
-			}
-			if minimumReady < desired {
-				o.log("%s cannot place every replica while %s is out; requiring %d of %d Ready", w, o.opts.Node, minimumReady, desired)
-			}
-			if err := o.waitForControllerReadyFloor(w, minimumReady); err != nil {
-				return err
-			}
-		case "replicaset":
-			desired, err := o.controllerReplicas(w)
-			if err != nil {
-				return err
-			}
-			if err := o.waitForControllerReadyFloor(w, desired); err != nil {
-				return err
-			}
-		case "statefulset":
-			desired, err := o.controllerReplicas(w)
-			if err != nil {
-				return err
-			}
-			minimumReady := 1
-			if desired > 1 {
-				minimumReady = desired - 1
-			}
-			if err := o.waitForControllerReadyFloor(w, minimumReady); err != nil {
-				return err
-			}
-		default:
+		minimumReady, desired, gated, err := o.readyMinimum(w)
+		if err != nil {
+			return err
+		}
+		if !gated {
 			o.log("using a dedicated availability gate for %s", w)
+			continue
+		}
+		if w.Kind == "deployment" && minimumReady < desired {
+			o.log("%s cannot place every replica while %s is out; requiring %d of %d Ready", w, o.opts.Node, minimumReady, desired)
+		}
+		if err := o.waitForControllerReadyFloor(w, minimumReady); err != nil {
+			return err
 		}
 	}
 	return nil
