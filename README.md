@@ -38,6 +38,7 @@ Internal tools built from source, tracked in this repo.
 |------|-------------|-----------|
 | k8s-node-reboot | Guarded Kubernetes node reboot, power, and network-path lifecycle helpers | all |
 | nix-gc-maintenance | Guarded Nix profile retention and garbage collection | all |
+| revkit | Agent reviews of whole repositories with sandboxed reviewers of both AI clients | all |
 | zfs-auto-unlock | Automatic ZFS dataset unlocking | all |
 
 ## Automated updates
@@ -129,3 +130,20 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
 
 The program chooses its command by the name it is invoked as, so each
 installed name is a wrapper that sets it.
+
+### Agent reviews
+
+`revkit repo-review [--config FILE] [PATH]` reviews a whole repository at
+rest: each configured lens runs once with every configured reviewer (Claude
+Code and Codex), each reviewer's findings are checked by another, and the
+result goes to `report.md` and `results.json` in a run directory under
+`$XDG_STATE_HOME/revkit`; nothing is filed. Reviewers are read-only and load
+none of the user's instructions, skills or settings: Claude in restricted and
+safe mode, Codex in a temporary home that holds only its login and under a
+file system profile that denies everything outside the tree. A reviewer that
+fails, replies out of format or makes no successful tool call, and a
+verification that leaves findings without a verdict, are reported as missing
+reviews. The package ships no reviewers or
+lenses: the consumer generates the JSON configuration (`--config` or
+`REVKIT_CONFIG`). See [ADR-0011](docs/adr/0011-revkit-agent-review-toolkit.md)
+and the [changelog](tools/revkit/CHANGELOG.md).

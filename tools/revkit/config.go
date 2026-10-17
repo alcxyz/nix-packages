@@ -1,0 +1,174 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"revkit/review"
+)
+
+// config is the versioned JSON document a consumer generates (schema
+// version 1). The binary ships no reviewers, repositories or lenses.
+type config struct {
+	SchemaVersion int               `json:"schemaVersion"`
+	Reviewers     []review.Reviewer `json:"reviewers"`
+	// TimeoutSeconds bounds each reviewer run.
+	TimeoutSeconds int `json:"timeoutSeconds"`
+	// Environment names further variables reviewers may see.
+	Environment []string `json:"environment"`
+	// HomeLinks names entries of the user's home linked into each Codex
+	// reviewer's otherwise empty home, for tools that system-managed client
+	// hooks find there; never client configuration directories.
+	HomeLinks []string `json:"homeLinks"`
+	// ReadablePaths are absolute paths a Codex reviewer may read besides
+	// the tree and the platform minimum, for example where its tools live.
+	ReadablePaths []string `json:"readablePaths"`
+	// StateDir holds trees, runs and reports; default $XDG_STATE_HOME/revkit.
+	StateDir     string       `json:"stateDir"`
+	Repositories []repository `json:"repositories"`
+}
+
+// repository describes one reviewed repository: Context tells reviewers what
+// it is, and each lens is one review job per reviewer.
+type repository struct {
+	Name    string `json:"name"`
+	Context string `json:"context"`
+	Lenses  []lens `json:"lenses"`
+}
+
+type lens struct {
+	Name   string `json:"name"`
+	Prompt string `json:"prompt"`
+}
+
+var (
+	namePattern     = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	variablePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+// homeVariables are set from each reviewer's own home and cannot be passed.
+var homeVariables = map[string]bool{
+	"HOME": true, "TMPDIR": true, "CLAUDE_CONFIG_DIR": true, "CODEX_HOME": true,
+	"XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true, "XDG_CACHE_HOME": true,
+}
+
+func loadConfig(path string) (*config, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	var c config
+	if err := decoder.Decode(&c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if decoder.More() {
+		return nil, fmt.Errorf("%s: trailing data after the configuration", path)
+	}
+	if err := c.validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &c, nil
+}
+
+func (c *config) validate() error {
+	if c.SchemaVersion != 1 {
+		return fmt.Errorf("schemaVersion must be 1, not %d", c.SchemaVersion)
+	}
+	if len(c.Reviewers) == 0 {
+		return fmt.Errorf("reviewers must name at least one reviewer")
+	}
+	seen := map[string]bool{}
+	for _, r := range c.Reviewers {
+		if err := r.Validate(); err != nil {
+			return err
+		}
+		if seen[r.Name] {
+			return fmt.Errorf("reviewer %s is listed twice", r.Name)
+		}
+		seen[r.Name] = true
+	}
+	if c.TimeoutSeconds <= 0 {
+		return fmt.Errorf("timeoutSeconds must be a positive number of seconds")
+	}
+	for _, name := range c.Environment {
+		if !variablePattern.MatchString(name) {
+			return fmt.Errorf("environment: %q is not a variable name", name)
+		}
+		if homeVariables[name] || strings.HasPrefix(name, "XDG_") {
+			return fmt.Errorf("environment: %s is set from the reviewer's own home", name)
+		}
+	}
+	for _, name := range c.HomeLinks {
+		if review.ReservedHomeNames[name] {
+			return fmt.Errorf("homeLinks: %s is client configuration or the reviewer's own and stays out of reviewer homes", name)
+		}
+		if !review.ValidHomeLink(name) {
+			return fmt.Errorf("homeLinks: %q must name one entry of the home directory", name)
+		}
+	}
+	for _, path := range c.ReadablePaths {
+		if !review.ValidReadablePath(path) {
+			return fmt.Errorf("readablePaths: %q must be a clean absolute path other than / without quotes", path)
+		}
+	}
+	if c.StateDir != "" && !filepath.IsAbs(c.StateDir) {
+		return fmt.Errorf("stateDir must be an absolute path")
+	}
+	repositories := map[string]bool{}
+	for _, repo := range c.Repositories {
+		if !namePattern.MatchString(repo.Name) {
+			return fmt.Errorf("repository name %q must match [A-Za-z0-9_-]+", repo.Name)
+		}
+		if repositories[repo.Name] {
+			return fmt.Errorf("repository %s is listed twice", repo.Name)
+		}
+		repositories[repo.Name] = true
+		if len(repo.Lenses) == 0 {
+			return fmt.Errorf("repository %s has no lenses", repo.Name)
+		}
+		lenses := map[string]bool{}
+		for _, l := range repo.Lenses {
+			if !namePattern.MatchString(l.Name) {
+				return fmt.Errorf("repository %s: lens name %q must match [A-Za-z0-9_-]+", repo.Name, l.Name)
+			}
+			if lenses[l.Name] {
+				return fmt.Errorf("repository %s: lens %s is listed twice", repo.Name, l.Name)
+			}
+			lenses[l.Name] = true
+			if strings.TrimSpace(l.Prompt) == "" {
+				return fmt.Errorf("repository %s: lens %s has no prompt", repo.Name, l.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *config) repository(name string) (*repository, bool) {
+	for i := range c.Repositories {
+		if c.Repositories[i].Name == name {
+			return &c.Repositories[i], true
+		}
+	}
+	return nil, false
+}
+
+func (c *config) stateDir() (string, error) {
+	if c.StateDir != "" {
+		return c.StateDir, nil
+	}
+	if base := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(base) {
+		return filepath.Join(base, "revkit"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "state", "revkit"), nil
+}

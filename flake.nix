@@ -55,6 +55,7 @@
           # deploy, so `nix run .#nix-deploy` keeps its command line.
           nix-deploy = lib.addMetaAttrs { mainProgram = "deploy"; } allPackages.nixfleet;
           nix-gc-maintenance = pkgs.callPackage ./tools/nix-gc-maintenance { };
+          revkit = pkgs.callPackage ./tools/revkit { };
           workmux = pkgs.callPackage ./pkgs/workmux { };
         }
         //
@@ -161,6 +162,8 @@
         # The package build runs the Go tests and the black-box contract
         # against the unwrapped binary.
         checks.nix-deploy-contract = allPackages.nix-deploy;
+        # The package build runs revkit's Go tests, with fake reviewer clients.
+        checks.revkit = allPackages.revkit;
         checks.${if allPackages ? workspace-sync then "workspace-sync-contract" else null} =
           allPackages.workspace-sync;
         checks.git-identity-guard-contract =

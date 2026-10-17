@@ -126,7 +126,7 @@ The flake explicitly exports the following combinations. "All four" means
 
 | Packages | Exported systems |
 |----------|------------------|
-| `claude-code`, `codex-app-server`, `codex-cli`, `forge-mirror`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `workmux` | All four |
+| `claude-code`, `codex-app-server`, `codex-cli`, `forge-mirror`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `revkit`, `workmux` | All four |
 | `devlog`, `ndrop`, `openzfs_7_1`, `stash`, `zfs-auto-unlock` | Both Linux systems |
 | `herdr` | Both Linux systems, `aarch64-darwin` |
 | `ghostty` | Both Darwin systems |
