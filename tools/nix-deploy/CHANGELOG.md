@@ -9,6 +9,19 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.16.0 (2026-10-17)
+
+- Database switchovers and health gates ask each CloudNativePG primary which
+  replicas stream (#548, ADR-0010 amendment). A switchover takes only a
+  replica that streams and is at most one WAL segment behind; one that is
+  Ready but stopped streaming would roll the database back. Full health and
+  the one-node-down gate require the replicas to stream, so such a replica
+  stops the run before it changes anything, or after the node returns, with
+  a hint to rebuild it. A replica trailing under load is waited for up to
+  the settle timeout, and a primary that cannot be asked is reported with
+  the reason, without that hint. The operator's kubeconfig now needs
+  `pods/exec` on the database primaries.
+
 ## 0.15.0 (2026-10-17)
 
 - `nixfleet reboot` asks every question before anything starts (#548,

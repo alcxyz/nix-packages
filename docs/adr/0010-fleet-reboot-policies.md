@@ -221,3 +221,34 @@ host's turn and at the end of the run.
 Holding the other groups' output while a question waits was considered: it
 keeps the question visible but still stalls the run on the operator at an
 unpredictable moment, which is what the operator wants to avoid.
+
+## Amendment (2026-10-17): only streaming, caught-up replicas take over
+
+The first fleet run promoted a replica that CloudNativePG reported healthy
+but that had stopped streaming hours earlier: it had been away longer than
+its replication slot could hold WAL, and nothing rebuilt it. The switchover
+rolled the database back to where that replica stopped. Readiness alone does
+not show this; only the primary's `pg_stat_replication` does.
+
+- **The primary is asked.** Before a switchover, after maintenance and in
+  the one-node-down gate, a run asks each cluster's primary which replicas
+  stream (`kubectl exec` and `psql` in the primary's `postgres` container;
+  a replica cluster's designated primary measures from the later of the
+  WAL it received and replayed). A primary that cannot be asked, or is not
+  Ready, is reported with the reason, never as replicas that stopped
+  streaming, and fails the checks; the operator needs `pods/exec` there.
+- **Switchover candidates must stream and be caught up**, at most one WAL
+  segment (16 MiB) behind the primary's WAL; an unmarked node is still
+  preferred among them. A replica that streams but trails under load is
+  waited for up to the settle timeout; without one, the run stops before
+  the cordon, at once when no replica could come within reach.
+- **Full health means every replica streams.** A replica that is Ready but
+  does not stream stops the run at the preflight or after the node returns,
+  with the hint that only a rebuild (`kubectl cnpg destroy`) brings back a
+  replica whose WAL is gone. The run never rebuilds a replica itself: that
+  discards its copy, which the operator may still need.
+- **One node down keeps a streaming replica** in clusters of three or more
+  instances: the gate counts only streaming replicas away from the node, so
+  a drain never leaves their synchronous primary without a standby to
+  confirm its commits. A two-instance cluster keeps no replica with one
+  node down; requiring one would make it impossible to maintain.

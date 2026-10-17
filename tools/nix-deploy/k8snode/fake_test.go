@@ -50,6 +50,10 @@ type fakeCluster struct {
 	pdbs        []map[string]any
 	cnpg        bool
 	clusters    []map[string]any
+	// standbys overrides, by replica Pod name, the "state|lag" a primary
+	// reports in pg_stat_replication; other running replicas stream with no
+	// lag.
+	standbys map[string]string
 
 	// status is the self-fence status report; statusText, when set, is
 	// served instead.
@@ -217,6 +221,9 @@ func (f *fakeCluster) kubectl(args []string, line string) Result {
 			return Result{Status: 1, Stderr: "the server doesn't have a resource type\n"}
 		}
 		return list(f.clusters)
+	case len(args) == 11 && args[0] == "-n" && args[2] == "exec" && args[4] == "-c" && args[5] == "postgres" &&
+		strings.Join(args[6:10], " ") == "-- psql -XAt -c" && args[10] == replicationQuery:
+		return f.replication(args[1], args[3])
 	case len(args) == 6 && args[0] == "cnpg" && args[1] == "promote":
 		return f.promote(args[3], args[4], args[5])
 	case command == "get namespace longhorn-system":
@@ -361,6 +368,38 @@ func (f *fakeCluster) promote(namespace, cluster, candidate string) Result {
 		}
 	}
 	return Result{Status: 1}
+}
+
+// replication answers replicationQuery on a primary: every other running
+// instance of its cluster, streaming with no lag unless standbys says
+// otherwise.
+func (f *fakeCluster) replication(namespace, primary string) Result {
+	var cluster string
+	for _, c := range f.clusters {
+		if get(c, "metadata", "namespace") == namespace && get(c, "status", "currentPrimary") == primary {
+			cluster, _ = get(c, "metadata", "name").(string)
+		}
+	}
+	if cluster == "" {
+		return Result{Status: 1, Stderr: "not a primary\n"}
+	}
+	var out strings.Builder
+	for _, p := range f.pods {
+		name, _ := get(p, "metadata", "name").(string)
+		if get(p, "metadata", "namespace") != namespace || name == primary ||
+			get(p, "metadata", "labels", "cnpg.io/cluster") != cluster || get(p, "status", "phase") != "Running" {
+			continue
+		}
+		state, ok := f.standbys[name]
+		if !ok {
+			state = "streaming|0"
+		}
+		if state == "" {
+			continue
+		}
+		fmt.Fprintf(&out, "%s|%s\n", name, state)
+	}
+	return Result{Stdout: out.String()}
 }
 
 // targetNode is the Node the fixtures power-cycle.

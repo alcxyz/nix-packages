@@ -462,11 +462,169 @@ func TestCNPGPrefersRebootedNode(t *testing.T) {
 	requireOrder(t, f, `^kubectl cnpg promote -n default db db-3$`, `^kubectl cordon server-a$`)
 }
 
+// A replica CloudNativePG reports healthy but that no longer streams stops
+// maintenance before anything changes: promoting it would roll the database
+// back, and draining the other replica's node would leave none.
+func TestCNPGReplicaNotStreamingStopsBeforeSwitchover(t *testing.T) {
+	for _, state := range []string{"", "startup|-1"} {
+		f := withDatabase(t, newHealthyCluster(t))
+		f.standbys = map[string]string{"db-2": state}
+		runFailure(t, f, "reboot", []string{"--settle-timeout", "1m"},
+			"default/db\tready=2/2\tstreaming=0/1\tphase=Cluster in healthy state",
+			"only a rebuild (kubectl cnpg destroy) brings it back")
+		mustNotCall(t, f, `^kubectl (cnpg|cordon)`)
+	}
+}
+
+// A streaming replica more than a segment behind is passed over, even on a
+// rebooted node.
+func TestCNPGSkipsReplicaThatIsNotCaughtUp(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	set(f.clusters[0], float64(3), "spec", "instances")
+	set(f.clusters[0], float64(3), "status", "readyInstances")
+	set(f.clusters[0], []any{"db-1", "db-2", "db-3"}, "status", "instancesStatus", "healthy")
+	f.pods = append(f.pods, readyPod(t, "default", "db-3", "server-c", "Cluster", "db",
+		`{"cnpg.io/cluster": "db", "cnpg.io/podRole": "instance", "cnpg.io/instanceRole": "replica"}`))
+	set(f.nodes[1], []any{map[string]any{"key": RebootPendingTaint, "value": "true", "effect": "PreferNoSchedule"}}, "spec", "taints")
+	f.standbys = map[string]string{"db-3": "streaming|33554432"}
+	output := run(t, f, "reboot")
+	mustContain(t, output, "switching default/db primary from db-1 to db-2 on server-b")
+	mustNotCall(t, f, `^kubectl cnpg promote -n default db db-3$`)
+}
+
+func TestCNPGWithoutCaughtUpReplicaStopsBeforeCordon(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	f.standbys = map[string]string{"db-2": "streaming|33554432"}
+	runFailure(t, f, "reboot", []string{"--settle-timeout", "1m"}, "default\tdb\tdb-1\tunavailable\tunavailable",
+		"waiting for a streaming, caught-up replica of default/db",
+		"has no healthy, streaming and caught-up replica on a surviving stable node (default/db)")
+	mustNotCall(t, f, `^kubectl (cnpg|cordon)`)
+}
+
+// A replica that trails briefly under load is waited for, not refused.
+func TestCNPGWaitsForReplicaToCatchUp(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	f.standbys = map[string]string{"db-2": "streaming|33554432"}
+	asked := 0
+	f.respond = func(c Command, line string) (Result, bool) {
+		if strings.Contains(line, " exec db-1 ") {
+			asked++
+			if asked == 3 {
+				f.standbys = nil
+			}
+		}
+		return Result{}, false
+	}
+	output := run(t, f, "reboot")
+	mustContain(t, output, "waiting for a streaming, caught-up replica of default/db")
+	mustContain(t, output, "switching default/db primary from db-1 to db-2 on server-b")
+}
+
+// A primary that is not Ready is not asked, and is reported as unknown
+// rather than as replicas that stopped streaming.
+func TestCNPGPrimaryNotReadyIsUnknown(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	set(f.clusters[0], "db-2", "status", "currentPrimary")
+	set(f.pods[len(f.pods)-1], "Pending", "status", "phase")
+	output := runFailure(t, f, "reboot", []string{"--settle-timeout", "1m"},
+		"streaming=unknown (primary db-2 is not Running and Ready)/1")
+	if strings.Contains(output, "kubectl cnpg destroy") {
+		t.Fatalf("a primary that was not asked got the rebuild hint:\n%s", output)
+	}
+}
+
+// A primary that cannot be asked is reported as such, without the hint to
+// rebuild replicas that may well be streaming.
+func TestCNPGUnansweredPrimaryIsNotAStoppedReplica(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	f.respond = func(c Command, line string) (Result, bool) {
+		if strings.Contains(line, " exec db-1 ") {
+			return Result{Status: 1, Stderr: "Error from server (Forbidden): pods \"db-1\" is forbidden\nmore\n"}, true
+		}
+		return Result{}, false
+	}
+	output := runFailure(t, f, "reboot", []string{"--settle-timeout", "1m"},
+		"default/db\tready=2/2\tstreaming=unknown (could not ask db-1: Error from server (Forbidden): pods \"db-1\" is forbidden)/1",
+		"error: CloudNativePG clusters did not return to full health\n")
+	if strings.Contains(output, "kubectl cnpg destroy") {
+		t.Fatalf("a primary that was not asked got the rebuild hint:\n%s", output)
+	}
+	mustNotCall(t, f, `^kubectl (cnpg|cordon)`)
+}
+
+// planSwitchovers passes over a replica the primary does not report, even
+// when CloudNativePG lists it healthy.
+func TestPlanSwitchoversNeedsStandby(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	var pods []pod
+	if err := jsonUnmarshal(serve(f.pods).Stdout, &pods); err != nil {
+		t.Fatal(err)
+	}
+	var clusters []cnpgCluster
+	if err := jsonUnmarshal(serve(f.clusters).Stdout, &clusters); err != nil {
+		t.Fatal(err)
+	}
+	var nodes []node
+	if err := jsonUnmarshal(serve(f.nodes).Stdout, &nodes); err != nil {
+		t.Fatal(err)
+	}
+	plan := planSwitchovers("server-a", clusters, pods, nodes, nil)
+	if len(plan) != 1 || plan[0].candidate != "" {
+		t.Fatalf("got %+v", plan)
+	}
+	plan = planSwitchovers("server-a", clusters, pods, nodes, map[string]standby{"default/db-2": {state: "streaming"}})
+	if len(plan) != 1 || plan[0].candidate != "db-2" {
+		t.Fatalf("got %+v", plan)
+	}
+}
+
+// After maintenance every replica must stream again: a Ready replica that
+// does not fails the run instead of being left for the next node's
+// switchover.
+func TestCNPGHealthWaitsForStreamingReplicas(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	set(f.clusters[0], "db-2", "status", "currentPrimary")
+	// The drain moves the replica; once moved, it does not stream.
+	f.standbys = map[string]string{"db-1-moved": "startup|-1"}
+	output := runFailure(t, f, "reboot", []string{"--settle-timeout", "1m"},
+		"default/db\tready=2/2\tstreaming=0/1\tphase=Cluster in healthy state",
+		"only a rebuild (kubectl cnpg destroy) brings it back")
+	uncordoned, reported := strings.Index(output, "node/server-a uncordoned"), strings.Index(output, "streaming=0/1")
+	if uncordoned < 0 || reported < 0 || uncordoned > reported {
+		t.Fatalf("the replica was checked only before the node returned:\n%s", output)
+	}
+}
+
+// One cluster that cannot get a candidate stops the run at once, even while
+// another waits for a lagging replica.
+func TestCNPGDoesNotWaitWhenOneClusterCannotCatchUp(t *testing.T) {
+	f := withDatabase(t, newHealthyCluster(t))
+	f.standbys = map[string]string{"db-2": "streaming|33554432"}
+	f.clusters = append(f.clusters, decode(t, `{
+	  "metadata": {"namespace": "default", "name": "solo"},
+	  "spec": {"instances": 1},
+	  "status": {"readyInstances": 1, "currentPrimary": "solo-1", "phase": "Cluster in healthy state",
+	    "instancesStatus": {"healthy": ["solo-1"]}}
+	}`))
+	f.pods = append(f.pods, readyPod(t, "default", "solo-1", "server-a", "Cluster", "solo",
+		`{"cnpg.io/cluster": "solo", "cnpg.io/podRole": "instance", "cnpg.io/instanceRole": "primary"}`))
+	runFailure(t, f, "reboot", nil, "has no healthy, streaming and caught-up replica on a surviving stable node (default/db; default/solo)")
+	if f.sleeps != 0 {
+		t.Fatalf("waited %d times though default/solo cannot get a candidate", f.sleeps)
+	}
+}
+
 func TestCNPGWithoutCandidateStopsBeforeCordon(t *testing.T) {
 	f := withDatabase(t, newHealthyCluster(t))
 	set(f.clusters[0], []any{"db-1"}, "status", "instancesStatus", "healthy")
+	defer func() {
+		// Nothing can bring a candidate, so the run does not wait.
+		if f.sleeps != 0 {
+			t.Fatalf("waited %d times for a candidate that cannot come", f.sleeps)
+		}
+	}()
 	runFailure(t, f, "reboot", nil, "default\tdb\tdb-1\tunavailable\tunavailable",
-		"CloudNativePG primary on server-a has no healthy replica on a surviving stable node")
+		"CloudNativePG primary on server-a has no healthy, streaming and caught-up replica on a surviving stable node")
 	mustNotCall(t, f, `^kubectl (cnpg|cordon)`)
 }
 
@@ -615,17 +773,77 @@ func TestCNPGSurvivabilityFailures(t *testing.T) {
 	if err := jsonUnmarshal(serve(f.clusters).Stdout, &clusters); err != nil {
 		t.Fatal(err)
 	}
-	bad := cnpgSurvivabilityFailures("server-a", clusters, pods)
-	if len(bad) != 1 || bad[0] != "default/db\tready=2/2\tminimum=1\tprimary=db-1\tprimaryNode=server-a" {
+	bad := cnpgSurvivabilityFailures("server-a", clusters, pods, replication{})
+	if len(bad) != 1 || bad[0] != "default/db\tready=2/2\tminimum=1\tstreaming=0\tprimary=db-1\tprimaryNode=server-a" {
 		t.Fatalf("got %q", bad)
 	}
 	clusters[0].Status.CurrentPrimary = "db-2"
-	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods); len(bad) != 0 {
+	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods, replication{}); len(bad) != 0 {
 		t.Fatalf("got %q", bad)
 	}
 	clusters[0].Status.CurrentPrimary = "db-9"
-	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods); !slices.Contains(bad, "default/db\tready=2/2\tminimum=1\tprimary=db-9\tprimaryNode=missing") {
+	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods, replication{}); !slices.Contains(bad, "default/db\tready=2/2\tminimum=1\tstreaming=0\tprimary=db-9\tprimaryNode=missing") {
 		t.Fatalf("got %q", bad)
+	}
+
+	// With three instances, one node down needs the primary and one
+	// streaming replica away from the node; a Ready replica that does not
+	// stream does not count.
+	clusters[0].Spec.Instances = new(int)
+	*clusters[0].Spec.Instances = 3
+	clusters[0].Status.ReadyInstances = 3
+	clusters[0].Status.CurrentPrimary = "db-2"
+	pods = append(pods, pod{})
+	pods[len(pods)-1].Metadata.Namespace = "default"
+	pods[len(pods)-1].Metadata.Name = "db-3"
+	pods[len(pods)-1].Metadata.Labels = map[string]string{"cnpg.io/cluster": "db"}
+	pods[len(pods)-1].Spec.NodeName = "server-c"
+	streaming := replication{standbys: map[string]standby{"default/db-1": {state: "streaming"}, "default/db-3": {state: "streaming"}}}
+	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods, streaming); len(bad) != 0 {
+		t.Fatalf("got %q", bad)
+	}
+	stopped := replication{standbys: map[string]standby{"default/db-1": {state: "streaming"}, "default/db-3": {state: "startup"}}}
+	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods, stopped); len(bad) != 1 ||
+		bad[0] != "default/db\tready=3/3\tminimum=2\tstreaming=0\tprimary=db-2\tprimaryNode=server-b" {
+		t.Fatalf("got %q", bad)
+	}
+	unanswered := replication{unanswered: map[string]string{"default/db": "could not ask db-2: forbidden"}}
+	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods, unanswered); len(bad) != 1 ||
+		bad[0] != "default/db\tready=3/3\tminimum=2\tstreaming=unknown (could not ask db-2: forbidden)\tprimary=db-2\tprimaryNode=server-b" {
+		t.Fatalf("got %q", bad)
+	}
+	// Two instances keep no replica with one node down, but a primary that
+	// could not be asked still fails.
+	*clusters[0].Spec.Instances = 2
+	clusters[0].Status.ReadyInstances = 2
+	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods[:len(pods)-1], replication{}); len(bad) != 0 {
+		t.Fatalf("got %q", bad)
+	}
+	if bad := cnpgSurvivabilityFailures("server-a", clusters, pods[:len(pods)-1], unanswered); len(bad) != 1 {
+		t.Fatalf("got %q", bad)
+	}
+}
+
+func TestParseStandbys(t *testing.T) {
+	got := parseStandbys("db", "db-2|streaming|0\ndb-3|catchup|33554432\ndb-4|streaming|\n\nnoise\n")
+	want := map[string]standby{
+		"db/db-2": {state: "streaming", lag: 0},
+		"db/db-3": {state: "catchup", lag: 33554432},
+		"db/db-4": {state: "streaming", lag: -1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for name, s := range want {
+		if got[name] != s {
+			t.Fatalf("%s: got %+v, want %+v", name, got[name], s)
+		}
+	}
+	if !got["db/db-2"].caughtUp() || got["db/db-3"].caughtUp() || got["db/db-4"].caughtUp() {
+		t.Fatalf("caughtUp wrong: %v", got)
+	}
+	if (standby{state: "streaming", lag: maxSwitchoverLag + 1}).caughtUp() {
+		t.Fatal("a replica more than one segment behind is caught up")
 	}
 }
 
