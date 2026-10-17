@@ -24,16 +24,55 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-var findingID = regexp.MustCompile(`"id": "([^"]+)"`)
+var (
+	findingID = regexp.MustCompile(`"id": "([^"]+)"`)
+	knownID   = regexp.MustCompile(`"id": "(F[0-9]+)"`)
+)
+
+// fakeMatches says every new finding repeats the first known one, or, with
+// none known, the first new one: the fake reviewers all report one problem.
+func fakeMatches(prompt string) string {
+	known, fresh, _ := strings.Cut(prompt, "New findings:")
+	var target string
+	if m := knownID.FindStringSubmatch(known); m != nil {
+		target = m[1]
+	}
+	var entries []string
+	for i, m := range findingID.FindAllStringSubmatch(fresh, -1) {
+		same := target
+		if same == "" && i > 0 {
+			same = findingID.FindStringSubmatch(fresh)[1]
+		}
+		if same == "" {
+			entries = append(entries, fmt.Sprintf(`{"id": %q, "same": null}`, m[1]))
+		} else {
+			entries = append(entries, fmt.Sprintf(`{"id": %q, "same": %q}`, m[1], same))
+		}
+	}
+	return `{"matches": [` + strings.Join(entries, ", ") + `]}`
+}
 
 func fakeClient(client string) int {
 	prompt, _ := io.ReadAll(os.Stdin)
-	if os.Getenv("REVKIT_FAKE_FAIL") == client {
+	failing := os.Getenv("REVKIT_FAKE_FAIL")
+	if path := os.Getenv("REVKIT_FAKE_FAIL_FILE"); path != "" {
+		content, _ := os.ReadFile(path)
+		failing = strings.TrimSpace(string(content))
+	}
+	if failing == client {
 		fmt.Fprintln(os.Stderr, "not logged in")
 		return 1
 	}
 	var reply string
-	if strings.Contains(string(prompt), "You are verifying") {
+	if strings.Contains(string(prompt), "You are matching review findings") {
+		reply = fakeMatches(string(prompt))
+		if path := os.Getenv("REVKIT_FAKE_MATCH_FILE"); path != "" {
+			if content, _ := os.ReadFile(path); strings.TrimSpace(string(content)) == "none" {
+				reply = strings.NewReplacer(`"same": "`, `"was": "`).Replace(reply)
+				reply = regexp.MustCompile(`"was": "[^"]*"`).ReplaceAllString(reply, `"same": null`)
+			}
+		}
+	} else if strings.Contains(string(prompt), "You are verifying") {
 		var verdicts []string
 		for _, match := range findingID.FindAllStringSubmatch(string(prompt), -1) {
 			verdicts = append(verdicts, fmt.Sprintf(`{"id": %q, "verdict": "confirmed", "reason": "read it"}`, match[1]))

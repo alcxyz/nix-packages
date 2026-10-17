@@ -64,6 +64,7 @@ func TestLoadConfigRejects(t *testing.T) {
 		"nested link":       {`[".nix-profile"]`, `[".nix-profile/bin"]`},
 		"relative readable": {`["/nix/store"]`, `["nix/store"]`},
 		"quoted readable":   {`["/nix/store"]`, `["/nix/store\"=\"read"]`},
+		"bad matcher":       {`"timeoutSeconds": 1800`, `"matcher": {"name": "m", "client": "gemini", "model": "x", "effort": "low"}, "timeoutSeconds": 1800`},
 		"trailing content":  {`"timeoutSeconds": 1800`, `"timeoutSeconds": 1800`},
 	}
 	for name, edit := range cases {

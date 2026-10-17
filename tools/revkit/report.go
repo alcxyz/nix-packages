@@ -12,6 +12,7 @@ import (
 	"revkit/review"
 )
 
+var kindOrder = map[string]int{"find": 0, "verify": 1, "match": 2}
 var verdictOrder = map[string]int{"confirmed": 0, "partly": 1, "unverified": 2, "rejected": 3}
 var severityOrder = map[string]int{"high": 0, "medium": 1, "low": 2}
 
@@ -27,7 +28,7 @@ func (r *reviewRun) write() error {
 	sort.SliceStable(r.report.Jobs, func(i, j int) bool {
 		a, b := r.report.Jobs[i], r.report.Jobs[j]
 		if a.Kind != b.Kind {
-			return a.Kind == "find"
+			return rank(kindOrder, a.Kind) < rank(kindOrder, b.Kind)
 		}
 		return a.Reviewer+a.Lens+a.Author < b.Reviewer+b.Lens+b.Author
 	})
@@ -65,8 +66,14 @@ func (r *reviewRun) markdown() string {
 	b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
 	for _, job := range rep.Jobs {
 		subject := job.Lens
-		if job.Kind == "verify" {
+		switch job.Kind {
+		case "verify":
 			subject = "verify " + job.Author
+		case "match":
+			subject = "match"
+		}
+		if job.ReusedFrom != "" {
+			subject += " (reused)"
 		}
 		total, known := job.Usage.TotalInput(job.Client)
 		fmt.Fprintf(&b, "| %s | %s | %s | %s | %d | %d | %s | %s | %s |\n", subject, job.Reviewer, job.Model,
@@ -82,9 +89,15 @@ func (r *reviewRun) markdown() string {
 	if windows := latestWindows(rep.Jobs); len(windows) > 0 {
 		b.WriteString("\nUsage windows at the end of the run: " + windowSummary(windows) + "\n")
 	}
+	if rep.Matching != "" {
+		fmt.Fprintf(&b, "\nFindings were matched with the store %s.\n", rep.Matching)
+	}
+	if rep.StoreError != "" {
+		fmt.Fprintf(&b, "\nThe findings store was not updated: %s\n", rep.StoreError)
+	}
 	fmt.Fprintf(&b, "\n## Findings (%s)\n", verdictCounts(rep.Findings))
 	for _, f := range rep.Findings {
-		fmt.Fprintf(&b, "\n### %s [%s] %s\n\n", f.ID, f.Verdict, oneLine(f.Title))
+		fmt.Fprintf(&b, "\n### %s [%s] %s\n\n", storeLabel(f), f.Verdict, oneLine(f.Title))
 		fmt.Fprintf(&b, "*%s*, %s\n\n", f.Severity, strings.Join(f.Paths, ", "))
 		fmt.Fprintf(&b, "**Claim:** %s\n\n**Evidence:** %s\n\n**Suggestion:** %s\n", f.Claim, f.Evidence, f.Suggestion)
 		if f.Verifier != "" {
@@ -98,6 +111,15 @@ func (r *reviewRun) markdown() string {
 func (r *reviewRun) summary() {
 	rep := r.report
 	fmt.Fprintf(r.out, "\n%d findings: %s\n", len(rep.Findings), verdictCounts(rep.Findings))
+	if line := storeCounts(rep.Findings); line != "" {
+		fmt.Fprintln(r.out, line)
+	}
+	if rep.Matching != "" {
+		fmt.Fprintf(r.out, "matching: %s\n", rep.Matching)
+	}
+	if rep.StoreError != "" {
+		fmt.Fprintf(r.out, "the findings store was not updated: %s\n", rep.StoreError)
+	}
 	for _, line := range r.missing() {
 		fmt.Fprintf(r.out, "missing review: %s\n", line)
 	}
@@ -106,7 +128,13 @@ func (r *reviewRun) summary() {
 	type tally struct{ runs, unreported, input, output int }
 	tallies := map[string]*tally{}
 	var clients []string
+	reused := 0
 	for _, job := range rep.Jobs {
+		if job.ReusedFrom != "" {
+			// Its usage was counted by the run it ran in.
+			reused++
+			continue
+		}
 		t, ok := tallies[job.Client]
 		if !ok {
 			t = &tally{}
@@ -132,6 +160,9 @@ func (r *reviewRun) summary() {
 		}
 		fmt.Fprintln(r.out, line)
 	}
+	if reused > 0 {
+		fmt.Fprintf(r.out, "reused: %d jobs from earlier runs, their usage not counted again\n", reused)
+	}
 	if windows := latestWindows(rep.Jobs); len(windows) > 0 {
 		fmt.Fprintf(r.out, "windows: %s\n", windowSummary(windows))
 	} else {
@@ -148,7 +179,7 @@ func (r *reviewRun) summary() {
 func (r *reviewRun) missing() []string {
 	var lines []string
 	for _, job := range r.report.Jobs {
-		if job.Status == review.StatusOK {
+		if job.Status == review.StatusOK || job.Kind == "match" {
 			continue
 		}
 		subject := job.Lens
@@ -158,6 +189,35 @@ func (r *reviewRun) missing() []string {
 		lines = append(lines, fmt.Sprintf("%s %s: %s (%s)", job.Reviewer, subject, job.Status, job.Problem))
 	}
 	return lines
+}
+
+// storeLabel names a finding by its store ID, if it has one, and says
+// whether it is new.
+func storeLabel(f finding) string {
+	if f.StoreID == "" {
+		return f.ID
+	}
+	return fmt.Sprintf("%s (%s, %s)", f.StoreID, f.StoreStatus, f.ID)
+}
+
+// storeCounts says how many distinct problems the run reported and how many
+// of them earlier runs already knew, by their status.
+func storeCounts(findings []finding) string {
+	problems := map[string]string{}
+	for _, f := range findings {
+		if f.StoreID != "" {
+			problems[f.StoreID] = f.StoreStatus
+		}
+	}
+	if len(problems) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	for _, status := range problems {
+		counts[status]++
+	}
+	return fmt.Sprintf("%d distinct problems: %d new, %d already open, %d filed, %d dismissed (revkit findings list)",
+		len(problems), counts["new"], counts[storeOpen], counts[storeFiled], counts[storeDismissed])
 }
 
 func verdictCounts(findings []finding) string {

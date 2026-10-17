@@ -15,6 +15,7 @@ import (
 var version = "dev"
 
 const usage = `Usage: revkit repo-review [OPTIONS] [PATH]
+       revkit findings list|show|dismiss|reopen [OPTIONS] [ID...]
        revkit --version
 
 Subcommands:
@@ -22,6 +23,9 @@ Subcommands:
                as a whole, one job per configured lens and reviewer. Each
                reviewer's findings are verified by the next reviewer, and
                the result is written to a local report; nothing is filed.
+               Distinct problems go to the repository's findings store,
+               matched by meaning with what earlier runs reported.
+  findings     List, show, dismiss and reopen the stored findings.
 
 The configuration comes from --config FILE or REVKIT_CONFIG; see
 docs/adr/0011-revkit-agent-review-toolkit.md for its fields.
@@ -52,6 +56,8 @@ func run(ctx context.Context, args []string) int {
 		return 0
 	case "repo-review":
 		return repoReview(ctx, args[1:])
+	case "findings":
+		return findingsCommand(args[1:], os.Stdout)
 	}
 	fmt.Fprintf(os.Stderr, "revkit: unknown subcommand %q\n\n%s", args[0], usage)
 	return 2

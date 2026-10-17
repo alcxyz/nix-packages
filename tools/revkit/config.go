@@ -17,6 +17,10 @@ import (
 type config struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Reviewers     []review.Reviewer `json:"reviewers"`
+	// Matcher, optional, groups findings that describe the same problem,
+	// within a run and with earlier runs; without one, findings match by
+	// lens and title only.
+	Matcher *review.Reviewer `json:"matcher"`
 	// TimeoutSeconds bounds each reviewer run.
 	TimeoutSeconds int `json:"timeoutSeconds"`
 	// Environment names further variables reviewers may see.
@@ -93,6 +97,11 @@ func (c *config) validate() error {
 			return fmt.Errorf("reviewer %s is listed twice", r.Name)
 		}
 		seen[r.Name] = true
+	}
+	if c.Matcher != nil {
+		if err := c.Matcher.Validate(); err != nil {
+			return fmt.Errorf("matcher: %w", err)
+		}
 	}
 	if c.TimeoutSeconds <= 0 {
 		return fmt.Errorf("timeoutSeconds must be a positive number of seconds")

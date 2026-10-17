@@ -1,6 +1,6 @@
 # ADR-0011: revkit, an agent review toolkit with isolated reviewers
 
-**Status:** Accepted
+**Status:** Accepted; findings store, matching and resume added 2026-10-17
 **Date:** 2026-10-17
 **Applies to:** `tools/revkit/`
 
@@ -61,6 +61,7 @@ configuration). Unknown fields are rejected. Version 1:
 | `homeLinks` | string array, optional | Entries of the user's home linked into each Codex reviewer's home (see below) |
 | `readablePaths` | string array, optional | Absolute paths a Codex reviewer may read besides the tree and the platform minimum, for example where its tools live |
 | `stateDir` | absolute path, optional | Trees, runs and reports; default `$XDG_STATE_HOME/revkit`; with a Codex reviewer never under `/tmp`, which its profile denies (a deny beats the grant for the tree) and where Codex refuses a home |
+| `matcher` | reviewer, optional | Groups findings that describe the same problem (amendment of 2026-10-17); without one, findings match by lens and title |
 | `repositories` | list | `{ name, context, lenses }`; `context` tells reviewers what the repository is; each lens is `{ name, prompt }` and becomes one job per reviewer |
 
 The finding and verdict formats, and the instructions that go with them, are
@@ -201,3 +202,76 @@ budget policy must treat as "do not run".
   them from the runs it makes, as #557 planned.
 - Changing the finding or verdict format changes the program and its tests,
   not only the configuration.
+
+## Amendment (2026-10-17): findings store, matching and resume
+
+Step 3 of #557. A run's findings now outlive its report.
+
+- **Store.** Each repository has a findings store
+  (`repo-review/<repository>/findings.json` under the state directory) of
+  distinct problems with stable IDs (`F1`, `F2`, ...): status (`open`,
+  `dismissed`, `filed`), text and verdict, the lenses, paths and reviewers
+  that reported it, and its first and last sighting. Within one review the
+  best-verified report describes the problem (any verification beats none);
+  a later review's report replaces it, and an earlier review, resumed, only
+  replaces an unverified one. Reviews are named after their first run, whose
+  name starts with its UTC start time to the nanosecond, so names order
+  them. Sightings count reviews. Updates hold a file lock, so concurrent runs and commands do
+  not lose each other's changes, and a run's findings get their IDs only
+  once the store is saved: a failed save leaves them without IDs and fails
+  the run.
+- **Matching by meaning.** The pilot's duplicates cited different lines for
+  the same problem, so path and line fingerprints do not work. After
+  verification, the configured `matcher` (one reviewer, in the same sandbox
+  and home as the others; a light model suffices) groups the run's findings
+  with each other and with the store's findings of the same lenses, and may
+  read the cited files to decide. A reply may only point at a known ID or an
+  earlier finding of the run, so it cannot form a cycle, and must cover
+  every finding. Its "no match" stands for every problem it was shown.
+  Findings without a match are then matched by lens and title, under the
+  store's lock, against the problems the matcher did not see (all of them
+  when there is no matcher or it fails), which also catches a problem
+  another run added meanwhile; only the matcher's prompt is bounded (to the
+  200 most recently seen findings). Each run states how it matched.
+  Matching is not a review, so a failed matcher does not make a run
+  incomplete.
+- **What a run reports.** Each finding carries its store ID and whether the
+  problem is new or already open, filed or dismissed. A dismissed or filed
+  problem keeps its status when it is seen again.
+- **`revkit findings`** lists the open problems (`--all` for every one),
+  shows one, and dismisses (with a required reason) or reopens them.
+- **Resume.** `repo-review --resume` reuses the jobs that completed in the
+  newest earlier run on the same commit, matched by reviewer and a hash of
+  the job's prompt, so a run interrupted by a failed client or an exhausted
+  usage window does not repeat the jobs that finished. Verifications are
+  reused only when they checked exactly the same findings. A resumed run
+  belongs to the same review: its problems still count as new, it adds no
+  sighting, and reused jobs' usage is not counted again.
+- **Placement.** The matcher's links between findings of the run join them
+  into groups, followed through every link. A reused finding keeps the
+  problem it joined before (in a field no reviewer reply can set), whatever
+  the matcher says now. A group's other findings join the first problem one
+  of its reused findings keeps, else the known problem the matcher named,
+  else a problem with the same lens and title that is not yet claimed, else
+  a new one. Kept problems are reserved before any group is placed, and a
+  problem a group joined by title is claimed, so groups the matcher told
+  apart never share a problem through a title. A resumed earlier review
+  does not move a problem's last sighting back.
+- **Security flag.** Reviewers mark a finding `security` when it concerns
+  secrets, credentials, access control or private details in a public
+  repository. The store keeps the flag.
+
+Filing, decided with the owner and implemented in a later release: a person
+picks the findings to file (`revkit findings file <ids>`), nothing is filed
+by a run itself; only `confirmed` findings are filed; issues are filed by a
+dedicated bot account with issue-write scope, not the owner's; and security
+findings are never filed anywhere until a private tracker and a hygiene lens
+exist.
+
+Considered and rejected:
+
+- **Fingerprints from paths, lines or text hashes**: the same problem is
+  cited at different lines by different reviewers and runs.
+- **Matching inside the verifier's prompt**: it would mix two judgements in
+  one reply and give the matcher only one reviewer's findings at a time.
+

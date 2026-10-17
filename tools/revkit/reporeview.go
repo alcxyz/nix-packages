@@ -28,7 +28,10 @@ target is outside this tree.
 Reply with ONLY a JSON object, no prose before or after, in this shape:
 {"findings": [{"title": "...", "severity": "high|medium|low",
   "paths": ["path:line", ...], "claim": "what is wrong, one or two sentences",
-  "evidence": "what you read that shows it", "suggestion": "smallest fix"}]}
+  "evidence": "what you read that shows it", "suggestion": "smallest fix",
+  "security": false}]}
+Set "security" to true when the finding concerns secrets, credentials, access
+control, or private details that should not be in a public repository.
 Use {"findings": []} when you find nothing that meets the bar. If you cannot
 read the files, reply {"error": "what stopped you"} instead.
 `
@@ -61,14 +64,22 @@ type finding struct {
 	Claim      string   `json:"claim"`
 	Evidence   string   `json:"evidence"`
 	Suggestion string   `json:"suggestion"`
+	Security   bool     `json:"security"`
 	// Verdict is confirmed, partly, rejected or unverified.
 	Verdict  string `json:"verdict"`
 	Verifier string `json:"verifier,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+	// StoreID is the problem's ID in the repository's findings store, and
+	// StoreStatus "new" or the status it already had there.
+	StoreID     string `json:"storeId,omitempty"`
+	StoreStatus string `json:"storeStatus,omitempty"`
+	// carried is the problem a finding reused by --resume joined before.
+	// It is not JSON, so no reviewer reply can set it.
+	carried string
 }
 
 type jobRecord struct {
-	Kind     string `json:"kind"` // find or verify
+	Kind     string `json:"kind"` // find, verify or match
 	Reviewer string `json:"reviewer"`
 	Client   string `json:"client"`
 	Model    string `json:"model"`
@@ -78,16 +89,27 @@ type jobRecord struct {
 	Lens     string `json:"lens,omitempty"`
 	Author   string `json:"author,omitempty"`
 	Findings int    `json:"findings"`
+	// PromptSHA identifies the prompt, so --resume can reuse the job;
+	// ReusedFrom names the run it was reused from.
+	PromptSHA  string `json:"promptSha,omitempty"`
+	ReusedFrom string `json:"reusedFrom,omitempty"`
 	review.Result
 }
 
 type runReport struct {
-	Version    string      `json:"revkitVersion"`
-	Repository string      `json:"repository"`
-	Commit     string      `json:"commit"`
-	Started    time.Time   `json:"started"`
-	Finished   time.Time   `json:"finished"`
-	Complete   bool        `json:"complete"`
+	Version    string    `json:"revkitVersion"`
+	Repository string    `json:"repository"`
+	Commit     string    `json:"commit"`
+	Started    time.Time `json:"started"`
+	Finished   time.Time `json:"finished"`
+	Complete   bool      `json:"complete"`
+	// Review names the review this run belongs to: the run itself, or the
+	// first run of the review it resumes.
+	Review string `json:"review"`
+	// Matching says how findings were matched with the store; StoreError
+	// why the store was not updated.
+	Matching   string      `json:"matching,omitempty"`
+	StoreError string      `json:"storeError,omitempty"`
 	Jobs       []jobRecord `json:"jobs"`
 	Findings   []finding   `json:"findings"`
 }
@@ -104,6 +126,7 @@ func repoReview(ctx context.Context, args []string) int {
 	repoName := flags.String("repository", "", "configured repository `NAME` (default: the checkout's directory name)")
 	ref := flags.String("ref", "HEAD", "commit to review")
 	dryRun := flags.Bool("dry-run", false, "print the plan and stop")
+	resume := flags.Bool("resume", false, "reuse the jobs that completed in the latest run on the same commit")
 	var lensNames, reviewerNames stringList
 	flags.Var(&lensNames, "lens", "run only this lens (repeatable)")
 	flags.Var(&reviewerNames, "reviewer", "run only this reviewer (repeatable)")
@@ -165,7 +188,11 @@ func repoReview(ctx context.Context, args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
-	for _, r := range reviewers {
+	everyone := reviewers
+	if cfg.Matcher != nil {
+		everyone = append(slices.Clone(reviewers), *cfg.Matcher)
+	}
+	for _, r := range everyone {
 		if problem := codexCanUse(stateDir); r.Client == "codex" && problem != "" {
 			return fail("%s", problem)
 		}
@@ -184,6 +211,11 @@ func repoReview(ctx context.Context, args []string) int {
 	if len(reviewers) == 1 {
 		fmt.Println("  one reviewer: findings stay unverified")
 	}
+	if m := cfg.Matcher; m != nil {
+		fmt.Printf("  %s (%s %s, %s) matches the findings with the store\n", m.Name, m.Client, m.Model, m.Effort)
+	} else {
+		fmt.Println("  no matcher: findings match the store by lens and title")
+	}
 	fmt.Printf("  %d reviewer runs of up to %s each, then verification\n",
 		len(reviewers)*len(lenses), time.Duration(cfg.TimeoutSeconds)*time.Second)
 	if *dryRun {
@@ -201,9 +233,20 @@ func repoReview(ctx context.Context, args []string) int {
 	if err := os.MkdirAll(runs, 0o755); err != nil {
 		return fail("%v", err)
 	}
+	var previous *runReport
+	var previousName string
+	if *resume {
+		previous, previousName, err = latestRun(runs)
+		if err != nil {
+			return fail("cannot resume: %v", err)
+		}
+		fmt.Printf("  resuming from run %s\n", previousName)
+	}
 	// Each run gets a directory of its own, even when two start in the same
 	// second on the same commit.
-	runDir, err := os.MkdirTemp(runs, time.Now().UTC().Format("20060102T150405Z")+"-")
+	// The fixed-width UTC start time, to the nanosecond, makes run names
+	// sort in start order; a review is named after its first run.
+	runDir, err := os.MkdirTemp(runs, time.Now().UTC().Format("20060102T150405.000000000Z")+"-")
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -211,17 +254,28 @@ func repoReview(ctx context.Context, args []string) int {
 
 	r := &reviewRun{
 		cfg: cfg, repo: repo, tree: tree, dir: runDir, environ: os.Environ(), out: os.Stdout,
-		report: runReport{Version: version, Repository: repo.Name, Commit: commit, Started: time.Now().UTC()},
+		storePath: storePath(stateDir, repo.Name), previous: previous, previousName: previousName,
+		report: runReport{Version: version, Repository: repo.Name, Commit: commit, Started: time.Now().UTC(),
+			Review: filepath.Base(runDir)},
+	}
+	if previous != nil {
+		r.report.Review = previous.Review
+		if r.report.Review == "" {
+			r.report.Review = previousName
+		}
 	}
 	r.find(ctx, reviewers, lenses)
 	r.verify(ctx, reviewers)
+	if err := r.remember(ctx, lenses); err != nil {
+		r.report.StoreError = err.Error()
+	}
 	r.report.Finished = time.Now().UTC()
 	r.report.Complete = ctx.Err() == nil && r.complete(len(reviewers)*len(lenses))
 	if err := r.write(); err != nil {
 		return fail("cannot write the report: %v", err)
 	}
 	r.summary()
-	if !r.report.Complete {
+	if !r.report.Complete || r.report.StoreError != "" {
 		return 1
 	}
 	return 0
@@ -280,12 +334,16 @@ func lensList(lenses []lens) string {
 }
 
 type reviewRun struct {
-	cfg     *config
-	repo    *repository
-	tree    string
-	dir     string
-	environ []string
-	out     io.Writer
+	cfg       *config
+	repo      *repository
+	tree      string
+	dir       string
+	environ   []string
+	out       io.Writer
+	storePath string
+	// previous is the run --resume reuses jobs from.
+	previous     *runReport
+	previousName string
 
 	mu     sync.Mutex
 	report runReport
@@ -330,9 +388,18 @@ func (r *reviewRun) find(ctx context.Context, reviewers []review.Reviewer, lense
 					prompt += "\nRepository:\n" + about + "\n"
 				}
 				prompt += "\nLens and scope:\n" + strings.TrimSpace(l.Prompt) + "\n"
+				if record, findings, ok := r.reuseFind(reviewer, l.Name, promptSHA(prompt)); ok {
+					r.mu.Lock()
+					r.report.Jobs = append(r.report.Jobs, record)
+					r.report.Findings = append(r.report.Findings, findings...)
+					r.mu.Unlock()
+					r.logf("%s %s: reused from run %s, %d findings", reviewer.Name, l.Name, record.ReusedFrom, len(findings))
+					continue
+				}
 				result := review.Run(ctx, r.job(reviewer, "find."+reviewer.Name+"."+l.Name, prompt))
 				record := newRecord("find", reviewer, result)
 				record.Lens = l.Name
+				record.PromptSHA = promptSHA(prompt)
 				var findings []finding
 				if result.Status == review.StatusOK {
 					var dropped int
@@ -403,19 +470,27 @@ func (r *reviewRun) verify(ctx context.Context, reviewers []review.Reviewer) {
 				claims[i] = claim{ID: f.ID, Title: f.Title, Severity: f.Severity, Paths: f.Paths, Claim: f.Claim, Evidence: f.Evidence}
 			}
 			encoded, _ := json.MarshalIndent(claims, "", "  ")
-			result := review.Run(ctx, r.job(checker, "verify."+author.Name+".by."+checker.Name, verifyPrompt+string(encoded)+"\n"))
-			record := newRecord("verify", checker, result)
-			record.Author = author.Name
-			record.Findings = len(batch)
+			prompt := verifyPrompt + string(encoded) + "\n"
+			var record jobRecord
 			var verdicts []verdict
-			if result.Status == review.StatusOK {
-				var problem string
-				verdicts, problem = parseVerdicts(result.Text)
-				checkReply(&record, problem)
-				if record.Status != review.StatusOK {
-					verdicts = nil
+			if reused, previous, ok := r.reuseVerify(checker, author.Name, promptSHA(prompt)); ok {
+				record, verdicts = reused, previous
+				r.logf("%s verifies %s: reused from run %s", checker.Name, author.Name, record.ReusedFrom)
+			} else {
+				result := review.Run(ctx, r.job(checker, "verify."+author.Name+".by."+checker.Name, prompt))
+				record = newRecord("verify", checker, result)
+				record.Author = author.Name
+				record.PromptSHA = promptSHA(prompt)
+				if result.Status == review.StatusOK {
+					var problem string
+					verdicts, problem = parseVerdicts(result.Text)
+					checkReply(&record, problem)
+					if record.Status != review.StatusOK {
+						verdicts = nil
+					}
 				}
 			}
+			record.Findings = len(batch)
 			applied := 0
 			r.mu.Lock()
 			for _, v := range verdicts {
@@ -475,6 +550,10 @@ func (r *reviewRun) complete(planned int) bool {
 	reviewers := map[string]bool{}
 	found := 0
 	for _, job := range r.report.Jobs {
+		if job.Kind == "match" {
+			// Matching is not a review; a failed matcher falls back to titles.
+			continue
+		}
 		if job.Status != review.StatusOK {
 			return false
 		}
@@ -514,14 +593,25 @@ func parseFindings(text string) ([]finding, int, string) {
 	findings := []finding{}
 	dropped := 0
 	for _, raw := range reply.Findings {
-		var f finding
-		if json.Unmarshal(raw, &f) != nil || (strings.TrimSpace(f.Claim) == "" && strings.TrimSpace(f.Title) == "") {
+		// Only what a reviewer reports; IDs, verdicts and store fields are
+		// revkit's own.
+		var reported struct {
+			Title      string   `json:"title"`
+			Severity   string   `json:"severity"`
+			Paths      []string `json:"paths"`
+			Claim      string   `json:"claim"`
+			Evidence   string   `json:"evidence"`
+			Suggestion string   `json:"suggestion"`
+			Security   bool     `json:"security"`
+		}
+		if json.Unmarshal(raw, &reported) != nil || (strings.TrimSpace(reported.Claim) == "" && strings.TrimSpace(reported.Title) == "") {
 			dropped++
 			continue
 		}
-		f.Severity = strings.ToLower(strings.TrimSpace(f.Severity))
-		f.ID, f.Reviewer, f.Lens, f.Verdict, f.Verifier, f.Reason = "", "", "", "", "", ""
-		findings = append(findings, f)
+		findings = append(findings, finding{
+			Title: reported.Title, Severity: strings.ToLower(strings.TrimSpace(reported.Severity)), Paths: reported.Paths,
+			Claim: reported.Claim, Evidence: reported.Evidence, Suggestion: reported.Suggestion, Security: reported.Security,
+		})
 	}
 	if len(findings) == 0 && dropped > 0 {
 		return nil, dropped, "no finding in the reply is in the asked-for shape"

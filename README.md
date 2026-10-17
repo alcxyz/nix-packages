@@ -145,5 +145,8 @@ fails, replies out of format or makes no successful tool call, and a
 verification that leaves findings without a verdict, are reported as missing
 reviews. The package ships no reviewers or
 lenses: the consumer generates the JSON configuration (`--config` or
-`REVKIT_CONFIG`). See [ADR-0011](docs/adr/0011-revkit-agent-review-toolkit.md)
+`REVKIT_CONFIG`). Distinct problems are kept in a findings store per
+repository, matched by meaning with earlier runs, so a repeat run shows what
+is new; `revkit findings` lists, shows, dismisses and reopens them, and
+`repo-review --resume` reuses the jobs that completed in the last run. See [ADR-0011](docs/adr/0011-revkit-agent-review-toolkit.md)
 and the [changelog](tools/revkit/CHANGELOG.md).

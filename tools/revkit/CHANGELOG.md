@@ -9,6 +9,18 @@ tool and add an entry here:
 - minor: a new command or option, or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.2.0 (2026-10-17)
+
+- Findings store (#557, ADR-0011 amendment): every distinct problem a run
+  reports gets a stable ID in the repository's store; an optional `matcher`
+  reviewer groups findings by meaning, within a run and with earlier runs,
+  and title matching is the fallback. Reports show each finding's ID and
+  whether it is new.
+- `revkit findings list|show|dismiss|reopen` manages the store.
+- `repo-review --resume` reuses the jobs that completed in the latest run on
+  the same commit.
+- Reviewers flag security-relevant findings.
+
 ## 0.1.1 (2026-10-17)
 
 - Reviewers get only the absolute entries of `PATH`, so an empty or relative
