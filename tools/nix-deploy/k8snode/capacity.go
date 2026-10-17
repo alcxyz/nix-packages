@@ -232,16 +232,21 @@ func readResources(list map[string]string) (resources, error) {
 // the sidecars started before it, whichever is more, or instead the
 // Pod-level request for a resource it names, plus the Pod overhead.
 func podRequests(spec podSpec) (resources, error) {
-	return heldRequests(spec, nil)
+	return heldRequests(spec, nil, false)
 }
 
 // heldRequests is podRequests with each container's request raised to what
 // the node holds for it, by container name, as during an in-place resize.
-func heldRequests(spec podSpec, held map[string]resources) (resources, error) {
+// For a resize the node cannot grant, what it holds replaces the request.
+func heldRequests(spec podSpec, held map[string]resources, infeasible bool) (resources, error) {
 	request := func(c container) (resources, error) {
 		r, err := readResources(c.Resources.Requests)
 		if h, ok := held[c.Name]; ok {
-			r = resources{max(r.cpu, h.cpu), max(r.memory, h.memory)}
+			if infeasible {
+				r = h
+			} else {
+				r = resources{max(r.cpu, h.cpu), max(r.memory, h.memory)}
+			}
 		}
 		return r, err
 	}
@@ -360,7 +365,7 @@ func (o *Operation) checkDisplacedPodsFit() error {
 	for i, r := range room {
 		before[i] = r.free
 	}
-	unplaced := placeNeeded(room, needed, pods)
+	unplaced, unsure := placeNeeded(room, needed, pods, packBudget)
 	// Another Pod no node may run waits for the target by design; only a
 	// shortage of room is worth a warning.
 	unplacedOthers, _ := place(room, others, pods)
@@ -369,11 +374,15 @@ func (o *Operation) checkDisplacedPodsFit() error {
 	for i, r := range room {
 		fmt.Fprintf(o.stdout, "%s\t%s\t%s\n", r.node.Metadata.Name, before[i], r.free)
 	}
-	fmt.Fprintf(o.stdout, "needed-pods\t%d\tunplaced\t%d\tother-pods\t%d\tunplaced\t%d\n",
-		len(needed), len(unplaced), len(others), len(unplacedOthers))
+	fmt.Fprintf(o.stdout, "needed-pods\t%d\tunplaced\t%d\tunsettled\t%d\tother-pods\t%d\tunplaced\t%d\n",
+		len(needed), len(unplaced), len(unsure), len(others), len(unplacedOthers))
 	if len(unplaced) > 0 {
 		o.report(unplaced)
 		return fmt.Errorf("the remaining nodes cannot hold the Pods drained from %s by their CPU and memory requests; free capacity or lower requests before maintenance", target)
+	}
+	if len(unsure) > 0 {
+		o.log("warning: the check could not settle within its search limit whether %d needed Pods fit; the availability gate after the drain decides", len(unsure))
+		o.report(unsure)
 	}
 	if len(unplacedOthers) > 0 {
 		o.log("warning: %d other Pods drained from %s do not fit after the needed ones; if the scheduler places them first, the availability gate fails", len(unplacedOthers), target)
@@ -386,11 +395,12 @@ func (o *Operation) checkDisplacedPodsFit() error {
 // back.
 const packBudget = 200000
 
-// placeNeeded places the Pods the gate needs as the scheduler spreads them
-// and returns a line for each left out. When spreading leaves one without
-// room, it searches for any placement of them, within packBudget, so a set
-// that fits is not refused; without one, the spreading's lines stand.
-func placeNeeded(room []*roomyNode, needed []displacedPod, pods []pod) []string {
+// placeNeeded places the Pods the gate needs as the scheduler spreads them.
+// When spreading leaves one out, it searches for any placement of those
+// some node may run. It returns a line for each Pod that does not fit, and
+// in unsure those spreading left out when the search ran out of steps
+// without settling whether they fit.
+func placeNeeded(room []*roomyNode, needed []displacedPod, pods []pod, budget int) (unplaced, unsure []string) {
 	free := make([]resources, len(room))
 	for i, r := range room {
 		free[i] = r.free
@@ -401,30 +411,52 @@ func placeNeeded(room []*roomyNode, needed []displacedPod, pods []pod) []string 
 		}
 	}
 	noRoom, barred := place(room, needed, pods)
-	if len(noRoom) == 0 {
-		return barred
+	if len(noRoom) == 0 && len(barred) == 0 {
+		return nil, nil
 	}
-	// A Pod no node may run stays out of the search, which places the rest.
+	// A Pod no node may run even with nothing placed stays out of the
+	// search; the spreading may have barred others only by where it put
+	// their neighbours.
 	reset()
-	var placeable []displacedPod
+	var placeable, excluded []displacedPod
 	for _, d := range needed {
 		if slices.ContainsFunc(room, func(r *roomyNode) bool { return admits(r, d, pods) }) {
 			placeable = append(placeable, d)
+		} else {
+			excluded = append(excluded, d)
 		}
 	}
-	if pack(room, placeable, pods) {
-		return barred
+	_, barredLines := place(nil, excluded, pods)
+	found, settled := pack(room, placeable, pods, budget)
+	if found {
+		return barredLines, nil
 	}
 	reset()
 	noRoom, barred = place(room, needed, pods)
-	return append(noRoom, barred...)
+	if !settled {
+		return barredLines, noRoom
+	}
+	return append(noRoom, barred...), nil
 }
 
-// pack searches depth first, largest Pod first and tightest node first, for
-// a placement of every Pod, and leaves the room as placed when it finds
-// one. It gives up after packBudget steps.
-func pack(room []*roomyNode, displaced []displacedPod, pods []pod) bool {
+// pack searches depth first for a placement of every Pod, the Pods with
+// the fewest nodes that may run them first, then the largest, each on the
+// tightest node first, and leaves the room as placed when it finds one.
+// settled is false when it gave up after budget steps.
+func pack(room []*roomyNode, displaced []displacedPod, pods []pod, budget int) (found, settled bool) {
 	displaced = largestFirst(displaced)
+	options := map[string]int{}
+	for _, d := range displaced {
+		for _, r := range room {
+			if admits(r, d, pods) {
+				options[d.pod.Metadata.Namespace+"/"+d.pod.Metadata.Name]++
+			}
+		}
+	}
+	sort.SliceStable(displaced, func(i, j int) bool {
+		a, b := displaced[i].pod.Metadata, displaced[j].pod.Metadata
+		return options[a.Namespace+"/"+a.Name] < options[b.Namespace+"/"+b.Name]
+	})
 	steps := 0
 	var try func(i int) bool
 	try = func(i int) bool {
@@ -440,7 +472,7 @@ func pack(room []*roomyNode, displaced []displacedPod, pods []pod) bool {
 		}
 		sort.SliceStable(candidates, func(a, b int) bool { return candidates[a].freeShare() < candidates[b].freeShare() })
 		for _, r := range candidates {
-			if steps++; steps > packBudget {
+			if steps++; steps > budget {
 				return false
 			}
 			r.free = r.free.minus(d.requests)
@@ -453,7 +485,8 @@ func pack(room []*roomyNode, displaced []displacedPod, pods []pod) bool {
 		}
 		return false
 	}
-	return try(0)
+	found = try(0)
+	return found, found || steps <= budget
 }
 
 // largestFirst sorts a copy of the Pods by CPU, then memory, largest first.
@@ -529,9 +562,18 @@ func residentRequests(p pod) (resources, error) {
 		if err != nil {
 			return resources{}, err
 		}
+		if len(s.AllocatedResources) == 0 && len(s.Resources.Requests) == 0 {
+			continue
+		}
 		held[s.Name] = resources{max(allocated.cpu, actual.cpu), max(allocated.memory, actual.memory)}
 	}
-	return heldRequests(p.Spec, held)
+	infeasible := p.Status.Resize == "Infeasible"
+	for _, c := range p.Status.Conditions {
+		if c.Type == "PodResizePending" && c.Status == "True" && c.Reason == "Infeasible" {
+			infeasible = true
+		}
+	}
+	return heldRequests(p.Spec, held, infeasible)
 }
 
 // admits reports whether the node may run the Pod, room aside.

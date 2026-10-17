@@ -99,7 +99,7 @@ func TestDisplacedPodsThatDoNotFitStopBeforeCordon(t *testing.T) {
 		"default/web-1\tcpu=2000m memory=1024Mi\tno remaining node has room",
 		"the remaining nodes cannot hold the Pods drained from server-a by their CPU and memory requests")
 	mustContain(t, output, "server-b\tcpu=1500m memory=15360Mi\tcpu=1500m memory=15360Mi\n")
-	mustContain(t, output, "needed-pods\t1\tunplaced\t1\tother-pods\t0\tunplaced\t0\n")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t1\tunsettled\t0\tother-pods\t0\tunplaced\t0\n")
 	if mutations := f.mutations(); len(mutations) > 0 {
 		t.Fatalf("mutations: %v", mutations)
 	}
@@ -121,7 +121,7 @@ func TestDisplacedPodsFitOnTheRoomiestNode(t *testing.T) {
 	output := run(t, f, "reboot", "--check-only")
 	mustContain(t, output, "server-b\tcpu=3000m memory=15360Mi\tcpu=2000m memory=14336Mi\n")
 	mustContain(t, output, "server-c\tcpu=1500m memory=15360Mi\tcpu=1500m memory=15360Mi\n")
-	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tother-pods\t0\tunplaced\t0\n")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tunsettled\t0\tother-pods\t0\tunplaced\t0\n")
 }
 
 // Only the Pods the availability gate needs elsewhere must fit: a
@@ -145,7 +145,7 @@ func TestDisplacedPodsOnlyCountWhatTheGateNeeds(t *testing.T) {
 	  "template": {"metadata": {"labels": {"app": "edge"}}, "spec": {"nodeSelector": {"kubernetes.io/hostname": "server-a"}}}},
 	  "status": {"readyReplicas": 1}}`)
 	output := run(t, f, "reboot", "--check-only")
-	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tother-pods\t1\tunplaced\t1\n")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tunsettled\t0\tother-pods\t1\tunplaced\t1\n")
 	mustContain(t, output, "warning: 1 other Pods drained from server-a do not fit after the needed ones")
 	mustContain(t, output, "default/kv-0\tcpu=3000m memory=1024Mi\tno remaining node has room\n")
 
@@ -162,7 +162,7 @@ func TestDisplacedPodsOnlyCountWhatTheGateNeeds(t *testing.T) {
 	f.controllers["default/statefulset/kv"] = decode(t, `{"spec": {"replicas": 3, "selector": {"matchLabels": {"app": "kv"}},
 	  "template": {"metadata": {"labels": {"app": "kv"}}, "spec": {}}}, "status": {"readyReplicas": 3}}`)
 	output = run(t, f, "reboot", "--check-only")
-	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tother-pods\t1\tunplaced\t0\n")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tunsettled\t0\tother-pods\t1\tunplaced\t0\n")
 	if strings.Contains(output, "warning") {
 		t.Fatalf("warned about a Pod no node may run:\n%s", output)
 	}
@@ -436,7 +436,10 @@ func TestPlaceNeededSearchesWhenSpreadingFails(t *testing.T) {
 			for _, r := range room {
 				r.free, r.placed = r.allocatable, nil
 			}
-			unplaced := placeNeeded(room, pods(c.pods...), nil)
+			unplaced, unsure := placeNeeded(room, pods(c.pods...), nil, packBudget)
+			if len(unsure) > 0 {
+				t.Fatalf("unsettled %v", unsure)
+			}
 			if len(unplaced) != c.unplaced {
 				t.Fatalf("unplaced %v", unplaced)
 			}
@@ -514,4 +517,100 @@ func TestResidentPodsHoldResizeAllocation(t *testing.T) {
 	set(f.pods[1], map[string]any{"cpu": "3", "memory": "1Gi"}, "status", "containerStatuses", 0, "allocatedResources")
 	output := runFailure(t, f, "reboot", []string{"--check-only"}, "default/web-1\tcpu=2000m memory=1024Mi\tno remaining node has room")
 	mustContain(t, output, "server-b\tcpu=1000m memory=15360Mi\t")
+}
+
+// The search tries the Pods with the fewest nodes first, so one that only
+// one node may run is not crowded out; when it runs out of steps, the
+// spreading's misses are unsettled, not refused; and when it succeeds, a
+// Pod the spreading barred only by where it put a neighbour is placed.
+func TestPlaceNeededSearchOrderAndLimit(t *testing.T) {
+	node := func(name string, cpu, memory int64) *roomyNode {
+		var n node
+		n.Metadata.Name = name
+		n.Metadata.Labels = map[string]string{"kubernetes.io/hostname": name}
+		r := resources{cpu, memory}
+		return &roomyNode{node: n, allocatable: r, free: r}
+	}
+	newPod := func(name string, cpu, memory int64) displacedPod {
+		var p pod
+		p.Metadata.Namespace, p.Metadata.Name = "default", name
+		return displacedPod{pod: p, requests: resources{cpu, memory}}
+	}
+	needed := []displacedPod{newPod("big", 200, 12<<30)}
+	for i := range 20 {
+		needed = append(needed, newPod(fmt.Sprintf("small-%d", i), 100, 16<<20))
+	}
+	pinned := newPod("pinned", 50, 8<<30)
+	pinned.pod.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "server-b"}
+	needed = append(needed, pinned)
+	room := []*roomyNode{node("server-b", 4000, 16<<30), node("server-c", 4000, 16<<30)}
+	unplaced, unsure := placeNeeded(room, needed, nil, packBudget)
+	if len(unplaced) != 0 || len(unsure) != 0 {
+		t.Fatalf("unplaced %v, unsettled %v", unplaced, unsure)
+	}
+
+	// With a budget too small to settle it, the miss is unsettled.
+	room = []*roomyNode{node("server-b", 10000, 16<<30), node("server-c", 10000, 16<<30)}
+	var tight []displacedPod
+	for i, cpu := range []int64{5000, 4000, 3000, 2000, 2000, 2000, 2000} {
+		tight = append(tight, newPod(fmt.Sprintf("p%d", i), cpu, 1<<30))
+	}
+	unplaced, unsure = placeNeeded(room, tight, nil, 3)
+	if len(unplaced) != 0 || len(unsure) != 1 {
+		t.Fatalf("unplaced %v, unsettled %v", unplaced, unsure)
+	}
+
+	// The spreading puts green on server-b and so bars blue, which only
+	// server-b may run; the search places both.
+	room = []*roomyNode{node("server-b", 4000, 16<<30), node("server-c", 6500, 16<<30)}
+	anti := &affinity{PodAntiAffinity: &struct {
+		Required []podAffinityTerm `json:"requiredDuringSchedulingIgnoredDuringExecution"`
+	}{}}
+	selector := &labelSelector{MatchLabels: map[string]string{"app": "web"}}
+	green, blue, filler := newPod("green", 3000, 1<<30), newPod("blue", 1000, 1<<30), newPod("filler", 3000, 1<<30)
+	green.pod.Metadata.Labels = map[string]string{"app": "web"}
+	blue.pod.Metadata.Labels = map[string]string{"app": "web"}
+	green.pod.Spec.Affinity, blue.pod.Spec.Affinity = anti, anti
+	green.selector, blue.selector = selector, selector
+	blue.pod.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "server-b"}
+	filler.pod.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "server-c"}
+	if noRoom, barred := place(room, []displacedPod{green, blue, filler}, nil); len(noRoom)+len(barred) == 0 {
+		t.Fatal("the spreading placed everything; the case tests nothing")
+	}
+	for _, r := range room {
+		r.free, r.placed = r.allocatable, nil
+	}
+	unplaced, unsure = placeNeeded(room, []displacedPod{green, blue, filler}, nil, packBudget)
+	if len(unplaced) != 0 || len(unsure) != 0 {
+		t.Fatalf("unplaced %v, unsettled %v", unplaced, unsure)
+	}
+}
+
+// A resize the node cannot grant leaves the container at what it holds.
+func TestResidentRequestsInfeasibleResize(t *testing.T) {
+	var p pod
+	var c container
+	c.Name = "a"
+	c.Resources.Requests = map[string]string{"cpu": "5"}
+	p.Spec.Containers = []container{c}
+	var s containerStatus
+	s.Name, s.AllocatedResources = "a", map[string]string{"cpu": "1"}
+	p.Status.ContainerStatuses = []containerStatus{s}
+	if got, _ := residentRequests(p); got.cpu != 5000 {
+		t.Fatalf("pending resize: %v; want 5000m", got)
+	}
+	p.Status.Conditions = []condition{{Type: "PodResizePending", Status: "True", Reason: "Infeasible"}}
+	if got, _ := residentRequests(p); got.cpu != 1000 {
+		t.Fatalf("infeasible resize: %v; want 1000m", got)
+	}
+	p.Status.Conditions = nil
+	p.Status.Resize = "Infeasible"
+	if got, _ := residentRequests(p); got.cpu != 1000 {
+		t.Fatalf("infeasible resize (status.resize): %v; want 1000m", got)
+	}
+	// A status without resources does not lower the request.
+	p.Status.ContainerStatuses = []containerStatus{{Name: "a"}}
+	if got, _ := residentRequests(p); got.cpu != 5000 {
+		t.Fatalf("status without resources: %v; want 5000m", got)
+	}
 }

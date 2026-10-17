@@ -205,6 +205,9 @@ type pod struct {
 	Status   struct {
 		Phase      string      `json:"phase"`
 		Conditions []condition `json:"conditions"`
+		// Resize is Infeasible, in older releases, for a resize the node
+		// cannot grant; newer ones use the PodResizePending condition.
+		Resize string `json:"resize"`
 		// NominatedNodeName is set while a preemptor waits for its
 		// victims to stop.
 		NominatedNodeName     string            `json:"nominatedNodeName"`
