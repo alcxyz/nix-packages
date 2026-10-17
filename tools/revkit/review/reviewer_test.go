@@ -135,6 +135,20 @@ func TestEnvironmentAllowsOnlyListedVariables(t *testing.T) {
 	}
 }
 
+func TestReviewerPathDropsRelativeEntries(t *testing.T) {
+	bin := resolvedTempDir(t)
+	for _, client := range []string{"claude", "codex"} {
+		got := Environment(client, []string{"PATH=.:" + bin + "::bin"}, nil, nil)
+		if !slices.Equal(got, []string{"PATH=" + bin}) {
+			t.Fatalf("%s environment = %v", client, got)
+		}
+		got = Environment(client, []string{"PATH=.:bin"}, nil, nil)
+		if !slices.Equal(got, []string{"PATH=" + defaultPath}) {
+			t.Fatalf("%s environment without absolute entries = %v", client, got)
+		}
+	}
+}
+
 func TestValidReadablePath(t *testing.T) {
 	for path, want := range map[string]bool{
 		"/nix/store": true, "/opt/tools": true, "relative": false, "/": false, "/a/../b": false,

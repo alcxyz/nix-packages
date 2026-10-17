@@ -159,6 +159,11 @@ func (c *config) repository(name string) (*repository, bool) {
 	return nil, false
 }
 
+// hiddenFromCodex is the directory a Codex reviewer's permission profile
+// denies besides its own temporary directory, which is inside its home; a
+// variable so tests can keep their state directories in /tmp.
+var hiddenFromCodex = "/tmp"
+
 func (c *config) stateDir() (string, error) {
 	if c.StateDir != "" {
 		return c.StateDir, nil
@@ -171,4 +176,39 @@ func (c *config) stateDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".local", "state", "revkit"), nil
+}
+
+// codexCanUse reports why a Codex reviewer could not work with the trees
+// and homes in dir, or "". Its profile denies /tmp, and a deny beats the
+// grant for the tree; Codex also refuses to set up a home there.
+func codexCanUse(dir string) string {
+	if hiddenFromCodex != "" && within(dir, hiddenFromCodex) {
+		return fmt.Sprintf("the state directory %s is under %s, which Codex reviewers cannot read; set stateDir or XDG_STATE_HOME elsewhere", dir, hiddenFromCodex)
+	}
+	return ""
+}
+
+// within reports whether path is dir or below it, comparing them with
+// symbolic links resolved where they exist.
+func within(path, dir string) bool {
+	path, dir = resolveExisting(path), resolveExisting(dir)
+	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
+// resolveExisting resolves the longest existing prefix of path through
+// symbolic links and keeps the rest as it is.
+func resolveExisting(path string) string {
+	path = filepath.Clean(path)
+	rest := ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(path, rest)
+		}
+		rest = filepath.Join(filepath.Base(path), rest)
+		path = parent
+	}
 }

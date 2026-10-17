@@ -9,6 +9,15 @@ tool and add an entry here:
 - minor: a new command or option, or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.1.1 (2026-10-17)
+
+- Reviewers get only the absolute entries of `PATH`, so an empty or relative
+  entry cannot look commands up in the reviewed tree; with none left they get
+  `/usr/local/bin:/usr/bin:/bin`.
+- With a Codex reviewer, a state directory under `/tmp` is refused: Codex's
+  permission profile denies `/tmp`, which would hide the tree, and Codex
+  refuses to set up a home there.
+
 ## 0.1.0 (2026-10-17)
 
 - First release (#557, ADR-0011): the shared review core (tree from raw git

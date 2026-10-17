@@ -90,8 +90,8 @@ func Environment(client string, environ, extra []string, home *Home) []string {
 		if !ok || !allowed[name] {
 			continue
 		}
-		if name == "PATH" && client == "codex" {
-			entry = "PATH=" + resolvePath(value)
+		if name == "PATH" {
+			entry = "PATH=" + reviewerPath(value, client == "codex")
 		}
 		result = append(result, entry)
 	}
@@ -101,14 +101,29 @@ func Environment(client string, environ, extra []string, home *Home) []string {
 	return result
 }
 
-// resolvePath resolves each PATH entry through symbolic links, keeping
-// entries that cannot be resolved as they are.
-func resolvePath(value string) string {
-	entries := filepath.SplitList(value)
-	for i, entry := range entries {
-		if resolved, err := filepath.EvalSymlinks(entry); err == nil && filepath.IsAbs(entry) {
-			entries[i] = resolved
+// defaultPath is the reviewer's PATH when the caller's has no absolute
+// entry.
+const defaultPath = "/usr/local/bin:/usr/bin:/bin"
+
+// reviewerPath keeps the absolute entries of PATH: an empty or relative
+// entry would look commands up in the working directory, which is the
+// reviewed tree. With resolve, each entry is resolved through symbolic
+// links, keeping those that cannot be resolved as they are.
+func reviewerPath(value string, resolve bool) string {
+	var entries []string
+	for _, entry := range filepath.SplitList(value) {
+		if !filepath.IsAbs(entry) {
+			continue
 		}
+		if resolve {
+			if resolved, err := filepath.EvalSymlinks(entry); err == nil {
+				entry = resolved
+			}
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) == 0 {
+		return defaultPath
 	}
 	return strings.Join(entries, string(filepath.ListSeparator))
 }

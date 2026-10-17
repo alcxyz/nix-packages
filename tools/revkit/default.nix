@@ -7,7 +7,7 @@
 buildGoModule (finalAttrs: {
   pname = "revkit";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.1.0";
+  version = "0.1.1";
 
   src = ./.;
 

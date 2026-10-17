@@ -84,6 +84,11 @@ type reviewFixture struct {
 
 func newReviewFixture(t *testing.T, extra string) reviewFixture {
 	t.Helper()
+	// The test's state directory is a temporary one; pretend no directory
+	// is hidden from reviewers.
+	saved := hiddenFromCodex
+	hiddenFromCodex = ""
+	t.Cleanup(func() { hiddenFromCodex = saved })
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	self, err := os.Executable()
@@ -285,6 +290,28 @@ func TestRepoReviewDryRunAndSelection(t *testing.T) {
 		if code := repoReview(context.Background(), append([]string{"--config", f.config, "--dry-run"}, args...)); code != 2 {
 			t.Fatalf("%v: exit %d, want 2", args, code)
 		}
+	}
+}
+
+func TestRepoReviewRefusesStateUnderTemp(t *testing.T) {
+	f := newReviewFixture(t, "")
+	hiddenFromCodex = filepath.Dir(f.state)
+	if code := repoReview(context.Background(), []string{"--config", f.config, "--dry-run", f.repo}); code != 2 {
+		t.Fatalf("exit %d, want 2", code)
+	}
+	// Claude reviewers do not run under Codex's profile.
+	if code := repoReview(context.Background(), []string{"--config", f.config, "--dry-run", "--reviewer", "opus", f.repo}); code != 0 {
+		t.Fatalf("Claude only: exit %d, want 0", code)
+	}
+	link := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(filepath.Dir(f.state), link); err != nil {
+		t.Fatal(err)
+	}
+	if !within(filepath.Join(link, "x", "revkit"), filepath.Dir(f.state)) {
+		t.Fatal("a state directory reached through a link counts as outside")
+	}
+	if within("/tmpfoo/revkit", "/tmp") {
+		t.Fatal("a sibling with a common prefix counts as inside")
 	}
 }
 

@@ -60,7 +60,7 @@ configuration). Unknown fields are rejected. Version 1:
 | `environment` | string array, optional | Further variable names reviewers may see (see below) |
 | `homeLinks` | string array, optional | Entries of the user's home linked into each Codex reviewer's home (see below) |
 | `readablePaths` | string array, optional | Absolute paths a Codex reviewer may read besides the tree and the platform minimum, for example where its tools live |
-| `stateDir` | absolute path, optional | Trees, runs and reports; default `$XDG_STATE_HOME/revkit` |
+| `stateDir` | absolute path, optional | Trees, runs and reports; default `$XDG_STATE_HOME/revkit`; with a Codex reviewer never under `/tmp`, which its profile denies (a deny beats the grant for the tree) and where Codex refuses a home |
 | `repositories` | list | `{ name, context, lenses }`; `context` tells reviewers what the repository is; each lens is `{ name, prompt }` and becomes one job per reviewer |
 
 The finding and verdict formats, and the instructions that go with them, are
@@ -118,7 +118,9 @@ single entries of the home; the client configuration directories,
 `.agents`, `.config`, `.local`, `.cache` and the reviewer's own `tmp` are
 refused.
 
-The environment is an allowlist: `PATH`, locale and time zone, CA bundle
+The environment is an allowlist: the absolute entries of `PATH` (an empty or
+relative one would look commands up in the reviewed tree), locale and time
+zone, CA bundle
 and proxy variables, each client's own sign-in variables
 (`ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` for Claude,
 `OPENAI_API_KEY` and `CODEX_API_KEY` for Codex), Claude's `HOME` and

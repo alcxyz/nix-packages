@@ -165,6 +165,11 @@ func repoReview(ctx context.Context, args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
+	for _, r := range reviewers {
+		if problem := codexCanUse(stateDir); r.Client == "codex" && problem != "" {
+			return fail("%s", problem)
+		}
+	}
 	commitDir := filepath.Join(stateDir, "repo-review", repo.Name, commit)
 	tree := filepath.Join(commitDir, "tree")
 
