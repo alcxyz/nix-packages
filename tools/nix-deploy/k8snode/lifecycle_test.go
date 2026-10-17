@@ -80,6 +80,12 @@ func TestRebootLifecycle(t *testing.T) {
 	if get(f.targetNode(), "spec", "unschedulable") != false {
 		t.Fatal("node left cordoned")
 	}
+	// The availability gate reads the Deployment again after the drain.
+	drain := f.callIndex(`^kubectl drain server-a`)
+	gate := slices.IndexFunc(f.calls[drain:], func(c call) bool { return c.line == "kubectl -n default get deployment/web -o json" })
+	if gate < 0 || drain+gate > f.callIndex(`^kubectl get volumeattachments`) {
+		t.Fatalf("no availability gate between the drain and the storage detach:\n%s", f.callLog())
+	}
 	if f.settings[rebuildLimitSetting] != "0" {
 		t.Fatalf("rebuild limit %q", f.settings[rebuildLimitSetting])
 	}
@@ -194,6 +200,15 @@ func TestDrainFailureUncordons(t *testing.T) {
 			mustNotCall(t, f, regexp.QuoteMeta(rebootCommand))
 			mustNotCall(t, f, `poweroff`)
 		})
+	}
+
+	// A reboot with --leave-cordoned keeps the cordon.
+	f := newHealthyCluster(t)
+	f.drainExit = 1
+	output := runFailure(t, f, "reboot", []string{"--leave-cordoned"}, "drain failed; node disruption was not started")
+	mustNotCall(t, f, `^kubectl uncordon`)
+	if strings.Contains(output, "was uncordoned") {
+		t.Fatalf("output claims an uncordon:\n%s", output)
 	}
 }
 

@@ -509,9 +509,10 @@ func (o *Operation) prepareNodeForDisruption() error {
 // it fails: the node still runs untouched, and keeping it cordoned only takes
 // its room from the Pods the drain displaced. From the storage detach on,
 // the node keeps its cordon, as does a node a resumed maintenance found
-// cordoned and an interrupted run, for the operator to inspect.
+// cordoned and an interrupted run, for the operator to inspect, and a
+// reboot with --leave-cordoned.
 func (o *Operation) releaseCordon(err error) error {
-	if !o.releasable || o.ctx.Err() != nil {
+	if !o.releasable || o.ctx.Err() != nil || (o.opts.Action == "reboot" && o.opts.LeaveCordoned) {
 		return err
 	}
 	node := o.opts.Node
@@ -551,7 +552,8 @@ func (o *Operation) drainTimeout() (string, error) {
 	}
 	timeout := duration(o.opts.DrainTimeout)
 	needed := time.Duration(longest)*time.Second + drainMargin
-	if needed <= timeout {
+	// kubectl drain waits without a limit for a zero timeout.
+	if timeout == 0 || needed <= timeout {
 		return o.opts.DrainTimeout, nil
 	}
 	if o.opts.DrainTimeoutSet {

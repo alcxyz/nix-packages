@@ -262,31 +262,43 @@ settle timeout (90 minutes) for replicas that could never start, and the
 failure left the node cordoned, which kept its room from those same Pods.
 The Pod-slot check before the cordon counts Pods, not CPU or memory.
 
-- **The Pods must fit before anything changes.** Before the database
-  switchover and the cordon, a run places the Pods the availability gate
-  will need elsewhere (per controller, as many as its Ready replicas on
-  other nodes fall short of the gate's minimum; not those of a controller
-  pinned to the node, a Job or a DaemonSet) on the remaining Ready,
-  schedulable nodes by their requests. It places the largest first on the
-  node with the most free CPU, like the default scheduler's spreading, and
-  honours node selectors, required node affinity, taints and a one-per-node
-  anti-affinity, not spread constraints or preferences. A Pod that fits
-  nowhere stops the run; `--check-only` reports the same. The gate after
-  the drain still decides.
+- **The needed Pods must fit before anything changes.** Before the
+  database switchover and the cordon, a run places the Pods the
+  availability gate will need elsewhere (per controller, as many as its
+  Ready replicas on other nodes fall short of the gate's minimum; not those
+  of a controller pinned to the node, a Job or a DaemonSet) on the
+  remaining Ready, schedulable nodes by their requests (Pod-level requests
+  where set). It places the largest first on the node with the most free
+  CPU, like the default scheduler's spreading, and honours node selectors,
+  required node affinity, taints and a one-per-node anti-affinity, not
+  spread constraints or preferences. A needed Pod that fits nowhere stops
+  the run; `--check-only` reports the same. The drain's other Pods are
+  placed after them, and those some node may run but none has room for are
+  only warned about: the scheduler places Pods in no such order, so they
+  may take the room first. (One no node may run, such as a one-per-node
+  replica with too few nodes left, waits for the node by design.)
+  The check therefore catches a shortage early but guarantees nothing; the
+  gate after the drain still decides.
 - **An unplaceable replica fails fast.** After the drain, nothing frees room
-  on its own, so a replica the scheduler reports Unschedulable for five
-  minutes fails the availability gate with the scheduler's reason.
+  on its own. Once more of a controller's replicas have each been reported
+  Unschedulable for five minutes than its gate allows it to lack, the
+  availability gate fails with the scheduler's reasons. A Pod of another
+  owner and a preemptor waiting for its victims do not count.
 - **A failure before the storage detach uncordons.** This replaces "cordoned
   and drained" as the safe state for a node whose drain or availability
   gate failed: it still runs untouched, and staying cordoned only takes its
   room away. From the storage detach on, which may change the host's
   storage sessions, the node keeps its cordon, and so does a node that
-  `--resume-maintenance` found cordoned and a run that was interrupted.
+  `--resume-maintenance` found cordoned, a reboot with `--leave-cordoned`
+  and a run that was interrupted.
 - **The drain outlasts the slowest Pod.** Without `--drain-timeout`, the
   drain timeout grows to the longest grace period of the node's evictable
   Pods plus two minutes, since the drain waits for each to stop; a shorter
-  chosen timeout is kept with a warning.
+  chosen timeout is kept with a warning, and zero still waits without a
+  limit.
 
+Requiring room for every displaced Pod was considered: it would refuse
+maintenance whenever a replica the gate may lose does not fit.
 Requiring headroom for a whole node at all times was considered; it is a
 capacity policy for the cluster's manifests, which the check makes visible
 without enforcing. Lowering requests or scaling workloads down from the

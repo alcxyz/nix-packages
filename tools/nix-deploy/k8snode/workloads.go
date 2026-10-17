@@ -166,9 +166,15 @@ func (o *Operation) controllerReplicas(w workload) (int, error) {
 // node cordoned.
 const unschedulableGrace = 5 * time.Minute
 
+// waitForControllerReadyFloor waits for the controller to have minimumReady
+// Ready replicas. It fails early once more of its replicas have each been
+// Unschedulable for the grace than it may lack, since the rest can then no
+// longer reach the minimum.
 func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) error {
 	deadline := o.now().Add(duration(o.opts.SettleTimeout))
-	var unschedulableSince time.Time
+	// unschedulableSince is when each replica was first seen Unschedulable,
+	// by Pod name.
+	unschedulableSince := map[string]time.Time{}
 	for {
 		ready := 0
 		var c controller
@@ -185,19 +191,32 @@ func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) er
 		if o.expired(deadline) {
 			return fmt.Errorf("%s has %d Ready replicas; maintenance requires %d", w, ready, minimumReady)
 		}
-		reason := ""
 		if found {
-			if reason, err = o.unschedulableReplica(w, c); err != nil {
+			reasons, err := o.unschedulableReplicas(w, c)
+			if err != nil {
 				return err
 			}
-		}
-		switch {
-		case reason == "":
-			unschedulableSince = time.Time{}
-		case unschedulableSince.IsZero():
-			unschedulableSince = o.now()
-		case !o.now().Before(unschedulableSince.Add(o.unschedulableGrace)):
-			return fmt.Errorf("%s has %d Ready replicas; maintenance requires %d, and the scheduler cannot place one: %s", w, ready, minimumReady, reason)
+			var stuck []string
+			for name := range unschedulableSince {
+				if _, ok := reasons[name]; !ok {
+					delete(unschedulableSince, name)
+				}
+			}
+			for name, reason := range reasons {
+				since, ok := unschedulableSince[name]
+				if !ok {
+					unschedulableSince[name] = o.now()
+					continue
+				}
+				if !o.now().Before(since.Add(o.unschedulableGrace)) {
+					stuck = append(stuck, reason)
+				}
+			}
+			if len(stuck) > c.desiredReplicas()-minimumReady {
+				slices.Sort(stuck)
+				return fmt.Errorf("%s has %d Ready replicas; maintenance requires %d, and the scheduler cannot place %d: %s",
+					w, ready, minimumReady, len(stuck), strings.Join(stuck, "; "))
+			}
 		}
 		if err := o.pause(); err != nil {
 			return err
@@ -205,25 +224,37 @@ func (o *Operation) waitForControllerReadyFloor(w workload, minimumReady int) er
 	}
 }
 
-// unschedulableReplica returns the scheduler's message for a Pending Pod of
-// the controller it cannot place, or "" when there is none.
-func (o *Operation) unschedulableReplica(w workload, c controller) (string, error) {
+// unschedulableReplicas returns, by Pod name, the scheduler's message for
+// each Pending Pod of the controller it cannot place. A Pod nominated for a
+// node waits for the Pods it preempts and is not counted.
+func (o *Operation) unschedulableReplicas(w workload, c controller) (map[string]string, error) {
+	reasons := map[string]string{}
+	if c.Spec.Selector == nil {
+		return reasons, nil
+	}
 	var pods podList
 	found, err := o.readQuiet(&pods, "-n", w.Namespace, "get", "pods", "-o", "json")
 	if err != nil || !found {
-		return "", err
+		return reasons, err
 	}
 	for _, p := range pods.Items {
-		if p.Status.Phase != "Pending" || c.Spec.Selector == nil || !pdbSelectorMatches(p.Metadata.Labels, c.Spec.Selector) {
+		if p.Status.Phase != "Pending" || p.Status.NominatedNodeName != "" || !pdbSelectorMatches(p.Metadata.Labels, c.Spec.Selector) {
 			continue
 		}
 		for _, cond := range p.Status.Conditions {
-			if cond.Type == "PodScheduled" && cond.Status == "False" && cond.Reason == "Unschedulable" {
-				return fmt.Sprintf("%s/%s: %s", p.Metadata.Namespace, p.Metadata.Name, cond.Message), nil
+			if cond.Type != "PodScheduled" || cond.Status != "False" || cond.Reason != "Unschedulable" {
+				continue
+			}
+			owner, ok, err := o.workloadForPod(p)
+			if err != nil {
+				return nil, err
+			}
+			if ok && owner == w {
+				reasons[p.Metadata.Name] = fmt.Sprintf("%s/%s: %s", p.Metadata.Namespace, p.Metadata.Name, cond.Message)
 			}
 		}
 	}
-	return "", nil
+	return reasons, nil
 }
 
 // readyMinimum is the number of Ready replicas the availability gate

@@ -160,8 +160,15 @@ func simpleSelector(s *labelSelector) bool {
 // onePerNode reports whether a required anti-affinity on the Pods' own
 // labels allows at most one of them per node.
 func onePerNode(spec podSpec, labels map[string]string, namespace string) bool {
+	return onePerNodeSelector(spec, labels, namespace) != nil
+}
+
+// onePerNodeSelector returns the selector of a required hostname
+// anti-affinity term that selects the Pods' own labels, or nil: no node may
+// run two Pods it selects.
+func onePerNodeSelector(spec podSpec, labels map[string]string, namespace string) *labelSelector {
 	if spec.Affinity == nil || spec.Affinity.PodAntiAffinity == nil {
-		return false
+		return nil
 	}
 	for _, term := range spec.Affinity.PodAntiAffinity.Required {
 		if term.TopologyKey == hostnameLabel &&
@@ -171,10 +178,10 @@ func onePerNode(spec podSpec, labels map[string]string, namespace string) bool {
 			len(term.MismatchLabelKeys) == 0 &&
 			simpleSelector(term.LabelSelector) &&
 			labelsMatch(labels, term.LabelSelector.MatchLabels) {
-			return true
+			return term.LabelSelector
 		}
 	}
-	return false
+	return nil
 }
 
 // hostnameSpread returns the Pods' strict hostname spread on their own

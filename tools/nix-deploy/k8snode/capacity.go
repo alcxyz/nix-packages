@@ -229,7 +229,8 @@ func readResources(list map[string]string) (resources, error) {
 
 // podRequests is what the scheduler reserves for a Pod: its containers and
 // sidecar init containers, or the largest init container while it runs with
-// the sidecars started before it, whichever is more, plus the Pod overhead.
+// the sidecars started before it, whichever is more, or instead the
+// Pod-level request for a resource it names, plus the Pod overhead.
 func podRequests(spec podSpec) (resources, error) {
 	var app resources
 	for _, c := range spec.Containers {
@@ -254,6 +255,16 @@ func podRequests(spec podSpec) (resources, error) {
 	}
 	app = app.plus(sidecars)
 	total := resources{max(app.cpu, init.cpu), max(app.memory, init.memory)}
+	podLevel, err := readResources(spec.Resources.Requests)
+	if err != nil {
+		return total, err
+	}
+	if _, ok := spec.Resources.Requests["cpu"]; ok {
+		total.cpu = podLevel.cpu
+	}
+	if _, ok := spec.Resources.Requests["memory"]; ok {
+		total.memory = podLevel.memory
+	}
 	overhead, err := readResources(spec.Overhead)
 	if err != nil {
 		return total, err
@@ -266,14 +277,8 @@ func podRequests(spec podSpec) (resources, error) {
 type roomyNode struct {
 	node node
 	free resources
-	// claims are the controller selectors of the Pods with a one-per-node
-	// anti-affinity placed on it, by namespace.
-	claims []claim
-}
-
-type claim struct {
-	namespace string
-	selector  *labelSelector
+	// placed are the Pods the check placed on it.
+	placed []pod
 }
 
 // displacedPod is a Pod the drain evicts that the availability gate needs
@@ -281,8 +286,8 @@ type claim struct {
 type displacedPod struct {
 	pod      pod
 	requests resources
-	// selector is its controller's selector when the Pods allow one per
-	// node, else nil.
+	// selector is the anti-affinity term's selector when the Pods allow
+	// one per node, else nil.
 	selector *labelSelector
 }
 
@@ -292,7 +297,9 @@ type displacedPod struct {
 // the node with the most free CPU, like the default scheduler's spreading
 // score, and models node selectors, required node affinity, taints and a
 // one-per-node anti-affinity, not spread constraints or preferences. The
-// availability gate after the drain still has the final word.
+// drain's other Pods are placed after them and only warned about: the
+// scheduler may place them first, so the availability gate after the drain
+// still has the final word.
 func (o *Operation) checkDisplacedPodsFit() error {
 	target := o.opts.Node
 	o.log("checking that the Pods drained from %s fit on the remaining nodes by their CPU and memory requests", target)
@@ -331,10 +338,42 @@ func (o *Operation) checkDisplacedPodsFit() error {
 		}
 	}
 
-	displaced, err := o.displacedPodsToPlace(nodes.Items, pods)
+	needed, others, err := o.displacedPodsToPlace(nodes.Items, pods)
 	if err != nil {
 		return err
 	}
+	before := make([]resources, len(room))
+	for i, r := range room {
+		before[i] = r.free
+	}
+	unplaced, barred := place(room, needed, pods)
+	unplaced = append(unplaced, barred...)
+	// Another Pod no node may run waits for the target by design; only a
+	// shortage of room is worth a warning.
+	unplacedOthers, _ := place(room, others, pods)
+
+	fmt.Fprintf(o.stdout, "remaining-node\tfree-before\tfree-after\n")
+	for i, r := range room {
+		fmt.Fprintf(o.stdout, "%s\t%s\t%s\n", r.node.Metadata.Name, before[i], r.free)
+	}
+	fmt.Fprintf(o.stdout, "needed-pods\t%d\tunplaced\t%d\tother-pods\t%d\tunplaced\t%d\n",
+		len(needed), len(unplaced), len(others), len(unplacedOthers))
+	if len(unplaced) > 0 {
+		o.report(unplaced)
+		return fmt.Errorf("the remaining nodes cannot hold the Pods drained from %s by their CPU and memory requests; free capacity or lower requests before maintenance", target)
+	}
+	if len(unplacedOthers) > 0 {
+		o.log("warning: %d other Pods drained from %s do not fit after the needed ones; if the scheduler places them first, the availability gate fails", len(unplacedOthers), target)
+		o.report(unplacedOthers)
+	}
+	return nil
+}
+
+// place puts the Pods, largest first, on the node with the most free CPU
+// that admits them and has room. It returns a line for each that some node
+// admits but none has room for, and one for each no node admits.
+func place(room []*roomyNode, displaced []displacedPod, pods []pod) (noRoom, barred []string) {
+	displaced = slices.Clone(displaced)
 	sort.SliceStable(displaced, func(i, j int) bool {
 		a, b := displaced[i].requests, displaced[j].requests
 		if a.cpu != b.cpu {
@@ -342,53 +381,41 @@ func (o *Operation) checkDisplacedPodsFit() error {
 		}
 		return a.memory > b.memory
 	})
-	before := make([]resources, len(room))
-	for i, r := range room {
-		before[i] = r.free
-	}
-	var unplaced []string
 	for _, d := range displaced {
 		var pick *roomyNode
+		admitted := false
 		for _, r := range room {
-			if !d.requests.fits(r.free) || !podMatchesNode(d.pod.Spec, r.node) || !nodeAdmits(d.pod.Spec, r.node) ||
-				claimed(r, d, pods) {
+			if !podMatchesNode(d.pod.Spec, r.node) || !nodeAdmits(d.pod.Spec, r.node) || claimed(r, d, pods) {
 				continue
 			}
-			if pick == nil || r.free.cpu > pick.free.cpu {
+			admitted = true
+			if d.requests.fits(r.free) && (pick == nil || r.free.cpu > pick.free.cpu) {
 				pick = r
 			}
 		}
-		if pick == nil {
-			unplaced = append(unplaced, fmt.Sprintf("%s/%s\t%s\tno remaining node has room", d.pod.Metadata.Namespace, d.pod.Metadata.Name, d.requests))
-			continue
+		name := d.pod.Metadata.Namespace + "/" + d.pod.Metadata.Name
+		switch {
+		case !admitted:
+			barred = append(barred, fmt.Sprintf("%s\t%s\tno remaining node may run it", name, d.requests))
+		case pick == nil:
+			noRoom = append(noRoom, fmt.Sprintf("%s\t%s\tno remaining node has room", name, d.requests))
+		default:
+			pick.free = pick.free.minus(d.requests)
+			pick.placed = append(pick.placed, d.pod)
 		}
-		pick.free = pick.free.minus(d.requests)
-		if d.selector != nil {
-			pick.claims = append(pick.claims, claim{d.pod.Metadata.Namespace, d.selector})
-		}
 	}
-
-	fmt.Fprintf(o.stdout, "remaining-node\tfree-before\tfree-after\n")
-	for i, r := range room {
-		fmt.Fprintf(o.stdout, "%s\t%s\t%s\n", r.node.Metadata.Name, before[i], r.free)
-	}
-	fmt.Fprintf(o.stdout, "displaced-pods\t%d\tunplaced\t%d\n", len(displaced), len(unplaced))
-	if len(unplaced) > 0 {
-		o.report(unplaced)
-		return fmt.Errorf("the remaining nodes cannot hold the Pods drained from %s by their CPU and memory requests; free capacity or lower requests before maintenance", target)
-	}
-	return nil
+	return noRoom, barred
 }
 
-// claimed reports whether a one-per-node Pod would join a replica of its
-// controller already running on the node, or placed there by the check.
+// claimed reports whether a one-per-node Pod would join a Pod its
+// anti-affinity selects, running on the node or placed there by the check.
 func claimed(r *roomyNode, d displacedPod, pods []pod) bool {
 	if d.selector == nil {
 		return false
 	}
 	namespace := d.pod.Metadata.Namespace
-	for _, c := range r.claims {
-		if c.namespace == namespace && c.selector == d.selector {
+	for _, p := range r.placed {
+		if p.Metadata.Namespace == namespace && pdbSelectorMatches(p.Metadata.Labels, d.selector) {
 			return true
 		}
 	}
@@ -403,9 +430,11 @@ func claimed(r *roomyNode, d displacedPod, pods []pod) bool {
 
 // displacedPodsToPlace lists the target's Pods that the availability gate
 // requires elsewhere: of each displaced controller the gate checks, as many
-// as its Ready replicas on other nodes fall short of its minimum. Pods of
-// controllers that can run only on the target wait for it instead.
-func (o *Operation) displacedPodsToPlace(nodes []node, pods []pod) ([]displacedPod, error) {
+// as its Ready replicas on other nodes fall short of its minimum. others are
+// the rest of the Pods a controller recreates, which the gate does not
+// need. Pods of controllers that can run only on the target wait for it and
+// are neither.
+func (o *Operation) displacedPodsToPlace(nodes []node, pods []pod) (needed, others []displacedPod, err error) {
 	target := o.opts.Node
 	byWorkload := map[workload][]pod{}
 	var order []workload
@@ -417,7 +446,7 @@ func (o *Operation) displacedPodsToPlace(nodes []node, pods []pod) ([]displacedP
 		}
 		w, ok, err := o.workloadForPod(p)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !ok {
 			continue
@@ -428,43 +457,46 @@ func (o *Operation) displacedPodsToPlace(nodes []node, pods []pod) ([]displacedP
 		byWorkload[w] = append(byWorkload[w], p)
 	}
 
-	var displaced []displacedPod
 	for _, w := range uniqueWorkloads(order) {
 		minimum, _, gated, err := o.readyMinimum(w)
 		if err != nil {
-			return nil, err
-		}
-		if !gated {
-			continue
+			return nil, nil, err
 		}
 		var c controller
-		found, err := o.readQuiet(&c, "-n", w.Namespace, "get", w.ref(), "-o", "json")
-		if err != nil {
-			return nil, err
-		}
-		if found && requiresTargetNode(target, c.Spec.Template.Spec, nodes) {
-			continue
+		found := false
+		if gated {
+			if found, err = o.readQuiet(&c, "-n", w.Namespace, "get", w.ref(), "-o", "json"); err != nil {
+				return nil, nil, err
+			}
+			if found && requiresTargetNode(target, c.Spec.Template.Spec, nodes) {
+				continue
+			}
 		}
 		onTarget := byWorkload[w]
-		readyOnTarget := 0
-		for _, p := range onTarget {
-			if p.runningAndReady() {
-				readyOnTarget++
+		need := 0
+		if gated {
+			readyOnTarget := 0
+			for _, p := range onTarget {
+				if p.runningAndReady() {
+					readyOnTarget++
+				}
 			}
+			need = minimum - (c.Status.ReadyReplicas - readyOnTarget)
+			need = min(max(need, 0), len(onTarget))
 		}
-		need := minimum - (c.Status.ReadyReplicas - readyOnTarget)
-		need = min(max(need, 0), len(onTarget))
-		var selector *labelSelector
-		if found && onePerNode(c.Spec.Template.Spec, c.Spec.Template.Metadata.Labels, w.Namespace) {
-			selector = c.Spec.Selector
-		}
-		for _, p := range onTarget[:need] {
+		for i, p := range onTarget {
 			requests, err := podRequests(p.Spec)
 			if err != nil {
-				return nil, fmt.Errorf("%s/%s: %v", p.Metadata.Namespace, p.Metadata.Name, err)
+				return nil, nil, fmt.Errorf("%s/%s: %v", p.Metadata.Namespace, p.Metadata.Name, err)
 			}
-			displaced = append(displaced, displacedPod{pod: p, requests: requests, selector: selector})
+			d := displacedPod{pod: p, requests: requests,
+				selector: onePerNodeSelector(p.Spec, p.Metadata.Labels, w.Namespace)}
+			if i < need {
+				needed = append(needed, d)
+			} else {
+				others = append(others, d)
+			}
 		}
 	}
-	return displaced, nil
+	return needed, others, nil
 }

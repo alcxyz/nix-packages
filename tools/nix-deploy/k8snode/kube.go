@@ -172,6 +172,11 @@ type podSpec struct {
 	Containers                []container        `json:"containers"`
 	InitContainers            []container        `json:"initContainers"`
 	Overhead                  map[string]string  `json:"overhead"`
+	// Resources are Pod-level requests, which replace the containers' sum
+	// for each resource they name.
+	Resources struct {
+		Requests map[string]string `json:"requests"`
+	} `json:"resources"`
 	// TerminationGracePeriodSeconds defaults to 30 when nil.
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds"`
 }
@@ -180,8 +185,11 @@ type pod struct {
 	Metadata objectMeta `json:"metadata"`
 	Spec     podSpec    `json:"spec"`
 	Status   struct {
-		Phase             string      `json:"phase"`
-		Conditions        []condition `json:"conditions"`
+		Phase      string      `json:"phase"`
+		Conditions []condition `json:"conditions"`
+		// NominatedNodeName is set while a preemptor waits for its
+		// victims to stop.
+		NominatedNodeName string `json:"nominatedNodeName"`
 		ContainerStatuses []struct {
 			Ready bool `json:"ready"`
 			State struct {

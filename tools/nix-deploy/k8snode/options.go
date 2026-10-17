@@ -32,7 +32,8 @@ Options:
   --skip-drain             Cordon only, then reboot. Use for intentional disruption.
   --force-drain            Pass --force to kubectl drain for unmanaged pods.
   --bypass-pdb             Use pod deletion instead of eviction; ignores PDBs.
-  --leave-cordoned         Keep the node cordoned after it returns.
+  --leave-cordoned         Keep the node cordoned after it returns, and when
+                           its drain or availability gate fails.
   --resume-maintenance     Reuse an already cordoned, drained, and detached
                            node for another power cycle. Fails closed if the
                            maintenance-state gates do not pass.
@@ -45,9 +46,9 @@ Options:
                            node is not cordoned, skip it without changing
                            anything. When that cannot be told, the reboot goes
                            ahead. Not with --resume-maintenance.
-  --drain-timeout <dur>    kubectl drain duration. Default: 10m, raised to
-                           the longest grace period of the node's evictable
-                           Pods plus 2m.
+  --drain-timeout <dur>    kubectl drain duration; 0 waits without a limit.
+                           Default: 10m, raised to the longest grace period
+                           of the node's evictable Pods plus 2m.
   --ready-timeout <dur>    kubectl wait duration. Default: 10m.
   --fence-timeout <dur>    Agent recovery/heartbeat wait duration. Default: 10m.
   --settle-timeout <dur>   Workload/Longhorn health wait duration. Default: 90m.
@@ -61,6 +62,11 @@ Options:
   --version                Print the version.
 
 Durations are a whole number of seconds, optionally followed by s, m or h.
+
+Before the cordon, the Pods the drain displaces must fit on the remaining
+nodes by their CPU and memory requests. A failed drain or availability gate
+uncordons the node, which still runs (not with --resume-maintenance or
+--leave-cordoned); later failures leave it cordoned.
 
 Agent-enabled targets require healthy, verified fence states on every server
 before maintenance, with no recent unfence, disabled annotation, or out-of-service

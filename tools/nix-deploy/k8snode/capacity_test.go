@@ -64,6 +64,11 @@ func TestPodRequests(t *testing.T) {
 	if want := (resources{610, 160 << 20}); got != want {
 		t.Errorf("podRequests = %v; want %v", got, want)
 	}
+	// A Pod-level request replaces the containers' sum for its resource.
+	spec.Resources.Requests = map[string]string{"cpu": "2"}
+	if got, err := podRequests(spec); err != nil || got != (resources{2010, 160 << 20}) {
+		t.Errorf("Pod-level cpu: %v, %v", got, err)
+	}
 	if got, err := podRequests(podSpec{}); err != nil || got != (resources{}) {
 		t.Errorf("empty Pod: %v, %v", got, err)
 	}
@@ -93,7 +98,7 @@ func TestDisplacedPodsThatDoNotFitStopBeforeCordon(t *testing.T) {
 		"default/web-1\tcpu=2000m memory=1024Mi\tno remaining node has room",
 		"the remaining nodes cannot hold the Pods drained from server-a by their CPU and memory requests")
 	mustContain(t, output, "server-b\tcpu=1500m memory=15360Mi\tcpu=1500m memory=15360Mi\n")
-	mustContain(t, output, "displaced-pods\t1\tunplaced\t1\n")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t1\tother-pods\t0\tunplaced\t0\n")
 	if mutations := f.mutations(); len(mutations) > 0 {
 		t.Fatalf("mutations: %v", mutations)
 	}
@@ -115,12 +120,13 @@ func TestDisplacedPodsFitOnTheRoomiestNode(t *testing.T) {
 	output := run(t, f, "reboot", "--check-only")
 	mustContain(t, output, "server-b\tcpu=3000m memory=15360Mi\tcpu=2000m memory=14336Mi\n")
 	mustContain(t, output, "server-c\tcpu=1500m memory=15360Mi\tcpu=1500m memory=15360Mi\n")
-	mustContain(t, output, "displaced-pods\t1\tunplaced\t0\n")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tother-pods\t0\tunplaced\t0\n")
 }
 
-// Only the Pods the availability gate needs elsewhere count: a StatefulSet
-// may lose one replica, a Deployment pinned to the target waits for it, and
-// a Job or DaemonSet Pod is not gated.
+// Only the Pods the availability gate needs elsewhere must fit: a
+// StatefulSet may lose one replica, which is only warned about, a
+// Deployment pinned to the target waits for it, and a Job or DaemonSet Pod
+// is not recreated elsewhere.
 func TestDisplacedPodsOnlyCountWhatTheGateNeeds(t *testing.T) {
 	f := newFullCluster(t)
 	requests(f.pods[0], "100m", "64Mi")
@@ -138,7 +144,27 @@ func TestDisplacedPodsOnlyCountWhatTheGateNeeds(t *testing.T) {
 	  "template": {"metadata": {"labels": {"app": "edge"}}, "spec": {"nodeSelector": {"kubernetes.io/hostname": "server-a"}}}},
 	  "status": {"readyReplicas": 1}}`)
 	output := run(t, f, "reboot", "--check-only")
-	mustContain(t, output, "displaced-pods\t1\tunplaced\t0\n")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tother-pods\t1\tunplaced\t1\n")
+	mustContain(t, output, "warning: 1 other Pods drained from server-a do not fit after the needed ones")
+	mustContain(t, output, "default/kv-0\tcpu=3000m memory=1024Mi\tno remaining node has room\n")
+
+	// Another Pod no node may run waits for the target by design.
+	f = newFullCluster(t)
+	requests(f.pods[0], "100m", "64Mi")
+	f.pods = append(f.pods,
+		requests(readyPod(t, "default", "kv-0", "server-a", "StatefulSet", "kv", `{"app": "kv"}`), "100m", "64Mi"),
+		requests(readyPod(t, "default", "kv-1", "server-b", "StatefulSet", "kv", `{"app": "kv"}`), "0", "0"),
+		requests(readyPod(t, "default", "kv-2", "server-c", "StatefulSet", "kv", `{"app": "kv"}`), "0", "0"),
+	)
+	set(f.pods[len(f.pods)-3], decode(t, `{"podAntiAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [
+	  {"topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": {"app": "kv"}}}]}}`), "spec", "affinity")
+	f.controllers["default/statefulset/kv"] = decode(t, `{"spec": {"replicas": 3, "selector": {"matchLabels": {"app": "kv"}},
+	  "template": {"metadata": {"labels": {"app": "kv"}}, "spec": {}}}, "status": {"readyReplicas": 3}}`)
+	output = run(t, f, "reboot", "--check-only")
+	mustContain(t, output, "needed-pods\t1\tunplaced\t0\tother-pods\t1\tunplaced\t0\n")
+	if strings.Contains(output, "warning") {
+		t.Fatalf("warned about a Pod no node may run:\n%s", output)
+	}
 }
 
 // A node the Pod may not run on does not count, whatever its room: here a
@@ -151,6 +177,11 @@ func TestDisplacedPodsHonourPlacement(t *testing.T) {
 	set(f.pods[0], map[string]any{"disk": "fast"}, "spec", "nodeSelector")
 	output := run(t, f, "reboot", "--check-only")
 	mustContain(t, output, "server-b\tcpu=4000m memory=16384Mi\tcpu=3000m memory=15360Mi\n")
+
+	// A needed Pod no node may run is named as such.
+	f = newFullCluster(t)
+	set(f.pods[0], map[string]any{"disk": "fast"}, "spec", "nodeSelector")
+	runFailure(t, f, "reboot", []string{"--check-only"}, "default/web-1\tcpu=2000m memory=1024Mi\tno remaining node may run it")
 
 	// A taint the Pod does not tolerate rules server-b out.
 	f = newFullCluster(t)
@@ -166,6 +197,20 @@ func TestDisplacedPodsHonourPlacement(t *testing.T) {
 	set(f.controllers["default/deployment/web"], antiAffinity, "spec", "template", "spec", "affinity")
 	set(f.pods[0], antiAffinity, "spec", "affinity")
 	runFailure(t, f, "reboot", []string{"--check-only"}, "default/web-1\tcpu=2000m memory=1024Mi\tno remaining node has room")
+
+	// The anti-affinity term, not the controller's selector, decides: a
+	// Pod of another release that the term selects also rules a node out.
+	f = newFullCluster(t)
+	requests(f.pods[0], "1", "1Gi")
+	requests(f.pods[1], "0", "0")
+	set(f.pods[1], map[string]any{"app": "web", "release": "green"}, "metadata", "labels")
+	set(f.pods[1], []any{map[string]any{"kind": "ReplicaSet", "name": "web-green"}}, "metadata", "ownerReferences")
+	set(f.pods[0], map[string]any{"app": "web", "release": "blue"}, "metadata", "labels")
+	set(f.pods[0], antiAffinity, "spec", "affinity")
+	set(f.controllers["default/deployment/web"], map[string]any{"matchLabels": map[string]any{"app": "web", "release": "blue"}}, "spec", "selector")
+	set(f.controllers["default/deployment/web"], 1.0, "status", "readyReplicas")
+	requests(f.pods[len(f.pods)-1], "3500m", "1Gi")
+	runFailure(t, f, "reboot", []string{"--check-only"}, "default/web-1\tcpu=1000m memory=1024Mi\tno remaining node has room")
 }
 
 // After the drain, a replica the scheduler cannot place ends the gate's wait
@@ -182,7 +227,7 @@ func TestUnschedulableReplicaFailsFastAndUncordons(t *testing.T) {
 	}`)
 	f.pods = append(f.pods, pending)
 	runFailure(t, f, "reboot", nil,
-		"default/deployment/web has 1 Ready replicas; maintenance requires 2, and the scheduler cannot place one: default/web-3: 0/3 nodes are available: 1 node(s) were unschedulable, 2 Insufficient cpu.",
+		"default/deployment/web has 1 Ready replicas; maintenance requires 2, and the scheduler cannot place 1: default/web-3: 0/3 nodes are available: 1 node(s) were unschedulable, 2 Insufficient cpu.",
 		"server-a was uncordoned")
 	if f.sleeps < 60 || f.sleeps > 62 {
 		t.Errorf("waited %d polls; want the 5m grace", f.sleeps)
@@ -193,6 +238,76 @@ func TestUnschedulableReplicaFailsFastAndUncordons(t *testing.T) {
 	mustNotCall(t, f, regexp.QuoteMeta(rebootCommand))
 }
 
+// Each replica's wait counts on its own: two replicas Unschedulable in
+// overlapping windows, neither for the whole grace, do not fail the gate;
+// a replica the floor lets stay unplaced, an unrelated Pod with the same
+// labels and a preemptor waiting for its victims do not count.
+func TestUnschedulableReplicasCountSeparately(t *testing.T) {
+	unschedulable := func(name, owner string) map[string]any {
+		p := decode(t, `{"metadata": {"namespace": "default", "name": "`+name+`", "labels": {"app": "web"}},
+		  "spec": {}, "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False",
+		  "reason": "Unschedulable", "message": "no room"}]}}`)
+		if owner != "" {
+			set(p, []any{map[string]any{"kind": "ReplicaSet", "name": owner}}, "metadata", "ownerReferences")
+		}
+		return p
+	}
+	web := workload{Namespace: "default", Kind: "deployment", Name: "web"}
+	wait := func(f *fakeCluster, minimum int, serve func(poll int) []map[string]any) error {
+		polls := 0
+		f.respond = func(c Command, line string) (Result, bool) {
+			if line != "kubectl -n default get pods -o json" {
+				return Result{}, false
+			}
+			polls++
+			return list(serve(polls)), true
+		}
+		o, _ := newOperation(f, options(t, "reboot", "--settle-timeout", "15m", "server-a"))
+		return o.waitForControllerReadyFloor(web, minimum)
+	}
+	cluster := func(desired, ready float64) *fakeCluster {
+		f := newHealthyCluster(t)
+		set(f.controllers["default/deployment/web"], desired, "spec", "replicas")
+		set(f.controllers["default/deployment/web"], ready, "status", "readyReplicas")
+		return f
+	}
+
+	// A is blocked for four minutes (48 polls), B from minute two to six.
+	a, b := unschedulable("web-a", "web-5d"), unschedulable("web-b", "web-5d")
+	err := wait(cluster(2, 1), 2, func(poll int) []map[string]any {
+		var pods []map[string]any
+		if poll <= 48 {
+			pods = append(pods, a)
+		}
+		if poll > 24 && poll <= 72 {
+			pods = append(pods, b)
+		}
+		return pods
+	})
+	expectFailure(t, err, "default/deployment/web has 1 Ready replicas; maintenance requires 2")
+	if strings.Contains(err.Error(), "scheduler") {
+		t.Fatalf("overlapping waits failed fast: %v", err)
+	}
+
+	// The floor needs 2 of 3, so one stuck replica is allowed; two are not.
+	err = wait(cluster(3, 1), 2, func(int) []map[string]any { return []map[string]any{a} })
+	if strings.Contains(err.Error(), "scheduler") {
+		t.Fatalf("a replica the floor allows to stay unplaced failed fast: %v", err)
+	}
+	err = wait(cluster(3, 1), 2, func(int) []map[string]any { return []map[string]any{a, b} })
+	expectFailure(t, err, "the scheduler cannot place 2: default/web-a: no room; default/web-b: no room")
+
+	// A Job's Pod with the same labels, and a nominated preemptor.
+	job := unschedulable("backup-1", "")
+	set(job, []any{map[string]any{"kind": "Job", "name": "backup"}}, "metadata", "ownerReferences")
+	nominated := unschedulable("web-c", "web-5d")
+	set(nominated, "server-b", "status", "nominatedNodeName")
+	err = wait(cluster(2, 1), 2, func(int) []map[string]any { return []map[string]any{job, nominated} })
+	if strings.Contains(err.Error(), "scheduler") {
+		t.Fatalf("a Job's Pod or a nominated preemptor failed fast: %v", err)
+	}
+}
+
 // The grace counts an unschedulable replica's continuous wait: one the
 // scheduler places in between starts it again, and the gate then runs to
 // its settle timeout.
@@ -200,7 +315,7 @@ func TestUnschedulableGraceRestarts(t *testing.T) {
 	f := newHealthyCluster(t)
 	set(f.controllers["default/deployment/web"], 1.0, "status", "readyReplicas")
 	pending := decode(t, `{
-	  "metadata": {"namespace": "default", "name": "web-3", "labels": {"app": "web"}},
+	  "metadata": {"namespace": "default", "name": "web-3", "labels": {"app": "web"}, "ownerReferences": [{"kind": "ReplicaSet", "name": "web-5d"}]},
 	  "spec": {},
 	  "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "message": "no room"}]}
 	}`)
@@ -238,4 +353,13 @@ func TestDrainTimeoutCoversGracePeriod(t *testing.T) {
 	output = run(t, f, "reboot", "--drain-timeout", "5m")
 	mustContain(t, output, "warning: default/web-1 may take 600s to stop, longer than the drain timeout of 5m allows")
 	mustCall(t, f, `^kubectl drain server-a .* --timeout=5m$`)
+
+	// A zero timeout already waits without a limit.
+	f = newHealthyCluster(t)
+	set(f.pods[0], 600.0, "spec", "terminationGracePeriodSeconds")
+	output = run(t, f, "reboot", "--drain-timeout", "0")
+	if strings.Contains(output, "drain timeout") {
+		t.Fatalf("zero drain timeout warned or was raised:\n%s", output)
+	}
+	mustCall(t, f, `^kubectl drain server-a .* --timeout=0s$`)
 }
