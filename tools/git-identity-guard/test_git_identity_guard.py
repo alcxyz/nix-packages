@@ -15,7 +15,7 @@ BLOCKED = "blocked@invalid.test"
 SAFE = "safe@invalid.test"
 
 
-class GuardTest(unittest.TestCase):
+class RepositoryCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -87,6 +87,8 @@ class GuardTest(unittest.TestCase):
     def oid(self, rev="HEAD"):
         return self.run_git("rev-parse", rev).stdout.decode().strip()
 
+
+class GuardTest(RepositoryCase):
     def test_commit_identity_and_messages(self):
         author_only = self.env.copy()
         author_only["GIT_AUTHOR_EMAIL"] = BLOCKED
@@ -334,6 +336,243 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(
             self.hook("pre-push", "origin", "unused", input_data=row).returncode, 0
         )
+
+
+PUBLIC_URL = "https://git.example.test/owner/public.git"
+
+
+class PrivateTermsTest(RepositoryCase):
+    def setUp(self):
+        super().setUp()
+        self.policy.write_text(
+            json.dumps(
+                {
+                    "blockedEmails": [BLOCKED],
+                    "privateTerms": ["example-corp", r"\bacme-[a-z]"],
+                    "publicRepositories": ["git.example.test/owner/public"],
+                }
+            )
+        )
+        self.run_git("remote", "add", "public", PUBLIC_URL)
+
+    def change(self, name, text, message="safe change", *, bypass=False):
+        path = self.repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        self.run_git("add", "-A")
+        args = ["commit", "-qm", message]
+        if bypass:
+            args = ["-c", "core.hooksPath=/dev/null", *args]
+        return self.run_git(*args, ok=False)
+
+    def test_public_repository_rejects_added_terms(self):
+        rejected = self.change("notes.md", "Owned by Example-Corp\n")
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn(b"notes.md", rejected.stderr)
+        self.assertNotIn(b"example-corp", rejected.stderr.lower())
+        self.run_git("reset", "-q", "--hard")
+        self.assertEqual(self.change("acme-tools/readme", "safe\n").returncode, 1)
+        self.run_git("reset", "-q", "--hard")
+        self.assertEqual(
+            self.change("notes.md", "x", "Port from acme-billing").returncode, 1
+        )
+        self.run_git("reset", "-q", "--hard")
+        # Word boundaries in a term keep unrelated words out.
+        self.assertEqual(self.change("notes.md", "macme-x\n").returncode, 0)
+
+    def test_removing_terms_and_comment_lines_are_allowed(self):
+        self.assertEqual(
+            self.change("notes.md", "keep\nexample-corp\n", bypass=True).returncode, 0
+        )
+        self.assertEqual(
+            self.change("notes.md", "keep\n", "Remove old name").returncode, 0
+        )
+        message = self.root / "message"
+        message.write_text("safe\n# example-corp in a comment\n")
+        self.assertEqual(self.hook("commit-msg", str(message)).returncode, 0)
+        message.write_text(
+            "safe\n# ------------------------ >8 ------------------------\nexample-corp\n"
+        )
+        self.assertEqual(self.hook("commit-msg", str(message)).returncode, 0)
+
+    def test_scp_remote_counts_as_public_and_private_repository_is_skipped(self):
+        self.run_git("remote", "set-url", "public", "git@GIT.example.test:owner/public")
+        self.assertEqual(self.change("notes.md", "example-corp\n").returncode, 1)
+        self.run_git("reset", "-q", "--hard")
+        self.run_git(
+            "remote", "set-url", "public", "https://git.example.test/owner/private.git"
+        )
+        self.assertEqual(self.change("notes.md", "example-corp\n").returncode, 0)
+
+    def test_push_checks_new_commits_but_not_published_merges(self):
+        remote = self.root / "remote.git"
+        self.run_git("init", "--bare", "-q", str(remote))
+        self.run_git("remote", "add", "origin", str(remote))
+        self.run_git("push", "-q", "origin", "main")
+        self.run_git("checkout", "-q", "-b", "side")
+        self.assertEqual(
+            self.change("side.md", "example-corp\n", bypass=True).returncode, 0
+        )
+        self.run_git("-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "side")
+        self.run_git("checkout", "-q", "main")
+        self.assertEqual(self.change("main.md", "safe\n").returncode, 0)
+        self.run_git("merge", "-q", "--no-edit", "side")
+        self.run_git("fetch", "-q", "origin")
+        base = self.run_git("rev-parse", "origin/main").stdout.decode().strip()
+        row = f"refs/heads/main {self.oid()} refs/heads/main {base}\n".encode()
+        # The side commit is already published; the merge adds nothing new.
+        self.assertEqual(
+            self.hook("pre-push", "origin", str(remote), input_data=row).returncode, 0
+        )
+        self.assertEqual(self.change("late.md", "acme-x\n", bypass=True).returncode, 0)
+        row = f"refs/heads/main {self.oid()} refs/heads/main {base}\n".encode()
+        rejected = self.hook("pre-push", "origin", str(remote), input_data=row)
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn(b"late.md", rejected.stderr)
+        self.assertNotEqual(
+            self.run_git("push", "origin", "main", ok=False).returncode, 0
+        )
+
+    def test_empty_binary_and_undiffable_additions_are_checked(self):
+        self.assertEqual(self.change("acme-tools/.gitkeep", "").returncode, 1)
+        self.run_git("reset", "-q", "--hard")
+        self.assertEqual(self.change("logo.bin", "\0example-corp\0").returncode, 1)
+        self.run_git("reset", "-q", "--hard")
+        self.assertEqual(
+            self.change(".gitattributes", "notes.md -diff\n").returncode, 0
+        )
+        self.assertEqual(self.change("notes.md", "example-corp\n").returncode, 1)
+        self.run_git("reset", "-q", "--hard")
+        # Git splits patch lines only at LF.
+        self.assertEqual(
+            self.change("notes.md", "safe\u2028example-corp\n").returncode, 1
+        )
+
+    def test_absolute_scp_remote_counts_as_public(self):
+        self.run_git(
+            "remote", "set-url", "public", "git@git.example.test:/owner/public.git"
+        )
+        self.assertEqual(self.change("notes.md", "example-corp\n").returncode, 1)
+
+    def test_comment_lines_given_with_m_are_caught_on_push(self):
+        self.assertEqual(
+            self.change("notes.md", "x", "Safe\n\n# example-corp").returncode, 0
+        )
+        row = f"refs/heads/main {self.oid()} refs/heads/main {self.oid('HEAD~1')}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "public", PUBLIC_URL, input_data=row).returncode, 1
+        )
+
+    def test_pushed_ref_names_are_checked_but_deletions_allowed(self):
+        row = f"refs/heads/main {self.oid()} refs/heads/acme-x {'0' * 40}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "public", PUBLIC_URL, input_data=row).returncode, 1
+        )
+        row = f"(delete) {'0' * 40} refs/heads/acme-x {self.oid()}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "public", PUBLIC_URL, input_data=row).returncode, 0
+        )
+
+    def test_merge_resolution_keeps_inherited_terms_but_not_new_ones(self):
+        self.assertEqual(self.change("f.md", "a\nb\n").returncode, 0)
+        remote = self.root / "remote.git"
+        self.run_git("init", "--bare", "-q", str(remote))
+        self.run_git("remote", "add", "origin", str(remote))
+        self.run_git("push", "-q", "origin", "main")
+        self.run_git("checkout", "-q", "-b", "side")
+        self.assertEqual(
+            self.change("f.md", "a\nexample-corp\n", bypass=True).returncode, 0
+        )
+        self.run_git("-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "side")
+        self.run_git("checkout", "-q", "main")
+        self.assertEqual(self.change("f.md", "a\nmain\n").returncode, 0)
+        self.run_git("fetch", "-q", "origin")
+        base = self.run_git("rev-parse", "origin/main").stdout.decode().strip()
+        for text, new_file, expected in (
+            ("a\nexample-corp\nmain\n", None, 0),
+            ("a\nexample-corp\nacme-x\n", None, 1),
+            ("a\nexample-corp\nmain\n", "acme-tools/.gitkeep", 1),
+        ):
+            self.run_git("merge", "-q", "side", ok=False)
+            (self.repo / "f.md").write_text(text)
+            if new_file:
+                (self.repo / new_file).parent.mkdir(exist_ok=True)
+                (self.repo / new_file).write_text("")
+            self.run_git("add", "-A")
+            # Committing the merge is not blamed for the other parent's lines.
+            self.run_git("commit", "-q", "--no-edit")
+            row = f"refs/heads/main {self.oid()} refs/heads/main {base}\n".encode()
+            result = self.hook("pre-push", "origin", str(remote), input_data=row)
+            self.assertEqual(result.returncode, expected, text)
+            self.run_git("reset", "-q", "--hard", "HEAD~1")
+
+    def test_identities_and_tag_names_are_checked(self):
+        corp = self.env.copy()
+        corp["GIT_AUTHOR_EMAIL"] = "dev@example-corp.test"
+        self.assertEqual(self.commit("safe", env=corp).returncode, 1)
+        self.assertEqual(self.commit("safe", env=corp, bypass=True).returncode, 0)
+        row = f"refs/heads/main {self.oid()} refs/heads/main {self.oid('HEAD~1')}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "public", PUBLIC_URL, input_data=row).returncode, 1
+        )
+        self.run_git("reset", "-q", "--hard", "HEAD~1")
+        for name in ("example-corp-release", "safe\u2028example-corp"):
+            self.run_git("tag", "-a", name, "-m", "safe")
+            tag = self.oid(f"refs/tags/{name}")
+            row = f"refs/tags/x {tag} refs/tags/release {'0' * 40}\n".encode()
+            self.assertEqual(
+                self.hook("pre-push", "public", PUBLIC_URL, input_data=row).returncode,
+                1,
+                name,
+            )
+
+    def test_anchored_terms_see_each_field_alone(self):
+        self.policy.write_text(
+            json.dumps(
+                {
+                    "blockedEmails": [BLOCKED],
+                    "privateTerms": ["^example-corp"],
+                    "publicRepositories": ["git.example.test/owner/public"],
+                }
+            )
+        )
+        corp = self.env.copy()
+        corp["GIT_COMMITTER_NAME"] = "example-corp Dev"
+        self.assertEqual(self.commit("safe", env=corp, bypass=True).returncode, 0)
+        row = f"refs/heads/main {self.oid()} refs/heads/main {self.oid('HEAD~1')}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "public", PUBLIC_URL, input_data=row).returncode, 1
+        )
+        self.run_git("reset", "-q", "--hard", "HEAD~1")
+        self.run_git("tag", "-a", "release", "-m", "example-corp confidential")
+        tag = self.oid("refs/tags/release")
+        row = f"refs/tags/release {tag} refs/tags/release {'0' * 40}\n".encode()
+        self.assertEqual(
+            self.hook("pre-push", "public", PUBLIC_URL, input_data=row).returncode, 1
+        )
+
+    def test_ref_named_merge_head_does_not_skip_commit_checks(self):
+        self.run_git("tag", "MERGE_HEAD")
+        self.assertEqual(self.change("notes.md", "example-corp\n").returncode, 1)
+
+    def test_terms_policy_must_be_complete_and_valid(self):
+        for extra in (
+            {"privateTerms": ["example-corp"]},
+            {"publicRepositories": ["git.example.test/owner/public"]},
+            {
+                "privateTerms": [],
+                "publicRepositories": ["git.example.test/owner/public"],
+            },
+            {
+                "privateTerms": ["("],
+                "publicRepositories": ["git.example.test/owner/public"],
+            },
+            {"privateTerms": ["example-corp"], "publicRepositories": ["public"]},
+            {"privateTerms": None},
+            {"privateTerms": None, "publicRepositories": None},
+        ):
+            self.policy.write_text(json.dumps({"blockedEmails": [BLOCKED], **extra}))
+            self.assertEqual(self.commit("safe").returncode, 1, extra)
 
 
 class GlobalHooksTest(unittest.TestCase):

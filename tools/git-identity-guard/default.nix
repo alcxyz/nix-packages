@@ -38,7 +38,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = {
-    description = "Git hook dispatcher and runtime commit email policy guard";
+    description = "Git hook dispatcher and runtime commit email and private-term policy guard";
     mainProgram = "git-identity-guard";
     platforms = lib.platforms.unix;
   };
