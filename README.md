@@ -36,6 +36,8 @@ Internal tools built from source, tracked in this repo.
 
 | Tool | Description | Platforms |
 |------|-------------|-----------|
+| gh-app | Routes gh and Git through a GitHub App's installation token for the App's installed repositories | all |
+| gh-app-gh | A `gh` that runs through gh-app, and is plain gh until the App is configured; used by t3code | all |
 | k8s-node-reboot | Guarded Kubernetes node reboot, power, and network-path lifecycle helpers | all |
 | nix-gc-maintenance | Guarded Nix profile retention and garbage collection | all |
 | revkit | Agent reviews of whole repositories with sandboxed reviewers of both AI clients | all |

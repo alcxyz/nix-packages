@@ -4,6 +4,7 @@
   codex-cli,
   fetchFromGitHub,
   fetchPnpmDeps,
+  gh-app-gh,
   lib,
   libsecret,
   pnpm_11,
@@ -23,6 +24,7 @@ import ./build.nix {
     codex-cli
     fetchFromGitHub
     fetchPnpmDeps
+    gh-app-gh
     lib
     libsecret
     pnpm_11

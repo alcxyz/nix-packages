@@ -303,6 +303,16 @@ for input in claude-code codex-cli; do
   assert_not_called 'widget'
 done
 
+new_case reverse-dependency-gh-app
+change_file tools/gh-app/main.go
+printf '{"x86_64-linux":["gh-app","gh-app-gh","t3code"],"aarch64-darwin":["gh-app","gh-app-gh","t3code"]}\n' >exports
+run_case 0
+for attr in gh-app gh-app-gh t3code; do
+  assert_called "build .#packages.x86_64-linux.${attr} -L"
+  assert_called "eval .#packages.aarch64-darwin.${attr}.drvPath"
+done
+assert_not_called 'widget'
+
 new_case removed-package
 git rm -q pkgs/removed/default.nix
 git commit -qm remove

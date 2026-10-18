@@ -6,6 +6,7 @@
   codex-cli,
   fetchFromGitHub,
   fetchPnpmDeps,
+  gh-app-gh,
   lib,
   libsecret,
   pnpmDepsHash,
@@ -37,6 +38,8 @@ in
 (t3code.override {
   inherit claude-code;
   codex = codex-cli;
+  # gh-app's gh runs plain gh until the App is configured in T3's environment.
+  gh = gh-app-gh;
   enableClaude = true;
 }).overrideAttrs
   (

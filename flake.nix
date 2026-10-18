@@ -44,6 +44,11 @@
         # All packages — some are platform-specific
         allPackages = {
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
+          gh-app = pkgs.callPackage ./tools/gh-app { };
+          # gh routed through gh-app.
+          gh-app-gh = pkgs.callPackage ./tools/gh-app/gh.nix {
+            inherit (allPackages) gh-app;
+          };
           git-identity-guard = pkgs.callPackage ./tools/git-identity-guard { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
@@ -84,6 +89,9 @@
         // lib.optionalAttrs (system == "x86_64-linux") {
           t3code = unstablePkgs.callPackage ./pkgs/t3code {
             inherit (allPackages) claude-code codex-cli;
+            # Keep the unstable gh that t3code wrapped before, which the
+            # exported gh-app-gh cannot use: unstable has no Intel Darwin gh.
+            gh-app-gh = allPackages.gh-app-gh.override { inherit (unstablePkgs) gh; };
           };
           # Profile-installable AI stack, so consumers can update T3 and its
           # providers without rebuilding anything else.
@@ -164,6 +172,14 @@
         checks.nix-deploy-contract = allPackages.nix-deploy;
         # The package build runs revkit's Go tests, with fake reviewer clients.
         checks.revkit = allPackages.revkit;
+        # The package build runs gh-app's Go tests, with a fake GitHub API.
+        checks.gh-app = allPackages.gh-app;
+        # Unconfigured, the wrapped gh is plain gh.
+        checks.gh-app-gh = pkgs.runCommand "gh-app-gh-passthrough" { } ''
+          export HOME="$TMPDIR"
+          ${lib.getExe allPackages.gh-app-gh} --version | grep -q '^gh version'
+          touch "$out"
+        '';
         checks.${if allPackages ? workspace-sync then "workspace-sync-contract" else null} =
           allPackages.workspace-sync;
         checks.git-identity-guard-contract =

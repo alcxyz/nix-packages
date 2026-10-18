@@ -3,5 +3,6 @@
 result
 result-*
 tools/devlog/devlog
+tools/gh-app/gh-app
 tools/nix-deploy/nix-deploy
 __pycache__/
