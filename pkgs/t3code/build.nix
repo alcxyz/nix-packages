@@ -32,6 +32,11 @@ let
     pname = "t3-resource-monitor";
     inherit version src cargoHash;
     sourceRoot = "${src.name}/native/resource-monitor";
+    # Without a sandbox its build creates /homeless-shelter, and Nix then
+    # refuses to start the t3code build that follows it.
+    preConfigure = ''
+      export HOME="$TMPDIR"
+    '';
   };
   previewBrowser = callPackage ./preview-browser.nix { inherit src; };
 in
