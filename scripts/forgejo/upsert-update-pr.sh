@@ -59,7 +59,22 @@ git add pkgs
 
 git remote set-url origin "${FORGEJO_URL}/${FORGEJO_OWNER}/${FORGEJO_REPO}.git"
 auth_header=$(printf '%s:%s' "$FORGEJO_OWNER" "$FORGEJO_TOKEN" | base64 -w0)
-git config --local "http.${FORGEJO_URL}/.extraheader" "AUTHORIZATION: basic ${auth_header}"
+# Pass push authentication through the environment, never the repository's
+# config, so a run outside a throwaway CI checkout leaves no credential behind.
+# The empty entry first clears headers inherited from config, such as the job
+# token that actions/checkout persists, so only this credential is sent.
+auth_config_index=${GIT_CONFIG_COUNT:-0}
+if [[ ! "$auth_config_index" =~ ^[0-9]+$ ]]; then
+  echo "Invalid inherited Git configuration count" >&2
+  exit 1
+fi
+auth_key="http.${FORGEJO_URL}/${FORGEJO_OWNER}/${FORGEJO_REPO}.git.extraheader"
+export "GIT_CONFIG_KEY_${auth_config_index}=${auth_key}"
+export "GIT_CONFIG_VALUE_${auth_config_index}="
+export "GIT_CONFIG_KEY_$((auth_config_index + 1))=${auth_key}"
+export "GIT_CONFIG_VALUE_$((auth_config_index + 1))=AUTHORIZATION: basic ${auth_header}"
+export GIT_CONFIG_COUNT=$((auth_config_index + 2))
+unset auth_header auth_key
 
 lease_args=()
 if remote_ref=$(git ls-remote --heads origin "$UPDATE_BRANCH" | awk '{print $1}'); then
