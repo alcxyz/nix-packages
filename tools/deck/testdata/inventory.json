@@ -1,0 +1,77 @@
+{
+  "database": "/var/lib/example/state.sqlite",
+  "windowDays": 3,
+  "environmentId": "env-example",
+  "threads": [
+    {
+      "threadId": "thread-a1",
+      "project": "widgets",
+      "title": "[fleet] Roll out the widget service",
+      "bucket": "unsettled",
+      "settledAt": null,
+      "status": "completed",
+      "snoozedUntil": null,
+      "prs": [{"url": "https://git.example.com/acme/widgets/pulls/7", "state": "open"}],
+      "waitingOn": [{"kind": "decision", "description": "Pick a rollout window"}],
+      "createdAt": "2026-10-18T08:00:00Z",
+      "updatedAt": "2026-10-20T09:00:00Z"
+    },
+    {
+      "threadId": "thread-b2",
+      "project": "gadgets",
+      "title": "Fix <script>alert(1)</script> parser",
+      "bucket": "unsettled",
+      "settledAt": null,
+      "status": "completed",
+      "snoozedUntil": null,
+      "prs": [
+        {"url": "https://git.example.com/acme/widgets/pulls/7", "state": "open"},
+        {"url": "https://git.example.com/acme/gadgets/pulls/3", "state": "merged"}
+      ],
+      "waitingOn": [],
+      "createdAt": "2026-10-19T08:00:00Z",
+      "updatedAt": "2026-10-20T09:30:00Z",
+      "extraField": {"kept": true}
+    },
+    {
+      "threadId": "thread-c3",
+      "project": "widgets",
+      "title": "[fleet] Tidy the widget docs",
+      "bucket": "unsettled",
+      "settledAt": null,
+      "status": "running",
+      "snoozedUntil": null,
+      "prs": [],
+      "waitingOn": null,
+      "createdAt": "2026-10-20T07:00:00Z",
+      "updatedAt": "2026-10-20T11:55:00Z"
+    },
+    {
+      "threadId": "thread-d4",
+      "project": "gadgets",
+      "title": "Gadget importer",
+      "bucket": "recently-settled",
+      "settledAt": "2026-10-20T10:00:00Z",
+      "status": "completed",
+      "snoozedUntil": null,
+      "prs": [],
+      "waitingOn": [],
+      "createdAt": "2026-10-17T08:00:00Z",
+      "updatedAt": "2026-10-20T10:00:00Z"
+    },
+    {
+      "threadId": "thread-e5",
+      "project": "gadgets",
+      "title": "Gadget exporter",
+      "bucket": "recently-settled",
+      "settledAt": "2026-10-19T10:00:00Z",
+      "status": "completed",
+      "snoozedUntil": null,
+      "prs": [],
+      "waitingOn": [],
+      "createdAt": "2026-10-16T08:00:00Z",
+      "updatedAt": "2026-10-19T10:00:00Z",
+      "acknowledged": true
+    }
+  ]
+}

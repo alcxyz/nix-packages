@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fake adapter command for tests and local development.
+[ -n "$DECK_ARGS_LOG" ] && printf 'inventory %s\n' "$*" >> "$DECK_ARGS_LOG"
+[ -n "$DECK_FAIL" ] && { echo "inventory failed on purpose" >&2; exit 3; }
+exec cat "${0%/*}/../inventory.json"

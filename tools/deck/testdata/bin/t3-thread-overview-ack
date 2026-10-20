@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake adapter command for tests and local development.
+[ -n "$DECK_ARGS_LOG" ] && printf 'ack %s\n' "$*" >> "$DECK_ARGS_LOG"
+exit 0

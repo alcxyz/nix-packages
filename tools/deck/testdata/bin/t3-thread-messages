@@ -1,0 +1,6 @@
+#!/bin/sh
+# Fake adapter command for tests and local development: the fixture's
+# messages, for whichever thread is asked for.
+[ -n "$DECK_ARGS_LOG" ] && printf 'messages %s\n' "$*" >> "$DECK_ARGS_LOG"
+for arg; do id=$arg; done
+exec sed "s/__THREAD__/$id/" "${DECK_MESSAGES:-${0%/*}/../messages.json}"

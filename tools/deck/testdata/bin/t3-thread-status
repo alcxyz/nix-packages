@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake adapter command for tests and local development.
+[ -n "$DECK_ARGS_LOG" ] && printf 'status %s\n' "$*" >> "$DECK_ARGS_LOG"
+exec cat "${0%/*}/../status.json"

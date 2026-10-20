@@ -1,0 +1,11 @@
+{
+  "database": "/var/lib/example/state.sqlite",
+  "generatedAt": "2026-10-20T12:00:00Z",
+  "threads": [
+    {"threadId": "thread-a1", "state": "unsettled", "verdict": "waiting", "stallReasons": [], "settle": null, "idleMinutes": 180, "idleSince": "2026-10-20T09:00:00Z", "lastUserAt": "2026-10-20T08:00:00Z", "run": {"status": "completed"}, "worktree": null, "checks": [], "prs": []},
+    {"threadId": "thread-b2", "state": "unsettled", "verdict": "stalled", "stallReasons": ["no activity for 2h <b>bold</b>"], "settle": null, "idleMinutes": 150, "idleSince": "2026-10-20T09:30:00Z", "lastUserAt": null, "run": null, "worktree": null, "checks": [{"id": "ci", "label": "CI", "pass": false, "detail": "failing"}], "prs": []},
+    {"threadId": "thread-c3", "state": "unsettled", "verdict": "not-yet", "stallReasons": [], "settle": null, "idleMinutes": 5, "idleSince": null, "lastUserAt": null, "run": null, "worktree": null, "checks": [], "prs": []},
+    {"threadId": "thread-d4", "state": "settled", "verdict": "check", "stallReasons": [], "settle": {"verdict": "check", "line": "Settle: check, importer left a TODO", "owner": "user", "stale": false, "at": "2026-10-20T10:00:00Z", "leftForYou": ["Run the importer once"], "leftForYouUnread": true}, "idleMinutes": 120, "checks": [], "prs": []},
+    {"threadId": "thread-e5", "state": "settled", "verdict": "done", "stallReasons": [], "settle": {"verdict": "done", "line": "Settle: done", "owner": "agent", "stale": false, "at": "2026-10-19T10:00:00Z", "leftForYou": [], "leftForYouUnread": false}, "idleMinutes": 1560, "checks": [], "prs": []}
+  ]
+}

@@ -49,6 +49,7 @@
           gh-app-gh = pkgs.callPackage ./tools/gh-app/gh.nix {
             inherit (allPackages) gh-app;
           };
+          deck = pkgs.callPackage ./tools/deck { };
           git-identity-guard = pkgs.callPackage ./tools/git-identity-guard { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
@@ -172,6 +173,8 @@
         checks.nix-deploy-contract = allPackages.nix-deploy;
         # The package build runs revkit's Go tests, with fake reviewer clients.
         checks.revkit = allPackages.revkit;
+        # The package build runs deck's Go tests, with fake adapter commands.
+        checks.deck = allPackages.deck;
         # The package build runs gh-app's Go tests, with a fake GitHub API.
         checks.gh-app = allPackages.gh-app;
         # Unconfigured, the wrapped gh is plain gh.

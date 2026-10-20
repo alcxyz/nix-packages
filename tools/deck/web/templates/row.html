@@ -1,0 +1,60 @@
+{{define "row"}}
+<li class="row" data-key="{{.Key}}" data-title="{{.Title}}" data-project="{{.Project}}" data-prefix="{{.Prefix}}" data-next="{{.NextAction}}" data-idle="{{if .HasIdle}}{{.IdleMinutes}}{{end}}" data-updated="{{.UpdatedAt}}">
+<details data-key="{{.Key}}">
+  <summary>
+    <a class="title" href="{{.Link}}" rel="noreferrer" target="_blank">{{.Title}}</a>
+    {{if .Project}}<span class="chip">{{.Project}}</span>{{end}}
+    {{if .ShowInstance}}<span class="chip inst">{{.InstanceLabel}}</span>{{end}}
+    {{if .HasProgress}}<span class="progress" title="{{.Progress}}% done"><meter min="0" max="100" value="{{.Progress}}">{{.Progress}}%</meter> {{.Progress}}%</span>{{end}}
+    {{if .Owner}}<span class="badge owner-{{.Owner}}">{{ownerLabel .Owner}}</span>{{end}}
+    {{if .Acknowledged}}<span class="badge ack">accepted</span>{{end}}
+    {{if .SummaryStale}}<span class="badge stale" title="summary from before the latest activity">older summary</span>{{end}}
+    {{if .SummaryUnchecked}}<span class="badge stale" title="the thread changed after its messages were last checked">maybe out of date</span>{{end}}
+    {{if .NextAction}}<span class="next">{{.NextAction}}</span>{{end}}
+  </summary>
+  <div class="body">
+    {{if .Goal}}<p><b>Goal:</b> {{.Goal}}</p>{{end}}
+    {{if .Phase}}<p><b>Phase:</b> {{.Phase}}</p>{{end}}
+    {{if .Done}}<p><b>Done</b></p><ul>{{range .Done}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{if .Remaining}}<p><b>Remaining</b></p><ul>{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{if .Blocker}}<p class="warn"><b>Blocker:</b> {{.Blocker}}</p>{{end}}
+    {{if .Flag}}<p class="warn"><b>Flag:</b> {{.Flag}}</p>{{end}}
+    {{if .Verdict}}<p><b>Verdict:</b> {{.Verdict}}{{if .VerdictReason}}: {{.VerdictReason}}{{end}}</p>{{end}}
+    {{if .FactsVerdict}}<p><b>Status:</b> {{.FactsVerdict}}</p>{{end}}
+    {{if .SettleLine}}<p class="settle-line">{{.SettleLine}}</p>{{end}}
+    {{if .LeftForYou}}<p><b>Left for you</b></p><ul>{{range .LeftForYou}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{if .StallReasons}}<p><b>Stalled:</b> {{range $i, $r := .StallReasons}}{{if $i}}; {{end}}{{$r}}{{end}}</p>{{end}}
+    {{if .WaitingOn}}<p class="chips">{{range .WaitingOn}}<span class="chip wait" title="{{.Kind}}">{{.Description}}</span>{{end}}</p>{{end}}
+    {{if .PRs}}<p><b>Open PRs:</b> {{range .PRs}}<a href="{{.URL}}" rel="noreferrer" target="_blank">{{.URL}}</a> {{end}}</p>{{end}}
+    <p class="meta">
+      {{if .HasIdle}}idle {{.IdleText}}{{end}}
+      {{if .HasSummary}}· summary by {{.SummaryModel}} at <time datetime="{{iso .SummaryAt}}">{{clock .SummaryAt}}</time>{{end}}
+      {{if .SummaryStale}}· summary from before the latest activity{{end}}
+      {{if .SummaryUnchecked}}· summary may be out of date: the thread changed since it was last checked{{end}}
+      {{if .SummaryState}}· summary {{.SummaryState}}{{end}}
+      {{if .SummaryError}}<span class="error">· last summary failed: {{.SummaryError}}</span>{{end}}
+    </p>
+    <div class="actions">
+      {{if .CanRefresh}}
+      <form method="post" action="actions/refresh" data-action>
+        <input type="hidden" name="instance" value="{{.Instance}}"><input type="hidden" name="thread" value="{{.ThreadID}}">
+        <button type="submit">Refresh summary</button>
+      </form>
+      {{end}}
+      {{if .CanAccept}}
+      <form method="post" action="actions/ack" data-action>
+        <input type="hidden" name="instance" value="{{.Instance}}"><input type="hidden" name="thread" value="{{.ThreadID}}"><input type="hidden" name="settledAt" value="{{.SettledAt}}">
+        <button type="submit" class="primary">Accept as done</button>
+      </form>
+      {{end}}
+      {{if .Acknowledged}}
+      <form method="post" action="actions/forget" data-action>
+        <input type="hidden" name="instance" value="{{.Instance}}"><input type="hidden" name="thread" value="{{.ThreadID}}">
+        <button type="submit">Undo accept</button>
+      </form>
+      {{end}}
+    </div>
+  </div>
+</details>
+</li>
+{{end}}

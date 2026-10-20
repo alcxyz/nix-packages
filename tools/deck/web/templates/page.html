@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Threads</title>
+<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+<script src="{{.BasePath}}static/deck.js" defer></script>
+</head>
+<body data-base="{{.BasePath}}">
+<header class="top">
+  <h1>Threads</h1>
+  <form class="filters" role="search" id="filters">
+    <input type="search" id="f-text" placeholder="Search title, project, next action" aria-label="Search">
+    <select id="f-project" aria-label="Project"><option value="">All projects</option></select>
+    <select id="f-prefix" aria-label="Group"><option value="">All groups</option></select>
+    <select id="f-sort" aria-label="Sort">
+      <option value="">Default order</option>
+      <option value="idle">Idle longest</option>
+      <option value="updated">Recently updated</option>
+    </select>
+    <label class="check"><input type="checkbox" id="f-new"> New only</label>
+  </form>
+  <p class="notice" id="notice" hidden></p>
+</header>
+<main id="content">
+{{template "content" .}}
+</main>
+</body>
+</html>

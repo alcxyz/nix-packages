@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fake adapter command for tests and local development.
+[ -n "$DECK_ARGS_LOG" ] && printf 'group %s\n' "$#" >> "$DECK_ARGS_LOG"
+[ -n "$DECK_REPORT_COPY" ] && cat "$1" > "$DECK_REPORT_COPY"
+exec cat "${0%/*}/../group.json"
