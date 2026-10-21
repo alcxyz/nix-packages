@@ -18,23 +18,44 @@ which the consumer installs, and parses their JSON:
 Every 60 seconds (and when the page is opened on facts older than 15
 seconds) deck refreshes each instance's facts. A failing or slow command never
 blocks the page: it shows the last good facts, their time and the error.
+The page's **Refresh now** button requests an immediate facts refresh for every
+instance without waiting for the commands. Once each refresh finishes, every
+thread that needs a summary is queued first, including ones found by the
+refresh and ones whose cached summaries are current. If a facts refresh fails,
+its last good facts supply the threads. Pending per-row role requests are
+preserved when Refresh now queues the default role.
 
 Each thread that needs one gets a summary, cached in
 `$XDG_STATE_HOME/deck/threads/summaries.json` against the thread's message
 revision, bucket and settle time. A thread is summarised again only when one
 of those changes and it has been quiet for `quietMinutes` (0 for no wait; it
-need not wait once settled), by one model call through the shared `light`
-role in `$XDG_CONFIG_HOME/llm/config.toml` (the format devlog reads; only the
-`cli` transports are used), trying its backups in turn on failure. A failed
+need not wait once settled), by one model call through `summaryRole`
+(default `light`) from `$XDG_CONFIG_HOME/llm/config.toml` (the format devlog
+reads; only CLI transports are used), trying its backups in turn on failure. A failed
 command or model call is retried after 15 minutes, doubling up to six hours;
 invalid model output waits for the thread to change.
-A worker runs `refreshConcurrency` calls at a time within `callsPerHour`. A
-thread's "Refresh summary" button queues it first. Settled threads the facts
-call done, and accepted ones, need no summary.
+A worker runs `refreshConcurrency` calls at a time within `callsPerHour`.
+Beside each thread's **Refresh summary** button, a role picker offers usable
+roles from `summaryRoles` (default `light`, `standard`, `deep`). The selected
+role applies to that refresh only; automatic summaries after a thread changes
+use `summaryRole`. Refresh summary and Refresh now bypass the quiet period
+and retry backoff, while still waiting for concurrency and call budget.
+Settled threads the facts call done or left for you, and accepted ones, need
+no summary.
+
+Each row shows `summary by MODEL (ROLE)`. The version 1 JSON summary cache
+adds an optional `role` field beside `model`; entries without `role` are read
+as the configured default role. A failed refresh keeps the previous summary's
+role and model.
 
 Summaries run only on a client that can run with no tools at all, which is
 Claude Code; Codex entries of the role are skipped (logged at start), since
-`codex exec` cannot turn off all of its tools, and so are `api` entries. The call is
+`codex exec` cannot turn off all of its tools, and so are `api` entries.
+Roles with no usable entry are omitted from the picker and logged at startup.
+If the default role is unavailable, automatic summaries are disabled but
+facts and refreshes with other usable roles still work. Codex and API
+transports remain deferred per [#617](https://git.alc.xyz/alcxyz/nix-packages/issues/617).
+The call is
 
 ```sh
 claude -p --model M --effort E --safe-mode --restricted --tools "" \
@@ -65,6 +86,8 @@ windowDays = 3           # default
 quietMinutes = 10        # default; 0 for no quiet period
 refreshConcurrency = 2   # default
 callsPerHour = 60        # default
+summaryRole = "light"    # default role for automatic summaries and Refresh now
+summaryRoles = ["light", "standard", "deep"] # default picker roles
 
 [commands]               # each defaults to its name on PATH
 inventory = "t3-thread-inventory"
@@ -80,6 +103,10 @@ db = "/home/user/.t3/userdata/statev2.sqlite"
 webURL = "https://t3.example.com"
 # environmentID = "..."   # optional; overrides the inventory's environmentId
 ```
+
+`summaryRole` is also included in `summaryRoles` when absent. The offered
+roles retain configuration order, with duplicates removed, and must resolve
+to at least one usable no-tools entry of the shared LLM configuration.
 
 Thread links are `{webURL}/{environmentId}/{threadId}`.
 

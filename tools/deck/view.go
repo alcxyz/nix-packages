@@ -95,11 +95,14 @@ type RowView struct {
 	SummaryStale  bool
 	// SummaryUnchecked marks a summary of a thread that changed after its
 	// messages were last checked.
-	SummaryUnchecked bool
-	SummaryModel     string
-	SummaryAt        time.Time
-	SummaryError     string
-	SummaryState     string
+	SummaryUnchecked   bool
+	SummaryModel       string
+	SummaryRole        string
+	SummaryRoles       []string
+	DefaultSummaryRole string
+	SummaryAt          time.Time
+	SummaryError       string
+	SummaryState       string
 }
 
 type Unblocker struct {
@@ -357,8 +360,14 @@ func (d *Deck) rowLocked(in InstanceConfig, env string, gr GroupRow, st StatusTh
 		UpdatedAt:     gr.UpdatedAt,
 		SettledAt:     gr.SettledAt,
 		Acknowledged:  gr.Acknowledged,
-		CanRefresh:    d.roleErr == nil && needsSummaryByFacts(gr.InventoryThread, st),
 	}
+	for _, role := range d.cfg.Threads.SummaryRoles {
+		if len(d.models[role]) > 0 {
+			r.SummaryRoles = append(r.SummaryRoles, role)
+		}
+	}
+	r.DefaultSummaryRole = d.cfg.Threads.SummaryRole
+	r.CanRefresh = len(r.SummaryRoles) > 0 && needsSummaryByFacts(gr.InventoryThread, st)
 	if r.Title == "" {
 		r.Title = gr.ThreadID
 	}
@@ -400,6 +409,10 @@ func (d *Deck) rowLocked(in InstanceConfig, env string, gr GroupRow, st StatusTh
 	if e, ok := shown[key]; ok && e.Summary != nil {
 		r.HasSummary = true
 		r.SummaryModel = e.Model
+		r.SummaryRole = e.Role
+		if r.SummaryRole == "" {
+			r.SummaryRole = d.cfg.Threads.SummaryRole
+		}
 		r.SummaryAt = e.MadeAt
 		if probed && p.revision != "" && e.Basis != current {
 			r.SummaryStale = true

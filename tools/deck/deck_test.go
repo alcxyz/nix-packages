@@ -225,7 +225,7 @@ func TestSummarizeStoresAndKeepsOldOnInvalid(t *testing.T) {
 	d.mu.Lock()
 	_, thread, st, _ := d.findThreadLocked("main/thread-a1")
 	d.mu.Unlock()
-	if err := d.summarizeThread(context.Background(), in, thread, st, false); err != nil {
+	if err := d.summarizeThread(context.Background(), in, thread, st, ""); err != nil {
 		t.Fatal(err)
 	}
 	e, ok := d.cache.get("main/thread-a1")
@@ -240,7 +240,7 @@ func TestSummarizeStoresAndKeepsOldOnInvalid(t *testing.T) {
 	// revision, so the thread is not retried until it changes. The same
 	// revision is summarised again only by hand.
 	answer = `{"progressPct": 10}`
-	if err := d.summarizeThread(context.Background(), in, thread, st, true); err == nil {
+	if err := d.summarizeThread(context.Background(), in, thread, st, summaryRole); err == nil {
 		t.Fatal("invalid output was accepted")
 	}
 	e2, _ := d.cache.get("main/thread-a1")
@@ -277,16 +277,16 @@ func TestRequestSummaryQueuesFirst(t *testing.T) {
 	d.mu.Lock()
 	d.queue = []string{"main/thread-b2", "main/thread-c3"}
 	d.mu.Unlock()
-	if err := d.requestSummary("main", "thread-c3"); err != nil {
+	if err := d.requestSummary("main", "thread-c3", summaryRole); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.requestSummary("main", "nope"); err == nil {
+	if err := d.requestSummary("main", "nope", summaryRole); err == nil {
 		t.Fatal("an unknown thread was queued")
 	}
 	d.schedule()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.queue[0] != "main/thread-c3" || !d.manual["main/thread-c3"] {
+	if d.queue[0] != "main/thread-c3" || d.manual["main/thread-c3"] == "" {
 		t.Fatalf("queue %v", d.queue)
 	}
 }
@@ -307,6 +307,7 @@ func TestFactsErrorKeepsLastGood(t *testing.T) {
 func TestNoRoleQueuesNothing(t *testing.T) {
 	d, _ := newTestDeck(t)
 	d.roleErr = errors.New("no shared llm config")
+	d.models = nil
 	refreshAndProbe(d, d.cfg.Threads.Instances[0])
 	d.mu.Lock()
 	n := len(d.queue)
@@ -314,7 +315,7 @@ func TestNoRoleQueuesNothing(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("queued %d threads without a model role", n)
 	}
-	if err := d.requestSummary("main", "thread-a1"); err == nil {
+	if err := d.requestSummary("main", "thread-a1", summaryRole); err == nil {
 		t.Fatal("a refresh was accepted without a model role")
 	}
 }
@@ -344,7 +345,7 @@ func TestSettlingInvalidatesSummary(t *testing.T) {
 	d.mu.Lock()
 	_, a1, st, _ := d.findThreadLocked("main/thread-a1")
 	d.mu.Unlock()
-	if err := d.summarizeThread(context.Background(), in, a1, st, false); err != nil {
+	if err := d.summarizeThread(context.Background(), in, a1, st, ""); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(strings.Join(candidateKeys(d), ","), "thread-a1") {
@@ -361,7 +362,7 @@ func TestSettlingInvalidatesSummary(t *testing.T) {
 		t.Fatal("settling did not invalidate the summary")
 	}
 	settled := thread(t, d, "thread-a1")
-	if err := d.summarizeThread(context.Background(), in, settled, st, false); err != nil {
+	if err := d.summarizeThread(context.Background(), in, settled, st, ""); err != nil {
 		t.Fatal(err)
 	}
 	e, _ := d.cache.get("main/thread-a1")
@@ -462,7 +463,7 @@ func TestQueuedJobWaitsWhenActiveAgain(t *testing.T) {
 	// The fixture's last activity is 09:00; at 09:05 the thread is not quiet.
 	d.now = func() time.Time { return time.Date(2026, 10, 20, 9, 5, 0, 0, time.UTC) }
 	a1 := thread(t, d, "thread-a1")
-	if err := d.summarizeThread(context.Background(), in, a1, StatusThread{}, false); !errors.Is(err, errNotQuiet) {
+	if err := d.summarizeThread(context.Background(), in, a1, StatusThread{}, ""); !errors.Is(err, errNotQuiet) {
 		t.Fatalf("queued job: %v", err)
 	}
 	if calls != 0 {
@@ -471,7 +472,7 @@ func TestQueuedJobWaitsWhenActiveAgain(t *testing.T) {
 	if _, ok := d.cache.get("main/thread-a1"); ok {
 		t.Fatal("waiting for quiet must not record an attempt")
 	}
-	if err := d.summarizeThread(context.Background(), in, a1, StatusThread{}, true); err != nil || calls != 1 {
+	if err := d.summarizeThread(context.Background(), in, a1, StatusThread{}, summaryRole); err != nil || calls != 1 {
 		t.Fatalf("a refresh by hand runs at once: %v, %d calls", err, calls)
 	}
 }
@@ -489,7 +490,7 @@ func TestShownSummaryDatesTheShownText(t *testing.T) {
 	d.mu.Lock()
 	d.inFlight["main/thread-a1"] = true
 	d.mu.Unlock()
-	d.summarize(context.Background(), "main/thread-a1", true)
+	d.summarize(context.Background(), "main/thread-a1", summaryRole)
 	if e, ok := d.cache.get("main/thread-a1"); !ok || e.Summary == nil {
 		t.Fatal("the summary was not cached")
 	}
@@ -514,7 +515,7 @@ func TestTransientFailuresRetryWithBackoff(t *testing.T) {
 		return nil, errors.New("rate limited")
 	}
 	d4 := thread(t, d, "thread-d4")
-	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, false); err == nil {
+	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, ""); err == nil {
 		t.Fatal("expected a failure")
 	}
 	e, _ := d.cache.get("main/thread-d4")
@@ -528,7 +529,7 @@ func TestTransientFailuresRetryWithBackoff(t *testing.T) {
 	if !strings.Contains(strings.Join(candidateKeys(d), ","), "thread-d4") {
 		t.Fatal("not retried after the backoff")
 	}
-	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, false); err == nil {
+	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, ""); err == nil {
 		t.Fatal("expected a failure")
 	}
 	e, _ = d.cache.get("main/thread-d4")
@@ -543,7 +544,7 @@ func TestTransientFailuresRetryWithBackoff(t *testing.T) {
 	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
 		return []byte("not json"), nil
 	}
-	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, true); err == nil {
+	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, summaryRole); err == nil {
 		t.Fatal("expected a failure")
 	}
 	e, _ = d.cache.get("main/thread-d4")
@@ -597,12 +598,12 @@ func TestBudgetRequeueIsAtomic(t *testing.T) {
 	d.queue = nil
 	d.inFlight[key] = true
 	d.mu.Unlock()
-	d.summarize(context.Background(), key, true)
+	d.summarize(context.Background(), key, summaryRole)
 	d.mu.Lock()
 	queued := len(d.queue) > 0 && d.queue[0] == key
 	running := d.inFlight[key]
 	d.mu.Unlock()
-	if !queued || running || !d.manual[key] {
+	if !queued || running || d.manual[key] == "" {
 		t.Fatalf("after the budget stop: queued %v running %v", queued, running)
 	}
 	d.schedule()
@@ -653,7 +654,7 @@ func TestQueuedJobRechecksFacts(t *testing.T) {
 	d.mu.Lock()
 	d.inFlight[key] = true
 	d.mu.Unlock()
-	d.summarize(context.Background(), key, true) // runModel fails the test if called
+	d.summarize(context.Background(), key, summaryRole) // runModel fails the test if called
 	if _, ok := d.cache.get(key); ok {
 		t.Fatal("an acknowledged thread was summarised")
 	}
@@ -742,7 +743,7 @@ exec sed -e "s/__THREAD__/$id/" -e "s/40:2026-10-20T09:00:00.000Z/$rev/" "`+fixt
 	d.mu.Lock()
 	_, d4, st, _ := d.findThreadLocked("main/thread-d4")
 	d.mu.Unlock()
-	if err := d.summarizeThread(context.Background(), in, d4, st, true); err == nil {
+	if err := d.summarizeThread(context.Background(), in, d4, st, summaryRole); err == nil {
 		t.Fatal("expected a failure")
 	}
 	os.WriteFile(release, nil, 0o600)
@@ -768,7 +769,7 @@ exec sed -e "s/__THREAD__/$id/" -e "s/40:2026-10-20T09:00:00.000Z/$rev/" "`+fixt
 	if !strings.Contains(strings.Join(candidateKeys(d), ","), "thread-d4") {
 		t.Fatal("an older revision did not queue the thread")
 	}
-	d.summarize(context.Background(), "main/thread-d4", false)
+	d.summarize(context.Background(), "main/thread-d4", "")
 	if calls != 1 {
 		t.Fatalf("model calls %d, want 1", calls)
 	}
@@ -788,7 +789,7 @@ func TestSummaryMaybeOutOfDateWhenChecksLag(t *testing.T) {
 	d.mu.Lock()
 	d.inFlight["main/thread-a1"] = true
 	d.mu.Unlock()
-	d.summarize(context.Background(), "main/thread-a1", true)
+	d.summarize(context.Background(), "main/thread-a1", summaryRole)
 
 	row := func() RowView {
 		for _, sec := range d.view().Sections {
@@ -840,7 +841,7 @@ func TestShutdownRecordsNoFailure(t *testing.T) {
 		return nil, errors.New("signal: killed")
 	}
 	d4 := thread(t, d, "thread-d4")
-	if err := d.summarizeThread(ctx, in, d4, StatusThread{State: "settled", Verdict: "check"}, false); err == nil {
+	if err := d.summarizeThread(ctx, in, d4, StatusThread{State: "settled", Verdict: "check"}, ""); err == nil {
 		t.Fatal("expected an error")
 	}
 	if e, ok := d.cache.get("main/thread-d4"); ok && (e.Failures != 0 || !e.RetryAt.IsZero() || e.Error != "") {
@@ -1016,7 +1017,7 @@ func TestFailedReadRecordsTheCheckedUpdatedAt(t *testing.T) {
 	// The thread moved on after the last good check, then the read failed.
 	d4 := thread(t, d, "thread-d4")
 	d4.UpdatedAt = "2026-10-20T11:30:00Z"
-	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, true); err == nil {
+	if err := d.summarizeThread(context.Background(), in, d4, StatusThread{State: "settled", Verdict: "check"}, summaryRole); err == nil {
 		t.Fatal("expected a failure")
 	}
 	e, _ := d.cache.get("main/thread-d4")
@@ -1108,6 +1109,7 @@ func TestSummaryOfAnotherSettlementIsStaleWithoutAProbe(t *testing.T) {
 func TestRefreshDuringARunningJobRunsNext(t *testing.T) {
 	d, _ := newTestDeck(t)
 	in := d.cfg.Threads.Instances[0]
+	d.models["deep"] = d.models[summaryRole]
 	refreshAndProbe(d, in)
 	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
 		return []byte(validSummary), nil
@@ -1116,13 +1118,164 @@ func TestRefreshDuringARunningJobRunsNext(t *testing.T) {
 	d.mu.Lock()
 	d.inFlight["main/thread-a1"] = true
 	d.mu.Unlock()
-	if err := d.requestSummary("main", "thread-a1"); err != nil {
+	if err := d.requestSummary("main", "thread-a1", "deep"); err != nil {
 		t.Fatal(err)
 	}
-	d.summarize(context.Background(), "main/thread-a1", false)
+	d.summarize(context.Background(), "main/thread-a1", "")
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if len(d.queue) == 0 || d.queue[0] != "main/thread-a1" || !d.manual["main/thread-a1"] {
+	if len(d.queue) == 0 || d.queue[0] != "main/thread-a1" || d.manual["main/thread-a1"] != "deep" {
 		t.Fatalf("the refresh by hand was dropped: queue %v, manual %v", d.queue, d.manual)
+	}
+}
+
+func TestRefreshAllQueuesFreshFactsAcrossInstances(t *testing.T) {
+	d, _ := newTestDeck(t)
+	cfg := d.cfg
+	second := cfg.Threads.Instances[0]
+	second.Name = "second"
+	cfg.Threads.Instances = append(cfg.Threads.Instances, second)
+	d = newDeck(cfg, d.cache, d.models, nil, quietLog())
+	d.now = func() time.Time { return testClock }
+	// Fresh facts must be requested even if the last read is recent. The
+	// empty inventory here also checks that newly discovered threads queue.
+	for _, f := range d.facts {
+		f.asOf = testClock
+	}
+	d.requestRefreshAll()
+	d.requestRefreshAll()
+	for _, in := range cfg.Threads.Instances {
+		if len(d.refreshCh[in.Name]) != 1 {
+			t.Fatalf("refresh requests did not coalesce for %s", in.Name)
+		}
+		<-d.refreshCh[in.Name]
+		refreshAndProbe(d, in)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.queue) != 8 || len(d.manual) != 8 {
+		t.Fatalf("queue %v, manual %v", d.queue, d.manual)
+	}
+	for _, in := range cfg.Threads.Instances {
+		for _, id := range []string{"thread-a1", "thread-b2", "thread-c3", "thread-d4"} {
+			if d.manual[cacheKey(in.Name, id)] != cfg.Threads.SummaryRole {
+				t.Errorf("missing manual refresh for %s/%s", in.Name, id)
+			}
+		}
+		if d.manual[cacheKey(in.Name, "thread-e5")] != "" {
+			t.Error("an accepted thread was queued")
+		}
+	}
+}
+
+func TestRefreshAllHonoursConcurrencyAndBudget(t *testing.T) {
+	d, _ := newTestDeck(t)
+	d.cfg.Threads.RefreshConcurrency = 2
+	d.cfg.Threads.CallsPerHour = 2
+	d.requestRefreshAll()
+	refreshAndProbe(d, d.cfg.Threads.Instances[0])
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
+		started <- struct{}{}
+		<-release
+		return []byte(validSummary), nil
+	}
+	defer d.work.Wait()
+	defer close(release)
+	d.startJobs(context.Background())
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("summary workers did not start")
+		}
+	}
+	d.mu.Lock()
+	if len(d.inFlight) != 2 || len(d.queue) != 2 {
+		t.Errorf("running %v, queued %v", d.inFlight, d.queue)
+	}
+	d.mu.Unlock()
+	d.startJobs(context.Background())
+	select {
+	case <-started:
+		t.Fatal("a third model call exceeded concurrency or budget")
+	default:
+	}
+}
+
+func TestOneShotRoleAndAutomaticDefault(t *testing.T) {
+	d, _ := newTestDeck(t)
+	in := d.cfg.Threads.Instances[0]
+	refreshAndProbe(d, in)
+	d.models["deep"] = []ModelConfig{{Provider: "anthropic", Model: "deep-model", Transport: "cli"}}
+	key := "main/thread-a1"
+	var called []string
+	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
+		called = append(called, m.Model)
+		return []byte(validSummary), nil
+	}
+	if err := d.requestSummary("main", "thread-a1", "deep"); err != nil {
+		t.Fatal(err)
+	}
+	// Limit this dispatcher pass to the requested row.
+	d.queue = d.queue[:1]
+	d.startJobs(context.Background())
+	d.work.Wait()
+	reopened, err := openSummaryCache(d.cache.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, _ := reopened.get(key)
+	if e.Role != "deep" || e.Model != "anthropic/deep-model" {
+		t.Fatalf("cached role and model: %+v", e)
+	}
+	// A changed thread must return to the configured automatic role.
+	messages, err := os.ReadFile("testdata/messages.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "messages.json")
+	messages = []byte(strings.ReplaceAll(string(messages), "40:2026-10-20T09:00:00.000Z", "new-revision"))
+	if err := os.WriteFile(path, messages, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DECK_MESSAGES", path)
+	a1 := thread(t, d, "thread-a1")
+	if err := d.summarizeThread(context.Background(), in, a1, StatusThread{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	e, _ = d.cache.get(key)
+	if strings.Join(called, ",") != "deep-model,light-model" || e.Role != summaryRole {
+		t.Fatalf("models %v, cached role %q", called, e.Role)
+	}
+}
+
+func TestRefreshAllPreservesPendingRole(t *testing.T) {
+	for _, rowFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "row during bulk refresh", true: "row before bulk refresh"}[rowFirst], func(t *testing.T) {
+			d, _ := newTestDeck(t)
+			in := d.cfg.Threads.Instances[0]
+			refreshAndProbe(d, in)
+			d.models["deep"] = d.models[summaryRole]
+			d.cfg.Threads.CallsPerHour = 1
+			d.calls = []time.Time{testClock}
+			if !rowFirst {
+				d.requestRefreshAll()
+			}
+			if err := d.requestSummary("main", "thread-a1", "deep"); err != nil {
+				t.Fatal(err)
+			}
+			if rowFirst {
+				d.requestRefreshAll()
+			}
+			refreshAndProbe(d, in)
+			if d.manual["main/thread-a1"] != "deep" {
+				t.Fatalf("bulk refresh replaced the pending role: %v", d.manual)
+			}
+			if len(d.queue) == 0 || d.queue[0] != "main/thread-a1" {
+				t.Fatalf("bulk defaults displaced the row's priority: %v", d.queue)
+			}
+		})
 	}
 }

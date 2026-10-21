@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +67,8 @@ func TestPageEscapesThreadText(t *testing.T) {
 		"Settle: check, importer left a TODO",
 		"Run the importer once",
 		"facts as of",
+		`action="actions/refresh-all"`,
+		"Refresh now",
 		// The fixture's avgPct follows the group command's rule: progress,
 		// or 0 without one, over unsettled threads; the page must agree.
 		"<b>27%</b> average progress",
@@ -108,6 +113,18 @@ func TestSecurityHeadersAndRoutes(t *testing.T) {
 	if rec := get(t, h, "/elsewhere"); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown path %d", rec.Code)
 	}
+	for _, action := range []string{"refresh", "refresh-all", "ack", "forget"} {
+		path := "/threads/actions/" + action
+		for _, method := range []string{"GET", "HEAD", "PUT", "DELETE"} {
+			req := httptest.NewRequest(method, path, nil)
+			req.Header.Set("Origin", "https://deck.example.com")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s: got %d, want 405", method, path, rec.Code)
+			}
+		}
+	}
 }
 
 func TestAuthAppliesToEveryRouteButHealthz(t *testing.T) {
@@ -121,6 +138,12 @@ func TestAuthAppliesToEveryRouteButHealthz(t *testing.T) {
 	for _, p := range []string{"/threads/", "/threads/fragment", "/threads/static/deck.js", "/elsewhere"} {
 		if rec := get(t, h, p); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s without a token: %d", p, rec.Code)
+		}
+	}
+	for _, action := range []string{"refresh", "refresh-all", "ack", "forget"} {
+		path := "/threads/actions/" + action
+		if rec := post(h, path, nil, "https://deck.example.com"); rec.Code != http.StatusUnauthorized {
+			t.Errorf("POST %s without a token: %d", path, rec.Code)
 		}
 	}
 	if rec := get(t, h, "/healthz"); rec.Code != http.StatusOK {
@@ -213,6 +236,9 @@ func TestRefreshAction(t *testing.T) {
 	if len(d.queue) == 0 || d.queue[0] != "main/thread-b2" {
 		t.Fatalf("queue %v", d.queue)
 	}
+	if got := d.manual["main/thread-b2"]; got != d.cfg.Threads.SummaryRole {
+		t.Fatalf("queued role %q, want default %q", got, d.cfg.Threads.SummaryRole)
+	}
 }
 
 func TestThreadLinkEscapesSegments(t *testing.T) {
@@ -247,7 +273,8 @@ webURL = "https://t3.example.com"
 	}
 	if cfg.Listen != "127.0.0.1:3775" || cfg.BasePath != "/threads/" || cfg.PublicOrigin != "https://deck.example.com" ||
 		cfg.Threads.WindowDays != 3 || *cfg.Threads.QuietMinutes != 10 || cfg.Threads.RefreshConcurrency != 2 ||
-		cfg.Threads.CallsPerHour != 60 || cfg.Commands.Messages != "t3-thread-messages" || cfg.Threads.Instances[0].Label != "main" {
+		cfg.Threads.CallsPerHour != 60 || cfg.Threads.SummaryRole != "light" ||
+		!reflect.DeepEqual(cfg.Threads.SummaryRoles, []string{"light", "standard", "deep"}) || cfg.Commands.Messages != "t3-thread-messages" || cfg.Threads.Instances[0].Label != "main" {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	if err := cfg.validateAuth(false); err != nil {
@@ -465,5 +492,203 @@ webURL = "https://t3.example.com"
 	}
 	if args := readArgs(t, argsLog); len(args) != 0 {
 		t.Fatalf("commands ran although deck could not listen: %v", args)
+	}
+}
+
+func TestActionOrigins(t *testing.T) {
+	d, h, argsLog := newTestServer(t)
+	before := readArgs(t, argsLog)
+	form := url.Values{"instance": {"main"}, "thread": {"thread-d4"}, "settledAt": {"2026-10-20T10:00:00Z"}, "role": {"light"}}
+	for _, action := range []string{"refresh", "refresh-all", "ack", "forget"} {
+		for _, origin := range []string{"", "null", "https://evil.example.com"} {
+			if rec := post(h, "/threads/actions/"+action, form, origin); rec.Code != http.StatusForbidden {
+				t.Errorf("%s with Origin %q: got %d, want 403", action, origin, rec.Code)
+			}
+		}
+	}
+	if got := readArgs(t, argsLog); !reflect.DeepEqual(got, before) {
+		t.Fatalf("rejected actions ran commands: before %v, after %v", before, got)
+	}
+	if len(d.manual) != 0 || len(d.refreshCh["main"]) != 0 {
+		t.Fatalf("rejected actions queued work: manual %v, refreshes %d", d.manual, len(d.refreshCh["main"]))
+	}
+}
+
+func TestRefreshActionRoles(t *testing.T) {
+	cases := []struct {
+		name, role, wantRole string
+		wantStatus           int
+	}{
+		{"configured default", "", "deep", http.StatusSeeOther},
+		{"explicit role", "light", "light", http.StatusSeeOther},
+		{"explicit default", "deep", "deep", http.StatusSeeOther},
+		{"unknown role", "missing", "", http.StatusBadRequest},
+		{"unusable role", "standard", "", http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, h, _ := newTestServer(t)
+			d.cfg.Threads.SummaryRole = "deep"
+			d.models["deep"] = []ModelConfig{{Provider: "anthropic", Model: "deep-model", Transport: "cli"}}
+			// A configured role with no runnable models must not be queued.
+			d.models["standard"] = nil
+			before := append([]string(nil), d.queue...)
+			form := url.Values{"instance": {"main"}, "thread": {"thread-b2"}}
+			if tc.role != "" {
+				form.Set("role", tc.role)
+			}
+			rec := post(h, "/threads/actions/refresh", form, "https://deck.example.com")
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if tc.wantRole == "" {
+				if !reflect.DeepEqual(d.queue, before) || len(d.manual) != 0 {
+					t.Fatalf("invalid role changed work: queue %v, manual %v", d.queue, d.manual)
+				}
+				return
+			}
+			if len(d.queue) == 0 || d.queue[0] != "main/thread-b2" || d.manual["main/thread-b2"] != tc.wantRole {
+				t.Fatalf("queue %v, manual %v; want %q", d.queue, d.manual, tc.wantRole)
+			}
+			if rec.Header().Get("Location") != d.cfg.BasePath {
+				t.Fatalf("redirect %q", rec.Header().Get("Location"))
+			}
+		})
+	}
+}
+
+func TestRefreshAllActionWithoutSummaries(t *testing.T) {
+	d, _, argsLog := newTestServer(t)
+	d.roleErr = errors.New("default role unavailable")
+	d.models = nil
+	d.cfg.BasePath = "/ops/deck/"
+	h, err := newHandler(d, nil, quietLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := get(t, h, d.cfg.BasePath)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `action="actions/refresh-all"`) {
+		t.Fatalf("refresh-all missing while summaries are disabled: %d %s", page.Code, page.Body.String())
+	}
+	before := readArgs(t, argsLog)
+	for _, fetch := range []bool{false, true} {
+		req := httptest.NewRequest("POST", d.cfg.BasePath+"actions/refresh-all", nil)
+		req.Header.Set("Origin", d.cfg.PublicOrigin)
+		want := http.StatusSeeOther
+		if fetch {
+			req.Header.Set("X-Deck-Fetch", "1")
+			want = http.StatusNoContent
+		}
+		rec := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			h.ServeHTTP(rec, req)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("refresh-all blocked instead of queuing a facts refresh")
+		}
+		if rec.Code != want {
+			t.Fatalf("refresh-all fetch=%v: %d %s", fetch, rec.Code, rec.Body.String())
+		}
+		if !fetch && rec.Header().Get("Location") != d.cfg.BasePath {
+			t.Fatalf("redirect %q", rec.Header().Get("Location"))
+		}
+		// Facts are fresh and no worker is running. Both requests must
+		// return, including the one whose refresh channel is already full.
+		if len(d.refreshCh["main"]) != 1 {
+			t.Fatalf("fresh instance was not queued: %d refreshes", len(d.refreshCh["main"]))
+		}
+	}
+	if got := readArgs(t, argsLog); !reflect.DeepEqual(got, before) {
+		t.Fatalf("refresh-all ran commands in the handler: before %v, after %v", before, got)
+	}
+}
+
+func TestSummaryRoleConfig(t *testing.T) {
+	cases := []struct {
+		name, settings, wantDefault string
+		wantRoles                   []string
+	}{
+		{"custom default", `summaryRole = "standard"`, "standard", []string{"light", "standard", "deep"}},
+		{"custom list", `summaryRoles = ["deep", "light"]`, "light", []string{"deep", "light"}},
+		{"append default", "summaryRole = \"review\"\nsummaryRoles = [\"deep\"]", "review", []string{"deep", "review"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			content := `publicOrigin = "https://deck.example.com"
+[threads]
+` + tc.settings + `
+[[threads.instance]]
+name = "main"
+db = "/var/lib/example/state.sqlite"
+webURL = "https://t3.example.com"
+`
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Threads.SummaryRole != tc.wantDefault || !reflect.DeepEqual(cfg.Threads.SummaryRoles, tc.wantRoles) {
+				t.Fatalf("default %q, roles %v; want %q, %v", cfg.Threads.SummaryRole, cfg.Threads.SummaryRoles, tc.wantDefault, tc.wantRoles)
+			}
+			if err := cfg.normalize(); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cfg.Threads.SummaryRoles, tc.wantRoles) {
+				t.Fatalf("normalizing twice changed roles to %v", cfg.Threads.SummaryRoles)
+			}
+		})
+	}
+}
+
+func TestSummaryRolePickerAndAttribution(t *testing.T) {
+	for _, cachedRole := range []string{"", "deep"} {
+		t.Run("cached-role-"+cachedRole, func(t *testing.T) {
+			d, _ := newTestDeck(t)
+			d.cfg.Threads.SummaryRole = "standard"
+			d.cfg.Threads.SummaryRoles = []string{"deep", "light", "missing", "standard"}
+			d.models["standard"] = []ModelConfig{{Provider: "anthropic", Model: "standard-model", Transport: "cli"}}
+			d.models["deep"] = nil
+			s, err := parseSummary([]byte(validSummary), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := CacheEntry{Summary: &s, Model: "anthropic/cached-model", Role: cachedRole, MadeAt: testClock}
+			row := d.rowLocked(d.cfg.Threads.Instances[0], "env-example", GroupRow{
+				InventoryThread: InventoryThread{ThreadID: "thread-a1", Bucket: "unsettled"},
+			}, StatusThread{}, map[string]CacheEntry{"main/thread-a1": entry}, nil)
+			wantRole := cachedRole
+			if wantRole == "" {
+				wantRole = "standard"
+			}
+			if row.SummaryRole != wantRole || row.DefaultSummaryRole != "standard" || !reflect.DeepEqual(row.SummaryRoles, []string{"light", "standard"}) {
+				t.Fatalf("summary role %q, default %q, picker %v", row.SummaryRole, row.DefaultSummaryRole, row.SummaryRoles)
+			}
+			tmpl, err := parseTemplates()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := tmpl.ExecuteTemplate(&out, "row", row); err != nil {
+				t.Fatal(err)
+			}
+			body := out.String()
+			for _, want := range []string{`name="role"`, `value="light"`, `value="standard" selected`, "summary by anthropic/cached-model (" + wantRole + ")"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("row lacks %q: %s", want, body)
+				}
+			}
+			for _, unavailable := range []string{`value="deep"`, `value="missing"`} {
+				if strings.Contains(body, unavailable) {
+					t.Errorf("row offers unavailable role %s", unavailable)
+				}
+			}
+		})
 	}
 }

@@ -61,7 +61,7 @@ func newTestDeck(t *testing.T) (*Deck, string) {
 		t.Fatal(err)
 	}
 	models := []ModelConfig{{Provider: "anthropic", Model: "light-model", Transport: "cli"}}
-	d := newDeck(testConfig(t), cache, models, nil, quietLog())
+	d := newDeck(testConfig(t), cache, map[string][]ModelConfig{summaryRole: models}, nil, quietLog())
 	d.now = func() time.Time { return testClock }
 	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
 		t.Fatalf("unexpected model call")

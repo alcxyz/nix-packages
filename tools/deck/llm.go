@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,8 +14,42 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// summaryRole is the agent role deck requests from the shared LLM config.
+// summaryRole is the default agent role for automatic summaries.
 const summaryRole = "light"
+
+// loadSummaryRoles resolves the configured roles through the same no-tools
+// filter. An unavailable default disables automatic summaries only.
+func loadSummaryRoles(path string, cfg ThreadsConfig, log *slog.Logger) (map[string][]ModelConfig, error) {
+	models := map[string][]ModelConfig{}
+	var defaultErr error
+	for _, name := range cfg.SummaryRoles {
+		role, err := loadRole(path, name)
+		if err == nil {
+			var skipped []string
+			models[name], skipped = summaryModels(role)
+			for _, reason := range skipped {
+				log.Warn("model skipped for summaries", "role", name, "reason", reason)
+			}
+			if len(models[name]) == 0 {
+				err = fmt.Errorf("no entry of roles.%s can run without tools (%s)", name, strings.Join(skipped, "; "))
+			}
+		}
+		if err != nil {
+			delete(models, name)
+			log.Warn("role skipped for summaries", "role", name, "err", err.Error())
+			if name == cfg.SummaryRole {
+				defaultErr = err
+			}
+			continue
+		}
+		var labels []string
+		for _, m := range models[name] {
+			labels = append(labels, m.label())
+		}
+		log.Info("summary models", "role", name, "models", strings.Join(labels, ", "))
+	}
+	return models, defaultErr
+}
 
 // ModelConfig is one entry of the shared LLM config's roles table, the same
 // shape devlog reads.

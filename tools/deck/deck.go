@@ -78,7 +78,7 @@ type Deck struct {
 	cfg      Config
 	cmds     Commands
 	cache    *SummaryCache
-	models   []ModelConfig
+	models   map[string][]ModelConfig
 	roleErr  error
 	runModel modelRunner
 	log      *slog.Logger
@@ -89,7 +89,7 @@ type Deck struct {
 	probes   map[string]probe
 	probeSeq uint64
 	queue    []string
-	manual   map[string]bool
+	manual   map[string]string
 	inFlight map[string]bool
 	calls    []time.Time
 
@@ -103,12 +103,13 @@ type Deck struct {
 	work sync.WaitGroup
 	// base is the service context: actions run on it, detached from their
 	// request but stopped at shutdown.
-	base      context.Context
-	refreshCh map[string]chan struct{}
-	wake      chan struct{}
+	base       context.Context
+	refreshCh  map[string]chan struct{}
+	refreshAll map[string]bool
+	wake       chan struct{}
 }
 
-func newDeck(cfg Config, cache *SummaryCache, models []ModelConfig, roleErr error, log *slog.Logger) *Deck {
+func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, roleErr error, log *slog.Logger) *Deck {
 	d := &Deck{
 		cfg:         cfg,
 		cmds:        Commands{cfg: cfg.Commands, timeout: 90 * time.Second},
@@ -120,11 +121,12 @@ func newDeck(cfg Config, cache *SummaryCache, models []ModelConfig, roleErr erro
 		now:         time.Now,
 		facts:       map[string]*instanceFacts{},
 		probes:      map[string]probe{},
-		manual:      map[string]bool{},
+		manual:      map[string]string{},
 		inFlight:    map[string]bool{},
 		refreshLock: map[string]chan struct{}{},
 		probing:     map[string]bool{},
 		refreshCh:   map[string]chan struct{}{},
+		refreshAll:  map[string]bool{},
 		wake:        make(chan struct{}, 1),
 		base:        context.Background(),
 	}
@@ -195,6 +197,18 @@ func (d *Deck) requestRefresh(instance string) {
 	}
 }
 
+// requestRefreshAll asks every facts loop to refresh now, then queues each
+// thread that needs a summary from those facts. Repeated requests coalesce
+// through the existing buffered refresh channels.
+func (d *Deck) requestRefreshAll() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, in := range d.cfg.Threads.Instances {
+		d.refreshAll[in.Name] = true
+		d.requestRefresh(in.Name)
+	}
+}
+
 // requestFacts asks for a facts refresh of every instance whose facts are
 // older than factsFreshFor, without waiting for it.
 func (d *Deck) requestFacts() {
@@ -239,12 +253,45 @@ func (d *Deck) unlockRefresh(instance string) {
 // and starts probing changed threads in the background. A failure keeps the
 // last good facts and records the error.
 func (d *Deck) refreshInstance(ctx context.Context, in InstanceConfig) {
-	if err := d.refreshFacts(ctx, in, 0); err != nil {
+	d.mu.Lock()
+	refreshAll := d.refreshAll[in.Name]
+	delete(d.refreshAll, in.Name)
+	d.mu.Unlock()
+	err := d.refreshFacts(ctx, in, 0)
+	if err != nil {
 		d.factsError(in.Name, err)
-		return
+	}
+	if refreshAll {
+		// On failure, refresh summaries of the last good facts instead.
+		d.mu.Lock()
+		if len(d.models[d.cfg.Threads.SummaryRole]) > 0 {
+			var pending []string
+			for _, key := range d.queue {
+				if d.manual[key] != "" {
+					pending = append(pending, key)
+				}
+			}
+			f := d.facts[in.Name]
+			for _, t := range f.inventory.Threads {
+				key := cacheKey(in.Name, t.ThreadID)
+				if needsSummaryByFacts(t, f.status[t.ThreadID]) && d.manual[key] == "" {
+					// A bulk refresh must retain an explicit pending role,
+					// including one requested while facts were being read.
+					d.queueSummaryLocked(key, d.cfg.Threads.SummaryRole)
+				}
+			}
+			// Keep already queued manual requests ahead of new bulk defaults,
+			// in their original order.
+			for i := len(pending) - 1; i >= 0; i-- {
+				d.queueSummaryLocked(pending[i], d.manual[pending[i]])
+			}
+		}
+		d.mu.Unlock()
 	}
 	d.schedule()
-	d.startProbes(ctx, in)
+	if err == nil {
+		d.startProbes(ctx, in)
+	}
 }
 
 // startProbes probes changed threads without holding up the facts loop: a
@@ -586,6 +633,9 @@ type candidate struct {
 // candidatesLocked lists the threads that need a (new) summary and are
 // eligible for one, oldest change first.
 func (d *Deck) candidatesLocked() []candidate {
+	if d.roleErr != nil {
+		return nil // automatic summaries need the default role
+	}
 	now := d.now()
 	quiet := time.Duration(*d.cfg.Threads.QuietMinutes) * time.Minute
 	var out []candidate
@@ -635,18 +685,15 @@ func quietSince(changed, now time.Time, quiet time.Duration) bool {
 // schedule rebuilds the queue: threads queued by hand first, then eligible
 // threads, oldest change first.
 func (d *Deck) schedule() {
-	if d.roleErr != nil {
-		return // without a model role there is nothing to queue
-	}
 	d.mu.Lock()
 	var q []string
 	for _, key := range d.queue {
-		if d.manual[key] && !d.inFlight[key] {
+		if d.manual[key] != "" && !d.inFlight[key] {
 			q = append(q, key)
 		}
 	}
 	for _, c := range d.candidatesLocked() {
-		if !d.manual[c.key] && !d.inFlight[c.key] {
+		if d.manual[c.key] == "" && !d.inFlight[c.key] {
 			q = append(q, c.key)
 		}
 	}
@@ -689,9 +736,9 @@ func (d *Deck) takeCall() bool {
 
 // requestSummary queues a thread ahead of the others, for the refresh
 // button. It still waits for budget.
-func (d *Deck) requestSummary(instance, threadID string) error {
-	if d.roleErr != nil {
-		return errors.New("summaries are disabled: " + d.roleErr.Error())
+func (d *Deck) requestSummary(instance, threadID, role string) error {
+	if len(d.models[role]) == 0 {
+		return fmt.Errorf("unknown or unusable summary role %q", role)
 	}
 	key := cacheKey(instance, threadID)
 	d.mu.Lock()
@@ -709,23 +756,26 @@ func (d *Deck) requestSummary(instance, threadID string) error {
 		d.mu.Unlock()
 		return errors.New("unknown thread")
 	}
-	if d.inFlight[key] {
-		// The running job may skip checks a refresh by hand does not; it
-		// queues the thread again when it ends.
-		d.manual[key] = true
-	} else {
-		q := []string{key}
-		for _, k := range d.queue {
-			if k != key {
-				q = append(q, k)
-			}
-		}
-		d.queue = q
-		d.manual[key] = true
-	}
+	d.queueSummaryLocked(key, role)
 	d.mu.Unlock()
 	d.signal()
 	return nil
+}
+
+// queueSummaryLocked records the one-shot role even if a job is already
+// running. The latest request for a thread replaces any pending request.
+func (d *Deck) queueSummaryLocked(key, role string) {
+	d.manual[key] = role
+	if d.inFlight[key] {
+		return // the running job queues this request when it ends
+	}
+	q := []string{key}
+	for _, k := range d.queue {
+		if k != key {
+			q = append(q, k)
+		}
+	}
+	d.queue = q
 }
 
 func (d *Deck) dispatch(ctx context.Context) {
@@ -749,14 +799,14 @@ func (d *Deck) startJobs(ctx context.Context) {
 	for len(d.inFlight) < d.cfg.Threads.RefreshConcurrency && len(d.queue) > 0 && d.budgetLeftLocked() > 0 {
 		key := d.queue[0]
 		d.queue = d.queue[1:]
-		manual := d.manual[key]
+		role := d.manual[key]
 		delete(d.manual, key)
 		d.inFlight[key] = true
 		d.work.Add(1)
-		go func(key string, manual bool) {
+		go func(key, role string) {
 			defer d.work.Done()
-			d.summarize(ctx, key, manual)
-		}(key, manual)
+			d.summarize(ctx, key, role)
+		}(key, role)
 	}
 }
 
@@ -773,7 +823,7 @@ func (d *Deck) findThreadLocked(key string) (InstanceConfig, InventoryThread, St
 	return InstanceConfig{}, InventoryThread{}, StatusThread{}, false
 }
 
-func (d *Deck) summarize(ctx context.Context, key string, manual bool) {
+func (d *Deck) summarize(ctx context.Context, key, role string) {
 	d.mu.Lock()
 	in, t, st, ok := d.findThreadLocked(key)
 	d.mu.Unlock()
@@ -785,10 +835,10 @@ func (d *Deck) summarize(ctx context.Context, key string, manual bool) {
 	defer func() {
 		d.mu.Lock()
 		delete(d.inFlight, key)
-		if requeue || d.manual[key] {
+		if requeue || d.manual[key] != "" {
 			d.queue = append([]string{key}, d.queue...)
-			if manual {
-				d.manual[key] = true
+			if d.manual[key] == "" && role != "" {
+				d.manual[key] = role
 			}
 		}
 		d.mu.Unlock()
@@ -798,7 +848,7 @@ func (d *Deck) summarize(ctx context.Context, key string, manual bool) {
 		return // gone, or settled or accepted since it was queued
 	}
 
-	err := d.summarizeThread(ctx, in, t, st, manual)
+	err := d.summarizeThread(ctx, in, t, st, role)
 	if errors.Is(err, errNotQuiet) {
 		return // rescheduled once the thread has been quiet long enough
 	}
@@ -824,15 +874,19 @@ func (d *Deck) summarize(ctx context.Context, key string, manual bool) {
 
 // summarizeThread makes one summary and records the outcome in the cache.
 // On failure the previous summary stays.
-func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t InventoryThread, st StatusThread, manual bool) error {
+func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t InventoryThread, st StatusThread, role string) error {
+	manual := role != ""
+	if !manual {
+		role = d.cfg.Threads.SummaryRole
+	}
 	key := cacheKey(in.Name, t.ThreadID)
 	// Until the messages are read, the last check names the revision this
 	// attempt is about.
 	d.mu.Lock()
 	seen := d.probes[key]
 	d.mu.Unlock()
-	if d.roleErr != nil {
-		return d.recordFailure(ctx, key, t, seen, d.roleErr, false)
+	if len(d.models[role]) == 0 {
+		return d.recordFailure(ctx, key, t, seen, fmt.Errorf("summary role %q is unavailable", role), false)
 	}
 	seq := d.nextObservation()
 	m, err := d.cmds.messages(ctx, in, t.ThreadID, headMessages, tailMessages, headChars)
@@ -886,7 +940,7 @@ func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t Invento
 		return d.recordFailure(ctx, key, t, seen, err, false)
 	}
 
-	out, model, err := callModel(ctx, d.runModel, d.models, prompt, d.takeCall)
+	out, model, err := callModel(ctx, d.runModel, d.models[role], prompt, d.takeCall)
 	if errors.Is(err, errBudget) {
 		return err
 	}
@@ -904,6 +958,7 @@ func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t Invento
 		LastActivityAt:  seen.lastActivityAt,
 		ThreadUpdatedAt: t.UpdatedAt,
 		Model:           model,
+		Role:            role,
 		MadeAt:          now,
 		AttemptBasis:    basisOf(seen.revision, t),
 		AttemptedAt:     now,

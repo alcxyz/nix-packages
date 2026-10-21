@@ -1,5 +1,8 @@
 {{define "content"}}
 <section class="overview" data-generated="{{iso .GeneratedAt}}" data-seen="{{iso .SeenUpTo}}">
+  <form method="post" action="actions/refresh-all" data-action>
+    <button type="submit">Refresh now</button>
+  </form>
   <ul class="counts">
     <li><b>{{.Counts.Unsettled}}</b> unsettled</li>
     <li class="you"><b>{{.Counts.User}}</b> waiting on you</li>
@@ -13,7 +16,7 @@
     {{range .Instances}}<span class="asof{{if .Err}} error{{end}}">{{if $.Multi}}{{.Label}}: {{end}}facts as of {{if .HasRun}}<time datetime="{{iso .AsOf}}">{{clock .AsOf}}</time>{{else}}never{{end}}{{if .Err}} (last refresh failed at <time datetime="{{iso .ErrAt}}">{{clock .ErrAt}}</time>: {{.Err}}){{end}}</span>
     {{end}}
     <span>summaries: {{.QueueLen}} queued, {{.Running}} running, {{.BudgetLeft}}/{{.CallsPerHour}} calls left this hour</span>
-    {{if .RoleErr}}<span class="error">summaries disabled: {{.RoleErr}}</span>{{end}}
+    {{if .RoleErr}}<span class="error">automatic summaries disabled: {{.RoleErr}}</span>{{end}}
   </p>
 </section>
 {{if .Empty}}<p class="empty">No threads yet.</p>{{end}}

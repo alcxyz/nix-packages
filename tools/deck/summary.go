@@ -232,6 +232,7 @@ type CacheEntry struct {
 	LastActivityAt  string         `json:"lastActivityAt,omitempty"`
 	ThreadUpdatedAt string         `json:"threadUpdatedAt,omitempty"`
 	Model           string         `json:"model,omitempty"`
+	Role            string         `json:"role,omitempty"`
 	MadeAt          time.Time      `json:"madeAt,omitzero"`
 	AttemptBasis    Basis          `json:"attemptBasis"`
 	AttemptedAt     time.Time      `json:"attemptedAt,omitzero"`

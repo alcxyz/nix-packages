@@ -28,7 +28,7 @@
     {{if .PRs}}<p><b>Open PRs:</b> {{range .PRs}}<a href="{{.URL}}" rel="noreferrer" target="_blank">{{.URL}}</a> {{end}}</p>{{end}}
     <p class="meta">
       {{if .HasIdle}}idle {{.IdleText}}{{end}}
-      {{if .HasSummary}}· summary by {{.SummaryModel}} at <time datetime="{{iso .SummaryAt}}">{{clock .SummaryAt}}</time>{{end}}
+      {{if .HasSummary}}· summary by {{.SummaryModel}} ({{.SummaryRole}}) at <time datetime="{{iso .SummaryAt}}">{{clock .SummaryAt}}</time>{{end}}
       {{if .SummaryStale}}· summary from before the latest activity{{end}}
       {{if .SummaryUnchecked}}· summary may be out of date: the thread changed since it was last checked{{end}}
       {{if .SummaryState}}· summary {{.SummaryState}}{{end}}
@@ -38,6 +38,9 @@
       {{if .CanRefresh}}
       <form method="post" action="actions/refresh" data-action>
         <input type="hidden" name="instance" value="{{.Instance}}"><input type="hidden" name="thread" value="{{.ThreadID}}">
+        <select name="role" aria-label="Summary role">
+          {{range .SummaryRoles}}<option value="{{.}}"{{if eq . $.DefaultSummaryRole}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
         <button type="submit">Refresh summary</button>
       </form>
       {{end}}

@@ -73,6 +73,7 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	app.HandleFunc("GET "+base+"fragment", s.fragment)
 	app.Handle("GET "+base+"static/", http.StripPrefix(base+"static/", http.FileServerFS(static)))
 	app.HandleFunc("POST "+base+"actions/refresh", s.refresh)
+	app.HandleFunc("POST "+base+"actions/refresh-all", s.refreshAll)
 	app.HandleFunc("POST "+base+"actions/ack", s.ack)
 	app.HandleFunc("POST "+base+"actions/forget", s.forget)
 	if base != "/" {
@@ -155,11 +156,25 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.deck.requestSummary(in.Name, id); err != nil {
+	role := r.PostForm.Get("role")
+	if role == "" {
+		role = s.deck.cfg.Threads.SummaryRole
+	}
+	if len(s.deck.models[role]) == 0 {
+		http.Error(w, "unknown or unusable summary role", http.StatusBadRequest)
+		return
+	}
+	if err := s.deck.requestSummary(in.Name, id, role); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	s.log.Info("summary requested", "instance", in.Name, "thread", id)
+	s.log.Info("summary requested", "instance", in.Name, "thread", id, "role", role)
+	s.done(w, r)
+}
+
+func (s *Server) refreshAll(w http.ResponseWriter, r *http.Request) {
+	s.deck.requestRefreshAll()
+	s.log.Info("facts and summaries requested for all instances")
 	s.done(w, r)
 }
 

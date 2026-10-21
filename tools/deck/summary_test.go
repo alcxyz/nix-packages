@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,5 +236,71 @@ func TestModelEnvIsMinimal(t *testing.T) {
 	env := modelEnv([]string{"PATH=/bin", "HOME=/home/u", "CLAUDE_CONFIG_DIR=/c", "FORGEJO_TOKEN_FILE=/secret", "AWS_SECRET_ACCESS_KEY=x", "LANG=C.UTF-8", "PATHX=1"})
 	if strings.Join(env, " ") != "PATH=/bin HOME=/home/u CLAUDE_CONFIG_DIR=/c LANG=C.UTF-8" {
 		t.Fatalf("env %v", env)
+	}
+}
+
+func TestLoadSummaryRoles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	config := `[roles.light]
+provider = "anthropic"
+model = "light-model"
+transport = "cli"
+effort = "low"
+[roles.standard]
+provider = "openai"
+model = "codex-model"
+transport = "cli"
+[roles.standard.backup]
+provider = "anthropic"
+model = "backup-model"
+transport = "prefer-cli"
+effort = "high"
+[roles.standard.backup.backup]
+provider = "anthropic"
+model = "api-backup"
+transport = "api"
+[roles.deep]
+provider = "anthropic"
+model = "api-model"
+transport = "api"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, defaultRole := range []string{"light", "standard", "deep", "missing"} {
+		t.Run(defaultRole, func(t *testing.T) {
+			var logs bytes.Buffer
+			log := slog.New(slog.NewTextHandler(&logs, nil))
+			models, err := loadSummaryRoles(path, ThreadsConfig{
+				SummaryRole: defaultRole, SummaryRoles: []string{"light", "standard", "deep", "missing"},
+			}, log)
+			wantError := defaultRole == "deep" || defaultRole == "missing"
+			if (err != nil) != wantError {
+				t.Fatalf("default %q: error %v, want error %v", defaultRole, err, wantError)
+			}
+			// Unavailable non-default roles do not disable automatic summaries,
+			// and usable roles survive when the default is unavailable.
+			if len(models) != 2 {
+				t.Fatalf("loaded roles %v, want only light and standard", models)
+			}
+			light := models["light"]
+			if len(light) != 1 || light[0].label() != "anthropic/light-model" || light[0].Effort != "low" {
+				t.Fatalf("light models %+v", light)
+			}
+			standard := models["standard"]
+			if len(standard) != 1 || standard[0].label() != "anthropic/backup-model" || standard[0].Effort != "high" || standard[0].Backup != nil {
+				t.Fatalf("standard must use only its runnable backup: %+v", standard)
+			}
+			for _, role := range []string{"deep", "missing"} {
+				if _, ok := models[role]; ok {
+					t.Errorf("unavailable role %q is offered", role)
+				}
+			}
+			for _, skipped := range []string{"openai/codex-model", "anthropic/api-backup", "anthropic/api-model", "missing"} {
+				if !strings.Contains(logs.String(), skipped) {
+					t.Errorf("skipped entry %q was not logged: %s", skipped, logs.String())
+				}
+			}
+		})
 	}
 }

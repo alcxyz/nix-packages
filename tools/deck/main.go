@@ -1,6 +1,6 @@
 // Command deck serves a live dashboard of T3 Code threads. It reads facts
 // from the T3 adapter commands, keeps a summary per thread made by the
-// shared light model role, and checks the OIDC ID token its proxy forwards.
+// configured model roles, and checks the OIDC ID token its proxy forwards.
 package main
 
 import (
@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -76,31 +75,14 @@ func serve(args []string) error {
 		return err
 	}
 
-	// A missing or broken role leaves the facts working and shows the error.
-	var models []ModelConfig
+	// A missing or broken default role leaves facts and other roles working.
 	llmPath, roleErr := sharedConfigPath()
-	var role ModelConfig
+	var models map[string][]ModelConfig
 	if roleErr == nil {
-		role, roleErr = loadRole(llmPath, summaryRole)
-	}
-	if roleErr == nil {
-		var skipped []string
-		models, skipped = summaryModels(role)
-		for _, reason := range skipped {
-			log.Warn("model skipped for summaries", "role", summaryRole, "reason", reason)
-		}
-		if len(models) == 0 {
-			roleErr = fmt.Errorf("no entry of roles.%s can run without tools (%s)", summaryRole, strings.Join(skipped, "; "))
-		}
+		models, roleErr = loadSummaryRoles(llmPath, cfg.Threads, log)
 	}
 	if roleErr != nil {
-		log.Warn("summaries disabled", "err", roleErr.Error())
-	} else {
-		labels := make([]string, 0, len(models))
-		for _, m := range models {
-			labels = append(labels, m.label())
-		}
-		log.Info("summary models", "role", summaryRole, "models", strings.Join(labels, ", "))
+		log.Warn("automatic summaries disabled", "err", roleErr.Error())
 	}
 
 	var auth *Authenticator

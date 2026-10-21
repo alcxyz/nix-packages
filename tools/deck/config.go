@@ -36,6 +36,8 @@ type ThreadsConfig struct {
 	QuietMinutes       *int             `toml:"quietMinutes"`
 	RefreshConcurrency int              `toml:"refreshConcurrency"`
 	CallsPerHour       int              `toml:"callsPerHour"`
+	SummaryRole        string           `toml:"summaryRole"`
+	SummaryRoles       []string         `toml:"summaryRoles"`
 	Instances          []InstanceConfig `toml:"instance"`
 }
 
@@ -137,6 +139,22 @@ func (c *Config) normalize() error {
 	if c.Threads.CallsPerHour == 0 {
 		c.Threads.CallsPerHour = 60
 	}
+	if c.Threads.SummaryRole == "" {
+		c.Threads.SummaryRole = summaryRole
+	}
+	if c.Threads.SummaryRoles == nil {
+		c.Threads.SummaryRoles = []string{"light", "standard", "deep"}
+	}
+	roles := []string{}
+	for _, role := range append(c.Threads.SummaryRoles, c.Threads.SummaryRole) {
+		if role == "" || strings.TrimSpace(role) != role {
+			return errors.New("threads.summaryRoles must contain nonempty role names without surrounding whitespace")
+		}
+		if !oneOf(role, roles) {
+			roles = append(roles, role)
+		}
+	}
+	c.Threads.SummaryRoles = roles
 	if c.Threads.WindowDays < 1 {
 		return errors.New("threads.windowDays must be at least 1")
 	}

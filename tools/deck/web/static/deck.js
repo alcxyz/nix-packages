@@ -136,9 +136,21 @@
       const open = new Set(
         Array.from(content.querySelectorAll("details[open]")).map((d) => d.dataset.key)
       );
+      // Read selections just before replacing the fragment, so a choice
+      // made during a slow fetch survives too.
+      const roles = new Map(rows().map((row) => [
+        row.dataset.key, row.querySelector('select[name="role"]')?.value,
+      ]));
       content.replaceChildren(...Array.from(doc.body.childNodes).map((n) => document.importNode(n, true)));
       content.querySelectorAll("details[data-key]").forEach((d) => {
         if (open.has(d.dataset.key)) d.open = true;
+      });
+      rows().forEach((row) => {
+        const select = row.querySelector('select[name="role"]');
+        const role = roles.get(row.dataset.key);
+        if (select && Array.from(select.options).some((o) => o.value === role)) {
+          select.value = role;
+        }
       });
       refreshControls();
       showNotice("");
