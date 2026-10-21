@@ -9,6 +9,12 @@ tool and add an entry here:
 - minor: a new command or option, or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.3.1 (2026-10-21)
+
+- Finding issues use bold labels for their status, next action, owner, reason,
+  plan and completion criteria. Evidence and review provenance are collapsed;
+  reviewer text stays fenced and the retry-detection footer is unchanged.
+
 ## 0.3.0 (2026-10-17)
 
 - `revkit findings file <ids>` files open, confirmed findings as issues in

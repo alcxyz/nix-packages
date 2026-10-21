@@ -240,9 +240,16 @@ func issueBody(store string, sf storedFinding) string {
 		at = "at " + codeSpan(short(commit))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n**Evidence**\n\n%s\n\n**Where:** %s\n\n**Suggested fix**\n\n%s\n\n",
-		fenced(sf.Claim), fenced(sf.Evidence), strings.Join(paths, ", "), fenced(sf.Suggestion))
-	b.WriteString("<details>\n<summary>How this was found</summary>\n\n")
+	b.WriteString("**Status:** Confirmed by a second reviewer against the code.\n\n")
+	b.WriteString("**Next:** Resolve the finding and verify the correction.\n\n")
+	b.WriteString("**Owner:** Unassigned.\n\n")
+	fmt.Fprintf(&b, "**Why:** The confirmed finding is described below.\n\n%s\n\n", fenced(sf.Claim))
+	b.WriteString("**Plan:**\n1. Review the affected paths and suggested fix below.\n2. Implement and verify the correction.\n\n")
+	b.WriteString("**Done when:**\n- [ ] The confirmed finding is resolved and the correction is verified.\n\n")
+	b.WriteString("<details>\n<summary>Context and evidence</summary>\n\n")
+	fmt.Fprintf(&b, "**Evidence:**\n\n%s\n\n**Where:** %s\n\n**Suggested fix:**\n\n%s\n\n",
+		fenced(sf.Evidence), strings.Join(paths, ", "), fenced(sf.Suggestion))
+	b.WriteString("**How this was found:** ")
 	fmt.Fprintf(&b, "A read-only review of the whole repository (`revkit repo-review`, lens %s) reported this %s", codeSpan(lensName), at)
 	if sf.Sightings > 1 {
 		fmt.Fprintf(&b, "; %d reviews have reported it", sf.Sightings)

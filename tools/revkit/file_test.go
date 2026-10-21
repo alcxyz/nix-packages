@@ -371,6 +371,39 @@ func TestReviewerTextIsFenced(t *testing.T) {
 	}
 }
 
+func TestFindingBodyUsesLabelsAndKeepsUntrustedTextFenced(t *testing.T) {
+	sf := storedFinding{
+		ID: "F1", Title: "A finding", Lens: "lens",
+		Claim:      "## Claim\n@owner #12 https://example.test/claim",
+		Evidence:   "## Evidence\n```text\n@owner #13\n```",
+		Suggestion: "## Suggestion\n@owner #14 https://example.test/fix",
+		Reason:     "## Reason\n@owner #15",
+		Paths:      []string{"src/a.go"},
+	}
+	body := issueBody("0123456789abcdef", sf)
+	previous := -1
+	for _, label := range []string{"Status", "Next", "Owner", "Why", "Plan", "Done when"} {
+		position := strings.Index(body, "**"+label+":**")
+		if position <= previous {
+			t.Fatalf("opening label %q absent or out of order:\n%s", label, body)
+		}
+		previous = position
+	}
+	details := strings.Index(body, "<details>")
+	if strings.Index(body, fenced(sf.Claim)) > details || strings.Index(body, fenced(sf.Evidence)) < details {
+		t.Fatalf("claim must stay visible and evidence collapsed:\n%s", body)
+	}
+	for _, value := range []string{sf.Claim, sf.Evidence, sf.Suggestion, sf.Reason} {
+		if !strings.Contains(body, fenced(value)) {
+			t.Fatalf("reviewer text was changed or lost its fence: %q\n%s", value, body)
+		}
+	}
+	id, store, hash := footer(forgeIssue{Body: body})
+	if id != sf.ID || store != "0123456789abcdef" || hash != titleHash(sf.Title) {
+		t.Fatalf("finding identity lost: %q %q %q", id, store, hash)
+	}
+}
+
 func TestIssueTitlesBreakReferences(t *testing.T) {
 	title := issueTitle(storedFinding{Title: "Ping @owner about #12, other/repo!7 and https://git.example/o/r/issues/3"})
 	for _, bad := range []string{"@owner", "#12", "repo!7", "https://"} {
