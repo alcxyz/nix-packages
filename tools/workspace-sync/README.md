@@ -11,7 +11,10 @@ creates the declared directories and their parents.
 
 The manifest has `directories` (relative paths), `repositories` (objects with
 `path`, `url`, and optional or null `branch`), and `links` (objects with `path`,
-`target`, and a string array `profiles`). Extra fields are accepted. Profiles
+`target`, and a string array `profiles`). Extra fields and multi-document input are accepted. The complete input is read
+once and every document is validated before any paths are created. Entries are
+extracted from that snapshot, including when the manifest is supplied on stdin.
+Profiles
 are metadata; the consumer filters them before calling the executable. There
 are no built-in roots, inventories, profile defaults, or credential settings.
 
@@ -27,9 +30,9 @@ The port follows the accepted
 [nix-config ADR-0095](https://git.alc.xyz/alcxyz/nix-config/src/branch/dev/docs/adr/0095-bounded-workspace-sync-go-pilot.md)
 and [producer issue](https://git.alc.xyz/alcxyz/nix-packages/issues/542).
 Reconciliation state, typed entries, directory checks, ordering and result
-accounting live in Go. jq remains the manifest compatibility boundary: replacing
-its validation and conversions would change accepted stream, null and string
-quirks. GNU coreutils retains canonical-path semantics and fatal link/path
+accounting live in Go. jq retains the field validation and conversions, including null and string
+quirks. The [approved compatibility update](https://git.alc.xyz/alcxyz/nix-packages/issues/542#issuecomment-33517)
+requires every document in the input snapshot to pass validation. GNU coreutils retains canonical-path semantics and fatal link/path
 command statuses on both supported platforms. Subprocess arguments remain separate; no command strings are constructed.
 
 Invalid manifests or unknown modes return 2. Missing raw arguments, rejected

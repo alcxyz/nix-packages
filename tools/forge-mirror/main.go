@@ -1393,7 +1393,8 @@ func isGitHubRemote(address string) bool {
 }
 
 func isGitHubHost(host string) bool {
-	return strings.EqualFold(host, "github.com") || strings.EqualFold(host, "ssh.github.com")
+	host = strings.TrimSuffix(host, ".")
+	return strings.EqualFold(host, "github.com") || strings.EqualFold(host, "ssh.github.com") || strings.EqualFold(host, "www.github.com")
 }
 
 func remoteHost(address string) string {
@@ -1447,16 +1448,18 @@ func remoteMatchesForgejo(address string, forgejoURL string, additionalAddresses
 
 func auditGitHubMirrorDeniedRepo(forgejoURL, forgejoUser, forgejoToken, githubUser string, repo forgejoRepo) (auditResult, error) {
 	var result auditResult
-	if repo.Mirror && repo.OriginalURL != "" && strings.Contains(repo.OriginalURL, "github.com") {
+	if repo.Mirror && isGitHubRemote(repo.OriginalURL) {
 		result.issues = append(result.issues, "Forgejo repository is still a GitHub pull mirror but outbound GitHub publication is denied")
 	}
-	mirror, err := fetchGitHubPushMirror(forgejoURL, forgejoUser, forgejoToken, repo.Name, fmt.Sprintf("https://github.com/%s/%s.git", githubUser, repo.Name))
+	mirrors, err := fetchPushMirrors(forgejoURL, forgejoUser, forgejoToken, repo.Name)
 	if err != nil {
 		result.issues = append(result.issues, fmt.Sprintf("cannot read Forgejo push mirrors: %v", err))
 		return result, nil
 	}
-	if mirror != nil {
-		result.issues = append(result.issues, "Forgejo GitHub push mirror is present but denied by repository policy")
+	for _, mirror := range mirrors {
+		if isGitHubRemote(mirror.RemoteAddress) {
+			result.issues = append(result.issues, "Forgejo GitHub push mirror is present but denied by repository policy")
+		}
 	}
 	return result, nil
 }

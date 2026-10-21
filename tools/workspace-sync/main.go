@@ -19,8 +19,8 @@ relative links to existing canonical targets. Existing paths are preserved.
 configured directories (used during Home Manager activation).
 `
 
-// Keep the original jq predicate: its stream, null, and regular-expression
-// semantics are part of the accepted shell contract, including extra fields.
+// Keep the field predicate and conversions, including extra fields. Apply it to
+// every document in the input snapshot before reconciling any entries.
 const validation = `
   def safe_path:
     type == "string" and length > 0 and
@@ -50,6 +50,7 @@ type counters struct {
 
 type workspace struct {
 	root, manifest, mode string
+	manifestData         []byte
 	out, err             io.Writer
 	counts               counters
 }
@@ -80,7 +81,13 @@ func run(args []string, out, err io.Writer) int {
 			return 2
 		}
 	}
-	if w.command("jq", []string{"-e", validation, w.manifest}, os.Stdin, io.Discard, w.err) != 0 {
+	var readErr error
+	if w.manifest == "-" {
+		w.manifestData, readErr = io.ReadAll(os.Stdin)
+	} else {
+		w.manifestData, readErr = os.ReadFile(w.manifest)
+	}
+	if readErr != nil || w.command("jq", []string{"-s", "-e", "length > 0 and all(.[]; (" + validation + "))"}, bytes.NewReader(w.manifestData), io.Discard, w.err) != 0 {
 		if writef(err, "workspace-sync: invalid manifest\n") != 0 {
 			return 1
 		}
@@ -203,7 +210,7 @@ func (w *workspace) capture(name string, args []string, in io.Reader) (string, i
 // their failure does not abort the consuming loop. Preserve that distinction.
 func (w *workspace) entries(format, query string) []string {
 	var out bytes.Buffer
-	w.command("jq", []string{format, query, w.manifest}, os.Stdin, &out, w.err)
+	w.command("jq", []string{format, query}, bytes.NewReader(w.manifestData), &out, w.err)
 	text := strings.ReplaceAll(out.String(), "\x00", "")
 	if text == "" {
 		return nil

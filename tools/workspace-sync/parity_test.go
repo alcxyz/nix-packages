@@ -257,6 +257,12 @@ func TestShellParity(t *testing.T) {
 	binary := candidateBinary(t)
 	defaultArgs := func(f *parityFixture) []string { return []string{f.root, f.manifest} }
 	cases := []parityCase{
+		{name: "manifest-file-missing", setup: func(t *testing.T, f *parityFixture) {
+			if err := os.Remove(f.manifest); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "manifest-is-directory", arguments: func(f *parityFixture) []string { return []string{f.root, f.base} }},
 		{name: "missing-all-arguments", arguments: func(f *parityFixture) []string { return nil }},
 		{name: "missing-manifest", arguments: func(f *parityFixture) []string { return []string{f.root} }},
 		{name: "empty-mode-trailing-ignored", arguments: func(f *parityFixture) []string { return []string{f.root, f.manifest, "", "ignored"} }},
@@ -325,7 +331,7 @@ func TestShellParity(t *testing.T) {
 		}},
 	}
 	for _, raw := range []struct{ name, manifest string }{
-		{"empty-stream", ""}, {"malformed", "{"}, {"null", "null"}, {"array", "[]"}, {"missing-arrays", "{}"},
+		{"malformed", "{"}, {"null", "null"}, {"array", "[]"}, {"missing-arrays", "{}"},
 		{"null-directories", `{"directories":null,"repositories":[],"links":[]}`},
 		{"wrong-directory-type", `{"directories":[1],"repositories":[],"links":[]}`},
 		{"unsafe-traversal", `{"directories":["../escape"],"repositories":[],"links":[]}`},
@@ -338,7 +344,6 @@ func TestShellParity(t *testing.T) {
 		{"numeric-profile", `{"directories":[],"repositories":[],"links":[{"path":"link","target":"target","profiles":[1]}]}`},
 		{"extra-fields-null-branch", `{"directories":[],"repositories":[{"path":"repo","url":"local","branch":null,"extra":true}],"links":[],"extra":17}`},
 		{"multiple-documents", `{"directories":["first"],"repositories":[],"links":[]} ` + "\n" + `{"directories":["second"],"repositories":[],"links":[]}`},
-		{"invalid-first-valid-last", `{"directories":["../escape"],"repositories":[],"links":[]} ` + "\n" + `{"directories":[],"repositories":[],"links":[]}`},
 		{"valid-first-invalid-last", `{"directories":[],"repositories":[],"links":[]} ` + "\nnull"},
 		{"terminal-newline-path", `{"directories":["folder\n"],"repositories":[],"links":[]}`},
 		{"double-terminal-newline-path", `{"directories":["folder\n\n"],"repositories":[],"links":[]}`},
@@ -446,10 +451,6 @@ func TestShellParity(t *testing.T) {
 			return []string{f.root, f.manifest, selectedMode}
 		}})
 	}
-	for _, manifest := range []string{"-", "/dev/stdin"} {
-		selectedManifest := manifest
-		cases = append(cases, parityCase{name: "stdin-manifest-" + manifest, stdin: `{"directories":["not-created"],"repositories":[{"path":"not-cloned","url":"local"}],"links":[]}`, arguments: func(f *parityFixture) []string { return []string{f.root, selectedManifest} }})
-	}
 	cases = append(cases, parityCase{name: "stdout-write-failure-help", badStdout: true, arguments: func(f *parityFixture) []string { return []string{f.root, f.manifest, "--help"} }})
 	for _, mode := range []string{"", "--status"} {
 		selectedMode := mode
@@ -515,9 +516,6 @@ func TestShellParity(t *testing.T) {
 					if results[i].status != 0 || !strings.Contains(results[i].stdout, "0 existing, 1 cloned, 0 skipped, 0 failed") {
 						t.Errorf("relative PATH fallback failed: %#v", results[i])
 					}
-				}
-				if strings.HasPrefix(tc.name, "stdin-manifest-") && (results[i].status != 0 || len(results[i].state) != 1 || results[i].state[0] != "root/") {
-					t.Errorf("stdin validation must consume input before extraction, leaving only root: %#v", results[i])
 				}
 				if strings.HasPrefix(tc.name, "directory-name-too-long-") {
 					_, gitErr := os.Stat(filepath.Join(f.base, "git-arguments"))

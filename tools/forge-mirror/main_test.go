@@ -1191,7 +1191,7 @@ func TestFetchPushMirrorsPaginatesAndFailsClosed(t *testing.T) {
 }
 
 func TestIsGitHubRemote(t *testing.T) {
-	for _, address := range []string{"https://github.com/a/b.git", "https://GitHub.com/a/b", "git@github.com:a/b.git", "another@github.com:a/b.git", "github.com:a/b.git", "git@ssh.github.com:a/b.git", "ssh://git@ssh.github.com:443/a/b.git", "ssh://git@github.com:22/a/b.git", "https://user:dummy@github.com/a/b.git"} {
+	for _, address := range []string{"https://github.com/a/b.git", "https://GitHub.com/a/b", "https://GitHub.com./a/b", "https://www.github.com/a/b.git", "ssh://git@ssh.github.com.:443/a/b.git", "git@github.com:a/b.git", "another@github.com:a/b.git", "github.com:a/b.git", "git@ssh.github.com:a/b.git", "ssh://git@ssh.github.com:443/a/b.git", "ssh://git@github.com:22/a/b.git", "https://user:dummy@github.com/a/b.git"} {
 		if !isGitHubRemote(address) {
 			t.Errorf("not recognized: %s", address)
 		}
@@ -1325,6 +1325,66 @@ func TestGitHubMirrorDenialDoesNotRequirePrivateVisibility(t *testing.T) {
 	)
 	if err != nil || len(result.issues) != 0 {
 		t.Fatalf("public publication-denied repo: result=%v err=%v", result, err)
+	}
+}
+
+func TestDeniedMirrorAuditClassifiesEveryRemote(t *testing.T) {
+	for _, tc := range []struct {
+		address string
+		issues  int
+	}{
+		{"https://github.com/another-owner/renamed.git", 1},
+		{"git@github.com:example/sample.git", 1},
+		{"ssh://git@ssh.github.com:443/example/sample.git", 1},
+		{"https://GitHub.COM/example/sample", 1},
+		{"ssh://git@ssh.github.com.:443/example/sample", 1},
+		{"https://www.github.com/example/sample", 1},
+		{"https://forge.example/example/sample.git", 0},
+		{"https://github.com.example/example/sample.git", 0},
+		{"https://github.com@forge.example/example/sample.git", 0},
+	} {
+		t.Run(tc.address, func(t *testing.T) {
+			isolatedMirrorConfig(t)
+			pages := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				pages++
+				switch r.URL.Query().Get("page") {
+				case "1":
+					fmt.Fprint(w, `[{"remote_address":"https://forge.example/first.git"}]`)
+				case "2":
+					json.NewEncoder(w).Encode([]pushMirror{{RemoteAddress: tc.address}})
+				default:
+					fmt.Fprint(w, `[]`)
+				}
+			}))
+			defer server.Close()
+			result, err := auditGitHubMirrorDeniedRepo(server.URL, "example", "synthetic-token", "example", forgejoRepo{Name: "sample"})
+			if err != nil || len(result.issues) != tc.issues || pages != 3 {
+				t.Fatalf("audit: result=%v err=%v pages=%d", result, err, pages)
+			}
+		})
+	}
+}
+
+func TestDeniedMirrorAuditReportsIncompleteEnumeration(t *testing.T) {
+	for _, body := range []string{"http-error", "invalid-json"} {
+		t.Run(body, func(t *testing.T) {
+			isolatedMirrorConfig(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page") == "1" {
+					fmt.Fprint(w, `[{"remote_address":"https://forge.example/first.git"}]`)
+				} else if body == "http-error" {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				} else {
+					fmt.Fprint(w, `not-json`)
+				}
+			}))
+			defer server.Close()
+			result, err := auditGitHubMirrorDeniedRepo(server.URL, "example", "synthetic-token", "example", forgejoRepo{Name: "sample"})
+			if err != nil || len(result.issues) != 1 || !strings.Contains(result.issues[0], "cannot read") {
+				t.Fatalf("incomplete enumeration: %v, %v", result, err)
+			}
+		})
 	}
 }
 

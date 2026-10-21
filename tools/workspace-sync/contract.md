@@ -37,15 +37,19 @@ Git's interpretation of those arguments.
   produce a summary with exit 1.
 - Manifest validation accepts extra fields. Required collections must be arrays;
   branch may be absent, null or a string. Profiles must be an array of strings.
-  Empty JSON streams are invalid.
-  Manifest operands `-` and `/dev/stdin` consume caller input during validation.
-  Later jq extraction sees the drained stream, so a valid stdin manifest creates
-  only the root and reports zero entries, matching the pinned shell.
-- The reference uses jq's JSON-stream behavior. The final validation result
-  determines acceptance, so an earlier document that fails the predicate can
-  precede a valid document. Subsequent extraction reads all documents. This
-  preserves a reference quirk, including possible effects from an earlier
-  invalid path, rather than defining a stronger validation policy in this port.
+  Empty and whitespace-only JSON streams are invalid. Dedicated candidate
+  tests assert this independently of the pinned shell: jq versions differ in
+  whether `jq -e` accepts an empty input stream without producing a result.
+- The [compatibility decision approved on 2026-10-21](https://git.alc.xyz/alcxyz/nix-packages/issues/542#issuecomment-33517)
+  retains multi-document manifests while validating all entries before creating
+  paths. The executable reads the complete stream once and validates every
+  document before reconciliation. Extraction uses only that validated snapshot,
+  including for `-` and `/dev/stdin`. A stream containing any invalid document
+  exits 2 without creating the root or any entries. A subsequent change to the
+  manifest file does not change the entries consumed by that invocation.
+  These approved changes replace the reference's final-result validation and
+  drained-stdin extraction behavior; dedicated tests cover them separately from
+  the remaining parity comparisons.
 - jq's path regular expression accepts a single terminal newline. Directory
   extraction reads that as an additional empty line. Repository/link fields use
   Bash command substitution, which strips terminal newlines. NUL bytes in URL

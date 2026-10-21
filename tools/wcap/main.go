@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -65,37 +68,107 @@ func main() {
 // State management
 // ---------------------------------------------------------------------------
 
+var (
+	errNoRecording  = errors.New("no active recording")
+	errInvalidState = errors.New("invalid recording state")
+)
+
 func stateDir() string {
-	xdg := os.Getenv("XDG_RUNTIME_DIR")
-	if xdg == "" {
-		xdg = "/tmp"
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return filepath.Join(xdg, "wcap")
 	}
-	return filepath.Join(xdg, "wcap")
+	return filepath.Join(os.TempDir(), "wcap-"+strconv.Itoa(os.Getuid()))
 }
 
-func statePath() string { return filepath.Join(stateDir(), "state.json") }
+func privateOwned(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && stat.Uid == uint32(os.Getuid()) && info.Mode().Perm()&0077 == 0
+}
+
+func openStateDir() (*os.File, error) {
+	dir := stateDir()
+	if err := os.Mkdir(dir, 0700); err != nil && !os.IsExist(err) {
+		return nil, err
+	}
+	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("opening state directory: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), dir)
+	info, err := file.Stat()
+	if err != nil || !info.IsDir() || !privateOwned(info) {
+		file.Close()
+		return nil, fmt.Errorf("state directory must be private and owned by the current user")
+	}
+	return file, nil
+}
 
 func loadState() (*State, error) {
-	data, err := os.ReadFile(statePath())
+	dir, err := openStateDir()
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	fd, err := syscall.Openat(int(dir.Fd()), "state.json", syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if errors.Is(err, syscall.ENOENT) {
+		return nil, errNoRecording
+	}
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), "state.json")
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || !privateOwned(info) {
+		return nil, fmt.Errorf("state file must be regular, private and owned by the current user")
+	}
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}
 	var s State
-	return &s, json.Unmarshal(data, &s)
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("%w: %v", errInvalidState, err)
+	}
+	if s.RecorderPID <= 0 {
+		return nil, fmt.Errorf("%w: recorder PID must be positive", errInvalidState)
+	}
+	return &s, nil
 }
 
 func saveState(s *State) error {
-	if err := os.MkdirAll(stateDir(), 0700); err != nil {
+	dir, err := openStateDir()
+	if err != nil {
 		return err
 	}
+	defer dir.Close()
 	data, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(), data, 0600)
+	name := ".state-" + rand.Text()
+	fd, err := syscall.Openat(int(dir.Fd()), name, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	if err != nil {
+		return err
+	}
+	defer syscall.Unlinkat(int(dir.Fd()), name)
+	file := os.NewFile(uintptr(fd), name)
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return err
+	}
+	return syscall.Renameat(int(dir.Fd()), name, int(dir.Fd()), "state.json")
 }
 
-func removeState() { os.Remove(statePath()) }
+func removeState() error {
+	dir, err := openStateDir()
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return syscall.Unlinkat(int(dir.Fd()), "state.json")
+}
 
 // ---------------------------------------------------------------------------
 // PipeWire / PulseAudio helpers
@@ -208,6 +281,9 @@ func runStart(args []string) int {
 
 	if _, err := loadState(); err == nil {
 		log.Println("recording already active (run 'wcap stop' first)")
+		return 1
+	} else if !errors.Is(err, errNoRecording) {
+		log.Printf("reading recording state: %v", err)
 		return 1
 	}
 
@@ -358,7 +434,15 @@ func runStart(args []string) int {
 func runStop(_ []string) int {
 	state, err := loadState()
 	if err != nil {
-		log.Println("no active recording")
+		if errors.Is(err, errInvalidState) {
+			if err := removeState(); err != nil {
+				log.Printf("clearing invalid recording state: %v", err)
+			} else {
+				log.Println("cleared invalid recording state; recorder and audio state could not be restored")
+			}
+		} else {
+			log.Printf("reading recording state: %v", err)
+		}
 		return 1
 	}
 
