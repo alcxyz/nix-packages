@@ -7,6 +7,7 @@
   jq,
   makeWrapper,
   ripgrep,
+  writableTmpDirAsHomeHook,
 }:
 
 buildGoModule {
@@ -16,7 +17,12 @@ buildGoModule {
   src = ./.;
   vendorHash = null;
 
-  nativeBuildInputs = [ makeWrapper ];
+  # The go command writes telemetry under $HOME, which unsandboxed CI builds
+  # would create as /homeless-shelter (#603).
+  nativeBuildInputs = [
+    writableTmpDirAsHomeHook
+    makeWrapper
+  ];
   nativeCheckInputs = [
     bash
     coreutils

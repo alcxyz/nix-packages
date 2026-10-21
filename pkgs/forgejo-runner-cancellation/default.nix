@@ -38,8 +38,10 @@ forgejo-runner.overrideAttrs (old: {
       --replace-fail 'TestFeatureDocker: {},' '// TestFeatureDocker: {},' \
       --replace-fail 'TestFeatureLXC:    {},' '// TestFeatureLXC:    {},'
   '';
-  nativeCheckInputs = [
-    gitMinimal
-    writableTmpDirAsHomeHook
-  ];
+  # The go command writes telemetry under $HOME. Building, not only checking,
+  # needs a writable one: buildGoModule passes nativeBuildInputs on to the
+  # module download, which unsandboxed CI builds would otherwise run with
+  # /homeless-shelter (#603).
+  nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ writableTmpDirAsHomeHook ];
+  nativeCheckInputs = [ gitMinimal ];
 })

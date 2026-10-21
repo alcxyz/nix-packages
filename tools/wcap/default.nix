@@ -7,6 +7,7 @@
   libnotify,
   pipewire,
   pulseaudio,
+  writableTmpDirAsHomeHook,
 }:
 
 buildGoModule {
@@ -17,7 +18,12 @@ buildGoModule {
 
   vendorHash = null; # no external dependencies
 
-  nativeBuildInputs = [ makeWrapper ];
+  # The go command writes telemetry under $HOME, which unsandboxed CI builds
+  # would create as /homeless-shelter (#603).
+  nativeBuildInputs = [
+    writableTmpDirAsHomeHook
+    makeWrapper
+  ];
 
   postInstall = ''
     wrapProgram $out/bin/wcap \

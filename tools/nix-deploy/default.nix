@@ -8,6 +8,7 @@
   makeWrapper,
   openssh,
   python3,
+  writableTmpDirAsHomeHook,
 }:
 let
   deployPath = lib.makeBinPath [
@@ -28,7 +29,12 @@ buildGoModule (finalAttrs: {
 
   ldflags = [ "-X main.version=${finalAttrs.version}" ];
 
-  nativeBuildInputs = [ makeWrapper ];
+  # The go command writes telemetry under $HOME, which unsandboxed CI builds
+  # would create as /homeless-shelter (#603).
+  nativeBuildInputs = [
+    writableTmpDirAsHomeHook
+    makeWrapper
+  ];
   nativeCheckInputs = [
     bash
     python3
