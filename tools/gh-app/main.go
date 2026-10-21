@@ -1,7 +1,8 @@
 // Command gh-app routes gh invocations and Git credentials for the
 // repositories a GitHub App is installed on through the App's installation
 // token, and leaves every other repository on the operator's own gh login.
-// It records who acted; it is not a security boundary.
+// It records who acted; it is not a security boundary. Its register command
+// creates a new GitHub App from a manifest and stores the App's private key.
 package main
 
 import (
@@ -24,6 +25,10 @@ Commands:
                                 (needs credential.useHttpPath=true)
   status                        show the installation, token expiry and
                                 installed repositories
+  register --manifest FILE [--org ORG] [--port N]
+           (--sops-file PATH --sops-key NAME | -- CMD [ARGS...])
+                                register a new GitHub App from a manifest and
+                                store its private key (see Register below)
   help                          show this help
 
 Environment:
@@ -62,6 +67,45 @@ when ssh cannot resolve one that gh might choose, gh runs as the operator.
 
 Limit: with GH_HOST unset gh-app assumes github.com, where gh may fall back
 to another configured host.
+
+Register:
+  gh-app register runs GitHub's App manifest flow. It serves a page at a
+  random path under http://127.0.0.1:N/ (--port, default 3999; 0 picks a
+  free port), printed only to the terminal so other local users cannot read
+  its state, that posts the manifest to GitHub, for the signed-in user or, with --org, for the
+  organisation ORG. After you create the App, GitHub calls back with a
+  one-time code, which is exchanged for the App's credentials. Only the
+  private key is kept; the client secret and webhook secret are discarded
+  and can be regenerated in the App's settings. Nothing secret is printed.
+  It stops after one callback, or after 55 minutes.
+
+  --manifest FILE   JSON with GitHub's manifest fields: name and url
+                    (required), description, hook_attributes, public,
+                    default_permissions, default_events,
+                    request_oauth_on_install, callback_urls, setup_url and
+                    setup_on_update. redirect_url is set to the local
+                    callback; other fields are refused.
+  --sops-file PATH --sops-key NAME
+                    encrypt "NAME: <key>" with sops encrypt
+                    --filename-override PATH, run in the current directory
+                    so that its .sops.yaml creation rules apply (run it from
+                    the repository root with a repository-relative PATH),
+                    and write it to PATH. PATH must end in .yaml or .yml,
+                    must not exist yet, and its directory must exist. Before
+                    serving, a synthetic key is encrypted the same way, and
+                    gh-app refuses to start unless sops encrypts it
+                    (ENC[AES256_GCM,...]) without leaving it in plaintext;
+                    the real output is checked the same way before writing.
+  -- CMD [ARGS...]  run CMD with the PEM private key on its standard input,
+                    for example: -- pass insert -m github/my-app; CMD must
+                    be found before serving. Unlike --sops-file, an existing
+                    entry is not protected: pass insert overwrites it without
+                    asking when its input is not a terminal, so use a new name
+  The store's output is discarded, since it may echo the key; a failure
+  reports only its exit status. sops and CMD run in a background process
+  group, so CMD must not prompt on the terminal (a prompt waits until the
+  time limit); they are stopped after 5 minutes, or when gh-app is
+  interrupted.
 `
 
 var errPartialConfig = errors.New("GH_APP_ID, GH_APP_KEY_FILE and GH_APP_OWNER must be set together")
@@ -184,6 +228,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runCredential(cfg, args[1:], stdin, stdout, stderr)
 	case "status":
 		return runStatus(cfg, stdout, stderr)
+	case "register":
+		return runRegister(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "gh-app: unknown command %q\n", args[0])
 		fmt.Fprint(stderr, usage)
