@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Name}} | Deck</title>
+<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+</head>
+<body>
+<header class="top"><a href="/">Deck</a><h1>{{.Name}}</h1><a href="{{.BasePath}}">Threads</a></header>
+<main class="library">
+<ul class="library-list">
+{{range .Pages}}
+<li><h2><a href="{{.URL}}">{{.Title}}</a></h2><time datetime="{{.Date}}">{{.Date}}</time>{{if .Summary}}<p>{{.Summary}}</p>{{end}}</li>
+{{else}}<li>No pages yet.</li>{{end}}
+</ul>
+</main>
+</body>
+</html>

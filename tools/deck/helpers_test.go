@@ -32,6 +32,7 @@ func testConfig(t *testing.T) Config {
 	t.Helper()
 	cfg := Config{
 		Listen:       "127.0.0.1:0",
+		ContentDir:   t.TempDir(),
 		PublicOrigin: "https://deck.example.com",
 		Threads: ThreadsConfig{Instances: []InstanceConfig{{
 			Name: "main", Label: "Main", DB: "/var/lib/example/state.sqlite", WebURL: "https://t3.example.com/",

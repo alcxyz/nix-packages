@@ -5,7 +5,7 @@
 }:
 buildGoModule (finalAttrs: {
   pname = "deck";
-  version = "0.1.0";
+  version = "0.2.0";
 
   src = ./.;
 
@@ -29,7 +29,7 @@ buildGoModule (finalAttrs: {
   # The T3 adapter commands and the model clients (claude, codex) come from
   # the consumer, which configures their paths or PATH.
   meta = {
-    description = "Live web dashboard of T3 Code threads";
+    description = "Operator dashboard and interactive page collections";
     mainProgram = "deck";
     platforms = lib.platforms.unix;
   };

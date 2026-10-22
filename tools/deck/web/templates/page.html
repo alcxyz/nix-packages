@@ -10,6 +10,7 @@
 </head>
 <body data-base="{{.BasePath}}">
 <header class="top">
+  {{if ne .BasePath "/"}}<a href="/">Deck</a>{{end}}
   <h1>Threads</h1>
   <form class="filters" role="search" id="filters">
     <input type="search" id="f-text" placeholder="Search title, project, next action" aria-label="Search">

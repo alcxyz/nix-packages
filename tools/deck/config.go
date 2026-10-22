@@ -17,6 +17,7 @@ import (
 type Config struct {
 	Listen       string         `toml:"listen"`
 	BasePath     string         `toml:"basePath"`
+	ContentDir   string         `toml:"contentDir"`
 	PublicOrigin string         `toml:"publicOrigin"`
 	Auth         AuthConfig     `toml:"auth"`
 	Threads      ThreadsConfig  `toml:"threads"`
@@ -115,6 +116,20 @@ func (c *Config) normalize() error {
 	}
 	if c.BasePath == "/healthz/" {
 		return errors.New("basePath must not be /healthz/")
+	}
+	if c.ContentDir == "" {
+		dir := os.Getenv("XDG_DATA_HOME")
+		if !filepath.IsAbs(dir) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("contentDir default: %w", err)
+			}
+			dir = filepath.Join(home, ".local", "share")
+		}
+		c.ContentDir = filepath.Join(dir, "deck", "pages")
+	}
+	if !filepath.IsAbs(c.ContentDir) {
+		return errors.New("contentDir must be an absolute path")
 	}
 
 	if c.PublicOrigin == "" {

@@ -1,5 +1,9 @@
 # deck
 
+Deck also serves operator-authored interactive briefings in read-only page
+collections. The root index links to the thread dashboard and each collection.
+See [ADR-0013](../../docs/adr/0013-deck-page-collections.md) for content ownership.
+
 A live web dashboard of T3 Code threads: which ones wait on you, which have
 stalled, which are ready to settle, and which settled threads may not be
 done. See [ADR-0012](../../docs/adr/0012-deck-t3-thread-dashboard.md).
@@ -75,6 +79,7 @@ runs in its own process group, killed as a whole at its deadline.
 listen = "127.0.0.1:3775"            # default
 basePath = "/threads/"               # default
 publicOrigin = "https://deck.example.com"
+contentDir = "/home/user/.local/share/deck/pages" # optional; default described below
 
 [auth]
 issuer = "https://id.example.com"
@@ -119,6 +124,54 @@ audience (`clientID`), expiry, and `group` in the `groups` claim. It answers
 401 without a valid token and 403 without the group. POST requests also need
 an `Origin` header equal to `publicOrigin`.
 
+## Page collections
+
+Page content is runtime data, not part of Deck's public source or Nix package.
+The default directory is `$XDG_DATA_HOME/deck/pages`, falling back to
+`~/.local/share/deck/pages`. Set `contentDir` to an absolute path to use another
+directory. A missing directory gives an empty library.
+
+Publish an operator-reviewed bundle in this layout:
+
+```text
+pages/
+  briefings/
+    2026-01-15-example/
+      metadata.json
+      index.html
+      style.css
+      app.js
+```
+
+The metadata is deliberately small:
+
+```json
+{
+  "title": "Example briefing",
+  "date": "2026-01-15",
+  "summary": "An interactive comparison and its decision inputs."
+}
+```
+
+The page appears at `/briefings/2026-01-15-example/`, with an index at
+`/briefings/`. Indexes escape metadata and list newer dates first. Collection
+and page names use lowercase slug segments. The metadata and dotfiles are not
+download routes, and there are no directory listings. Publish complete bundles
+before moving them into place; no service restart is needed to add a page.
+
+HTML uses local stylesheet and script files, for example
+`<link rel="stylesheet" href="style.css">` and
+`<script src="app.js" defer></script>`. The existing content security policy
+does not permit inline script, inline style attributes or external assets.
+Bundles are trusted application content; Deck supplies authentication, not an
+untrusted-content execution sandbox. All pages and assets require the same
+operator token as the thread dashboard.
+
+The operator owns persistence and backup of the content directory. Keep private
+briefings outside public repositories, images and example fixtures. An upstream
+proxy that routes only `/threads/` also needs explicit routes for the root index
+and the collections it should expose. Its existing audience remains unchanged.
+
 ## Development
 
 ```sh
@@ -146,15 +199,15 @@ db = "/dev/null"
 webURL = "https://t3.example.com"
 ```
 
-Give it its own config and state directories, so it neither calls the
-`light` role's real models nor shares the summary cache of a deck service
-running as the same user. This works on Linux; on macOS Go reads the config
+Give it its own config, state and data directories, so it neither calls the
+`light` role's real models nor shares the summary cache or private page content
+of a deck service running as the same user. This works on Linux; on macOS Go reads the config
 from `~/Library/Application Support` whatever `XDG_CONFIG_HOME` says, so run
 it there with a `HOME` that has no `llm/config.toml`:
 
 ```sh
 tmp=$(mktemp -d)
-XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state \
+XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state XDG_DATA_HOME=$tmp/data \
   go run . serve -config dev.toml -dev-no-auth
 # open http://127.0.0.1:3775/threads/
 ```

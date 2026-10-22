@@ -16,3 +16,4 @@ Non-obvious decisions in this repo are documented here. Before changing tool des
 | [ADR-0010](0010-fleet-reboot-policies.md) | Fleet reboots by policy and constraint group | `tools/nix-deploy/` |
 | [ADR-0011](0011-revkit-agent-review-toolkit.md) | revkit, an agent review toolkit with isolated reviewers | `tools/revkit/` |
 | [ADR-0012](0012-deck-t3-thread-dashboard.md) | deck, a live T3 thread dashboard | `tools/deck/` |
+| [ADR-0013](0013-deck-page-collections.md) | Operator-authored page collections in Deck | `tools/deck/` |

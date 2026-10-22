@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Deck</title>
+<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+</head>
+<body>
+<header class="top"><h1>Deck</h1></header>
+<main class="library">
+<p>Your content library and thread dashboard.</p>
+<p><a href="{{.BasePath}}">Threads</a></p>
+<h2>Collections</h2>
+<ul class="library-list">
+{{range .Collections}}<li><a href="{{.URL}}">{{.Name}}</a> <span class="n">({{len .Pages}})</span></li>
+{{else}}<li>No collections yet.</li>{{end}}
+</ul>
+</main>
+</body>
+</html>

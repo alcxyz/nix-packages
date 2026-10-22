@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -80,12 +81,30 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 		app.Handle("GET "+base[:len(base)-1], http.RedirectHandler(base, http.StatusMovedPermanently))
 	}
 
-	root := http.NewServeMux()
-	root.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("ok\n"))
+	// Reserve the dashboard namespace, including its method errors. Content
+	// dispatch avoids adding wildcard patterns that conflict with custom bases.
+	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !validContentRequestPath(r) {
+			http.NotFound(w, r)
+			return
+		}
+		_, pattern := app.Handler(r)
+		reserved := base != "/" && (r.URL.Path == strings.TrimSuffix(base, "/") || strings.HasPrefix(r.URL.Path, base))
+		if pattern != "" || reserved || (base == "/" && strings.HasPrefix(r.URL.Path, "/actions/")) {
+			app.ServeHTTP(w, r)
+			return
+		}
+		s.content(w, r)
 	})
-	root.Handle("/", requireAuth(auth, log, sameOrigin(d.cfg.PublicOrigin, app)))
+	protected := requireAuth(auth, log, sameOrigin(d.cfg.PublicOrigin, dispatch))
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Write([]byte("ok\n"))
+			return
+		}
+		protected.ServeHTTP(w, r)
+	})
 	return securityHeaders(root), nil
 }
 
