@@ -146,8 +146,9 @@ while IFS= read -r path; do
     pkgs/*/* | tools/*/*)
       attr=${path#*/}
       attr=${attr%%/*}
-      # The overlay attribute uses an underscore in its version suffix.
+      # OpenZFS exports use underscores in their version suffixes.
       [[ "$attr" == openzfs-7_1 ]] && attr=openzfs_7_1
+      [[ "$attr" == openzfs-7_3 ]] && attr=openzfs_7_3
       changed_attrs+=("$attr")
       ;;
     *)

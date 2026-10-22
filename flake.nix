@@ -115,6 +115,10 @@
           wcap = pkgs.callPackage ./tools/wcap { };
         }
         // lib.optionalAttrs isLinux {
+          openzfs_7_3 = pkgs.callPackage ./pkgs/openzfs-7_3 {
+            nixpkgsPath = pkgs.path;
+            tests = { };
+          };
           forgejo-runner-cancellation = unstablePkgs.callPackage ./pkgs/forgejo-runner-cancellation { };
           forgejo-runner-orphan-check = pkgs.callPackage ./tools/forgejo-runner-orphan-check { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };

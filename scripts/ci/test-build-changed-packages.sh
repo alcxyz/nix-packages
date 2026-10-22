@@ -501,6 +501,17 @@ printf '{"x86_64-linux":["openzfs_7_1"]}\n' >exports
 run_case 0
 assert_called 'build .#packages.x86_64-linux.openzfs_7_1 -L'
 
+new_case openzfs73-patch-only
+change_file pkgs/openzfs-7_3/linux-7.3-candidate.patch
+printf '{"x86_64-linux":["openzfs_7_3"],"aarch64-linux":["openzfs_7_3"]}\n' >exports
+run_case 0
+assert_called 'build .#packages.x86_64-linux.openzfs_7_3 -L'
+assert_called 'eval .#packages.aarch64-linux.openzfs_7_3.drvPath'
+assert_not_called '.#packages.aarch64-darwin.openzfs_7_3'
+export PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
+run_case 0
+[[ "$(cat plan)" == openzfs_7_3 ]]
+
 new_case t3-shared-source
 prepare_cleanup_fixture
 touch "$test_root/.dockerenv"
