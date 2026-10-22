@@ -19,6 +19,7 @@ AUTOMATIC_RETENTION=false
 CHECK_ONLY=false
 MANAGED_USER=""
 MANAGED_HOME=""
+USER_PROFILE_NAMES=(home-manager profile ai-stack)
 
 usage() {
   cat <<'EOF'
@@ -27,7 +28,8 @@ Usage: nix-gc-maintenance [host]
        nix-gc-maintenance --automatic-retention --user <user> --home <path> [--keep <n>] [--check-only]
 
 Manual mode retains 10 generations (or --keep) in the current user's Home
-Manager/user profiles and the system profile, then collects every dead store path.
+Manager, user and AI-stack profiles and the system profile, then collects every
+dead store path. All current profile closures are validated before pruning.
 
 With a host argument, the manual command is streamed to that host over SSH.
 The managed SSH host must log in as a non-root user with sudo access.
@@ -147,6 +149,7 @@ run_remote() {
 
 manual_maintenance() {
   local name profile
+  local -a user_profiles=()
 
   [[ "$($ID_BIN -u)" -ne 0 ]] ||
     die "run as the managed user; this command requests sudo for system maintenance"
@@ -155,17 +158,24 @@ manual_maintenance() {
   need_command "$SUDO_BIN"
   SUDO_BIN=$(command -v "$SUDO_BIN")
 
-  for name in home-manager profile; do
+  for name in "${USER_PROFILE_NAMES[@]}"; do
     profile="$PROFILE_ROOT/$name"
     if profile_exists "$profile"; then
       validate_profile "$profile"
-      log "retaining the latest ${KEEP_GENERATIONS} generations in $profile"
-      delete_user_profile_generations "$profile"
+      user_profiles+=("$profile")
     fi
   done
 
   if profile_exists "$SYSTEM_PROFILE"; then
     validate_profile "$SYSTEM_PROFILE"
+  fi
+
+  for profile in ${user_profiles[@]+"${user_profiles[@]}"}; do
+    log "retaining the latest ${KEEP_GENERATIONS} generations in $profile"
+    delete_user_profile_generations "$profile"
+  done
+
+  if profile_exists "$SYSTEM_PROFILE"; then
     log "retaining the latest ${KEEP_GENERATIONS} generations in $SYSTEM_PROFILE"
     run_privileged "$NIX_ENV_BIN" \
       --profile "$SYSTEM_PROFILE" \
@@ -199,7 +209,7 @@ automatic_retention() {
     log "retention trigger: free space is below ${MIN_FREE_PERCENT}%"
   fi
 
-  for name in home-manager profile; do
+  for name in "${USER_PROFILE_NAMES[@]}"; do
     profile="$PROFILE_ROOT/$name"
     if profile_exists "$profile"; then
       count=$(profile_generation_count "$profile")

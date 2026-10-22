@@ -12,7 +12,7 @@ SYSTEM_PROFILE="$TEST_ROOT/system"
 CALL_LOG="$TEST_ROOT/calls.log"
 
 mkdir -p "$BIN_DIR" "$PROFILE_ROOT"
-touch "$PROFILE_ROOT/home-manager" "$PROFILE_ROOT/profile" "$SYSTEM_PROFILE"
+touch "$PROFILE_ROOT/home-manager" "$PROFILE_ROOT/profile" "$PROFILE_ROOT/ai-stack" "$SYSTEM_PROFILE"
 
 write_mock() {
   local path="$1"
@@ -32,6 +32,9 @@ write_mock "$BIN_DIR/nix-store" <<'EOF'
 printf 'nix-store' >>"$CALL_LOG"
 printf ' <%s>' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
+if [[ "${1:-}" == -qR && "${2:-}" == "${INVALID_PROFILE:-}" ]]; then
+  exit 1
+fi
 EOF
 
 write_mock "$BIN_DIR/sudo" <<'EOF'
@@ -91,10 +94,12 @@ NIX_GC_PROFILE_ROOT="$PROFILE_ROOT" \
 expected=$(
   cat <<EOF
 nix-store <-qR> <$PROFILE_ROOT/home-manager>
-nix-env <--profile> <$PROFILE_ROOT/home-manager> <--delete-generations> <+10>
 nix-store <-qR> <$PROFILE_ROOT/profile>
-nix-env <--profile> <$PROFILE_ROOT/profile> <--delete-generations> <+10>
+nix-store <-qR> <$PROFILE_ROOT/ai-stack>
 nix-store <-qR> <$SYSTEM_PROFILE>
+nix-env <--profile> <$PROFILE_ROOT/home-manager> <--delete-generations> <+10>
+nix-env <--profile> <$PROFILE_ROOT/profile> <--delete-generations> <+10>
+nix-env <--profile> <$PROFILE_ROOT/ai-stack> <--delete-generations> <+10>
 sudo <$BIN_DIR/nix-env> <--profile> <$SYSTEM_PROFILE> <--delete-generations> <+10>
 nix-env <--profile> <$SYSTEM_PROFILE> <--delete-generations> <+10>
 sudo <$BIN_DIR/nix-store> <--gc>
@@ -236,5 +241,137 @@ if "$BASH" "$MAINTENANCE" --keep 0 >/dev/null 2>&1; then
 fi
 
 bash -s -- --help <"$MAINTENANCE" >/dev/null
+
+# An independently updated AI stack must trigger retention even when the
+# system and Home Manager histories remain below the high-water mark.
+PROFILE_ROOT="$TEST_ROOT/ai-profiles"
+SYSTEM_PROFILE="$TEST_ROOT/ai-system/system"
+mkdir -p "$PROFILE_ROOT" "$(dirname "$SYSTEM_PROFILE")"
+touch "$PROFILE_ROOT/home-manager" "$PROFILE_ROOT/profile" "$SYSTEM_PROFILE"
+touch "$TEST_ROOT/ai-stack-current"
+ln -s "$TEST_ROOT/ai-stack-current" "$PROFILE_ROOT/ai-stack"
+for generation in $(seq 1 38); do
+  ln -s "$TEST_ROOT/ai-stack-current" "$PROFILE_ROOT/ai-stack-${generation}-link"
+done
+for generation in $(seq 1 12); do
+  ln -s "$PROFILE_ROOT/home-manager" "$PROFILE_ROOT/home-manager-${generation}-link"
+done
+for generation in $(seq 1 11); do
+  ln -s "$SYSTEM_PROFILE" "${SYSTEM_PROFILE}-${generation}-link"
+done
+
+maintenance() {
+  NIX_GC_PROFILE_ROOT="$PROFILE_ROOT" \
+    NIX_GC_SYSTEM_PROFILE="$SYSTEM_PROFILE" \
+    NIX_ENV_BIN="$BIN_DIR/nix-env" \
+    NIX_STORE_BIN="$BIN_DIR/nix-store" \
+    SUDO_BIN="$BIN_DIR/sudo" \
+    DF_BIN="$BIN_DIR/df" \
+    ID_BIN="${TEST_ID_BIN:-$BIN_DIR/id-user}" \
+    "$BASH" "$MAINTENANCE" "$@"
+}
+
+automatic() {
+  TEST_ID_BIN="$BIN_DIR/id-root" maintenance --automatic-retention --user alc \
+    --home "$TEST_ROOT/home" "$@"
+}
+
+: >"$CALL_LOG"
+ai_output=$(maintenance --automatic-retention --user alc --home "$TEST_ROOT/home" --check-only)
+grep -Fq "retention trigger: $PROFILE_ROOT/ai-stack exceeds 20 generations" <<<"$ai_output"
+grep -Fq "check-only: would retain 10 generations in $PROFILE_ROOT/ai-stack" <<<"$ai_output"
+expected=$(
+  cat <<EOF
+nix-store <-qR> <$PROFILE_ROOT/home-manager>
+nix-store <-qR> <$PROFILE_ROOT/profile>
+nix-store <-qR> <$PROFILE_ROOT/ai-stack>
+nix-store <-qR> <$SYSTEM_PROFILE>
+EOF
+)
+[[ "$(cat "$CALL_LOG")" == "$expected" ]] || {
+  printf 'AI-stack audit must validate all current closures without mutation\n' >&2
+  exit 1
+}
+
+: >"$CALL_LOG"
+automatic >/dev/null
+expected+=$'\n'"sudo <-H> <-u> <alc> <$BIN_DIR/nix-env> <--profile> <$PROFILE_ROOT/home-manager> <--delete-generations> <+10>"
+expected+=$'\n'"nix-env <--profile> <$PROFILE_ROOT/home-manager> <--delete-generations> <+10>"
+expected+=$'\n'"sudo <-H> <-u> <alc> <$BIN_DIR/nix-env> <--profile> <$PROFILE_ROOT/ai-stack> <--delete-generations> <+10>"
+expected+=$'\n'"nix-env <--profile> <$PROFILE_ROOT/ai-stack> <--delete-generations> <+10>"
+expected+=$'\n'"nix-env <--profile> <$SYSTEM_PROFILE> <--delete-generations> <+10>"
+[[ "$(cat "$CALL_LOG")" == "$expected" ]] || {
+  printf 'AI-stack retention must validate before pruning and use the managed user\n' >&2
+  exit 1
+}
+
+: >"$CALL_LOG"
+automatic --keep 3 >/dev/null
+grep -Fq "sudo <-H> <-u> <alc> <$BIN_DIR/nix-env> <--profile> <$PROFILE_ROOT/ai-stack> <--delete-generations> <+3>" "$CALL_LOG"
+
+assert_no_mutation() {
+  if grep -Eq 'nix-env|sudo|<--gc>' "$CALL_LOG"; then
+    printf 'invalid current closure allowed profile deletion or GC\n' >&2
+    exit 1
+  fi
+}
+
+# Validation must fail closed in all modes, before any profile is pruned.
+for invalid in "$PROFILE_ROOT/ai-stack" "$SYSTEM_PROFILE"; do
+  for mode in automatic audit manual; do
+    : >"$CALL_LOG"
+    case "$mode" in
+      automatic) args=(--automatic-retention --user alc --home "$TEST_ROOT/home") ;;
+      audit) args=(--automatic-retention --user alc --home "$TEST_ROOT/home" --check-only) ;;
+      manual) args=() ;;
+    esac
+    test_id="$BIN_DIR/id-user"
+    [[ "$mode" != automatic ]] || test_id="$BIN_DIR/id-root"
+    if INVALID_PROFILE="$invalid" TEST_ID_BIN="$test_id" \
+      maintenance "${args[@]}" >"$TEST_ROOT/invalid-output" 2>&1; then
+      printf 'invalid current closure accepted in %s mode\n' "$mode" >&2
+      exit 1
+    fi
+    grep -Fq "current profile closure is not valid: $invalid" "$TEST_ROOT/invalid-output"
+    assert_no_mutation
+  done
+done
+
+rm "$TEST_ROOT/ai-stack-current"
+for mode in automatic audit manual; do
+  : >"$CALL_LOG"
+  case "$mode" in
+    automatic) args=(--automatic-retention --user alc --home "$TEST_ROOT/home") ;;
+    audit) args=(--automatic-retention --user alc --home "$TEST_ROOT/home" --check-only) ;;
+    manual) args=() ;;
+  esac
+  test_id="$BIN_DIR/id-user"
+  [[ "$mode" != automatic ]] || test_id="$BIN_DIR/id-root"
+  if TEST_ID_BIN="$test_id" maintenance "${args[@]}" >"$TEST_ROOT/invalid-output" 2>&1; then
+    printf 'dangling AI-stack profile accepted in %s mode\n' "$mode" >&2
+    exit 1
+  fi
+  grep -Fq "current profile is dangling: $PROFILE_ROOT/ai-stack" "$TEST_ROOT/invalid-output"
+  assert_no_mutation
+done
+
+# Hosts without the separate profile need no migration or new root.
+rm "$PROFILE_ROOT/ai-stack"
+: >"$CALL_LOG"
+maintenance >/dev/null
+if grep -Fq '/ai-stack' "$CALL_LOG"; then
+  printf 'absent AI-stack profile was passed to Nix\n' >&2
+  exit 1
+fi
+
+rm -f "$PROFILE_ROOT/home-manager" "$PROFILE_ROOT/profile"
+: >"$CALL_LOG"
+maintenance >/dev/null
+if grep -Fq "$PROFILE_ROOT/" "$CALL_LOG"; then
+  printf 'absent user profiles were passed to Nix\n' >&2
+  exit 1
+fi
+grep -Fq "<$SYSTEM_PROFILE> <--delete-generations> <+10>" "$CALL_LOG"
+grep -Fq 'nix-store <--gc>' "$CALL_LOG"
 
 printf 'nix GC maintenance contract: PASS\n'
