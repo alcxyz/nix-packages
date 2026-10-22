@@ -62,6 +62,8 @@
           nix-deploy = lib.addMetaAttrs { mainProgram = "deploy"; } allPackages.nixfleet;
           nix-gc-maintenance = pkgs.callPackage ./tools/nix-gc-maintenance { };
           revkit = pkgs.callPackage ./tools/revkit { };
+          khal = pkgs.callPackage ./pkgs/khal { };
+          piper-tts = pkgs.callPackage ./pkgs/piper-tts { };
           workmux = pkgs.callPackage ./pkgs/workmux { };
         }
         //
@@ -115,6 +117,9 @@
           wcap = pkgs.callPackage ./tools/wcap { };
         }
         // lib.optionalAttrs isLinux {
+          calibre = pkgs.callPackage ./pkgs/calibre {
+            calibre = pkgs.calibre.override { inherit (allPackages) piper-tts; };
+          };
           forgejo-runner-cancellation = unstablePkgs.callPackage ./pkgs/forgejo-runner-cancellation { };
           forgejo-runner-orphan-check = pkgs.callPackage ./tools/forgejo-runner-orphan-check { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };

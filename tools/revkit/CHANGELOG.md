@@ -9,6 +9,13 @@ tool and add an entry here:
 - minor: a new command or option, or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.3.2 (2026-10-22)
+
+- Reviewer deadlines and parent cancellation are classified as timeout or
+  interrupted even when they prevent process startup; real launch errors still fail.
+- Process-group cleanup tests wait for the child process to start before
+  cancellation, keeping startup delays under build load out of timeout checks.
+
 ## 0.3.1 (2026-10-21)
 
 - Finding issues use bold labels for their status, next action, owner, reason,

@@ -29,7 +29,7 @@ cat > "$REVKIT_TEST_LOG.prompt"
 } > "$REVKIT_TEST_LOG"
 case "$REVKIT_TEST_MODE" in
 fail) echo "something broke" >&2; exit 3 ;;
-hang) sleep 30 & echo $! > "$REVKIT_TEST_LOG.child"; wait; exit 0 ;;
+hang) sleep 300 & echo $! > "$REVKIT_TEST_LOG.child"; wait; exit 0 ;;
 error)
   echo '{"type":"result","result":"Not logged in","is_error":true}'
   exit 1 ;;
@@ -264,33 +264,125 @@ func TestRunMissingClient(t *testing.T) {
 	}
 }
 
-func TestRunTimeoutKillsTheProcessGroup(t *testing.T) {
+func TestRunContextDoneBeforeStart(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	for _, test := range []struct {
+		name    string
+		ctx     context.Context
+		timeout time.Duration
+		status  string
+	}{
+		{"timeout", context.Background(), 0, StatusTimeout},
+		{"cancelled", cancelled, time.Minute, StatusInterrupted},
+		{"parent-deadline", expired, time.Minute, StatusInterrupted},
+		{"cancelled-with-timeout", cancelled, 0, StatusInterrupted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t, "")
+			// A zero timeout expires synchronously in context.WithTimeout,
+			// before cmd.Start, without depending on scheduler timing.
+			result := Run(test.ctx, f.job("claude", test.timeout))
+			if result.Status != test.status || result.Problem != test.status || result.Exit != nil {
+				t.Fatalf("result = %+v", result)
+			}
+			if _, err := os.Stat(f.log + ".prompt"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reviewer started with a finished context: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunStartFailure(t *testing.T) {
+	f := newFixture(t, "")
+	// lookPath accepts this executable file, but cmd.Start cannot execute it.
+	writeFile(t, filepath.Join(f.bin, "claude"), "not an executable format\n", 0o755)
+	result := Run(context.Background(), f.job("claude", time.Minute))
+	if result.Status != StatusFailed || !strings.Contains(result.Problem, "cannot start claude") || result.Exit != nil {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestRunTimeout(t *testing.T) {
 	f := newFixture(t, "hang")
-	result := Run(context.Background(), f.job("claude", 3*time.Second))
+	// Startup is part of the timeout. Do not assume the fixture has spawned
+	// its child before this deadline; test group cleanup after readiness below.
+	result := Run(context.Background(), f.job("claude", 50*time.Millisecond))
 	if result.Status != StatusTimeout {
 		t.Fatalf("result = %+v", result)
 	}
-	content, err := os.ReadFile(f.log + ".child")
-	if err != nil {
-		t.Fatal(err)
+	if result.Text != "" {
+		t.Fatalf("timed-out reviewer produced a reply: %q", result.Text)
 	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(content)))
+}
+
+func TestRunInterruptedKillsTheProcessGroup(t *testing.T) {
+	f := newFixture(t, "hang")
+	ctx, cancel := context.WithCancel(context.Background())
+	var result Result
+	done := make(chan struct{})
+	go func() {
+		result = Run(ctx, f.job("claude", time.Minute))
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("the reviewer did not finish after cancellation")
+		}
+	})
+
+	// The PID file is the fixture's readiness signal. Cancellation must
+	// follow child startup, even when the build machine is heavily loaded.
+	startup := time.NewTimer(30 * time.Second)
+	defer startup.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	var pid int
+	for pid == 0 {
+		select {
+		case <-done:
+			t.Fatalf("reviewer exited before its child was ready: %+v", result)
+		case <-startup.C:
+			t.Fatal("timed out waiting for the reviewer's child")
+		case <-poll.C:
+			content, err := os.ReadFile(f.log + ".child")
+			if errors.Is(err, os.ErrNotExist) || (err == nil && len(content) == 0) {
+				continue // The shell may have opened the file but not written it.
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, err = strconv.Atoi(strings.TrimSpace(string(content)))
+			if err != nil || pid <= 0 {
+				t.Fatalf("invalid child PID %q: %v", content, err)
+			}
+		}
+	}
+	// Keep a failed cleanup assertion from leaving the fixture running.
+	t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+	if !alive(pid) {
+		t.Fatalf("the reviewer's child %d exited before cancellation", pid)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the reviewer did not finish after cancellation")
+	}
+	if result.Status != StatusInterrupted {
+		t.Fatalf("result = %+v", result)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for alive(pid) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the reviewer's child %d survived", pid)
 		}
 		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-func TestRunInterrupted(t *testing.T) {
-	f := newFixture(t, "hang")
-	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(500*time.Millisecond, cancel)
-	result := Run(ctx, f.job("claude", time.Minute))
-	if result.Status != StatusInterrupted {
-		t.Fatalf("result = %+v", result)
 	}
 }
 

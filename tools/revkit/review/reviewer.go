@@ -337,6 +337,17 @@ func execute(ctx context.Context, argv []string, job Job, stdoutPath, logPath st
 	cmd.Cancel = func() error { return killGroup(cmd.Process.Pid) }
 	cmd.WaitDelay = 10 * time.Second
 	if err := cmd.Start(); err != nil {
+		// CommandContext can reject startup if its context finished before
+		// Start. Match only context errors so genuine launch failures remain
+		// failures even if cancellation races with them.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			switch {
+			case ctx.Err() != nil:
+				return nil, StatusInterrupted, nil
+			case errors.Is(runCtx.Err(), context.DeadlineExceeded):
+				return nil, StatusTimeout, nil
+			}
+		}
 		return nil, StatusFailed, fmt.Errorf("cannot start %s: %w", argv[0], err)
 	}
 	waitErr := cmd.Wait()
