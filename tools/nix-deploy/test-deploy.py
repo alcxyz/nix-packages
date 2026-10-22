@@ -284,8 +284,8 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     deploy = Path(sys.argv[1]).absolute()
     # Keep the command search path closed; new operational commands cannot fall
     # through to an installed host tool. Mocks use an absolute Python shebang,
-    # and the ready command runs through bash.
-    for name in ["bash"]:
+    # the ready command uses bash, and report permissions use GNU ls.
+    for name in ["bash", "ls"]:
         target = shutil.which(name)
         assert target, name
         (commands / name).symlink_to(target)

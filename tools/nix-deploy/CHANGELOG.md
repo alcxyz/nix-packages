@@ -9,6 +9,21 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.18.2 (2026-10-22)
+
+- Atomic report publication refuses existing access ACLs and ACLs inherited
+  by temporary files, preserving the prior report rather than potentially
+  granting access through a changed ACL mask or owning-group permissions.
+  ACL inspection failures also prevent publication.
+
+## 0.18.1 (2026-10-22)
+
+- Deployment JSON reports are published atomically, so interruption cannot
+  leave an empty or partially written report when the signal handler and normal
+  exit race. Existing regular-file ownership and permissions are preserved;
+  new reports use mode 0600.
+  Symbolic links and other non-regular report destinations are rejected.
+
 ## 0.18.0 (2026-10-17)
 
 - `nixfleet reboot` runs the inventory's new `rebootHookCommand`, when set,

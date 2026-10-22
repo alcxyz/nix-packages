@@ -1,4 +1,5 @@
 {
+  acl,
   bash,
   buildGoModule,
   coreutils,
@@ -8,6 +9,7 @@
   makeWrapper,
   openssh,
   python3,
+  stdenv,
   writableTmpDirAsHomeHook,
 }:
 let
@@ -21,13 +23,16 @@ in
 buildGoModule (finalAttrs: {
   pname = "nixfleet";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.18.0";
+  version = "0.18.2";
 
   src = ./.;
 
   vendorHash = null; # no external dependencies
 
-  ldflags = [ "-X main.version=${finalAttrs.version}" ];
+  ldflags = [
+    "-X main.version=${finalAttrs.version}"
+    "-X main.reportACLInspector=${coreutils}/bin/ls"
+  ];
 
   # The go command writes telemetry under $HOME, which unsandboxed CI builds
   # would create as /homeless-shelter (#603).
@@ -37,11 +42,13 @@ buildGoModule (finalAttrs: {
   ];
   nativeCheckInputs = [
     bash
+    coreutils
     python3
-  ];
+  ]
+  ++ lib.optionals stdenv.hostPlatform.isLinux [ acl ];
 
   # One program answers to nixfleet, deploy and k8s-node-power, by the name it
-  # is invoked as. The black-box contract mocks every external command, so it
+  # is invoked as. The black-box contract mocks deployment commands, so it
   # runs against the unwrapped binary, under those names, before the runtime
   # PATH is added (ADR-0006).
   postCheck = ''

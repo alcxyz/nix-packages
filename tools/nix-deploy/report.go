@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -134,7 +138,7 @@ func (d *deployer) saveReport(selected []string, r *report) bool {
 // writeFailedJSON replaces a report when a run fails before it has hosts.
 func writeFailedJSON(path string) {
 	data, _ := json.MarshalIndent(runReport{Version: version, Failed: true, Hosts: []hostReport{}}, "", "  ")
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := writeReportFile(path, append(data, '\n')); err != nil {
 		fmt.Fprintf(os.Stderr, "deploy: cannot write %s: %v\n", path, err)
 	}
 }
@@ -166,5 +170,79 @@ func (d *deployer) writeJSON(path string, selected []string, r *report) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return writeReportFile(path, append(data, '\n'))
+}
+
+// The package pins GNU ls so ACL checks do not depend on an ambient ls variant.
+var reportACLInspector = "ls"
+
+// checkReportACL refuses permissions that cannot be preserved with Chmod.
+// GNU ls (a runtime dependency) uses the platform ACL API on Linux and Darwin.
+// Its long format appends '+' for an ACL, '.' for only a security context, and
+// '?' when ACL inspection fails. Inspect only the mode field, never filenames.
+func checkReportACL(path string) error {
+	output, err := exec.Command(reportACLInspector, "--directory", "--format=long", "--numeric-uid-gid", "--color=never", "--quoting-style=escape", "--", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("inspect report ACL for %s: %w: %s", path, err, strings.TrimSpace(string(output)))
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) == 0 || (len(fields[0]) != 10 && !(len(fields[0]) == 11 && fields[0][10] == '.')) {
+		return fmt.Errorf("report %s has an ACL or its ACL could not be verified; refusing atomic replacement", path)
+	}
+	return nil
+}
+
+// writeReportFile publishes only complete reports. An interrupt can exit while
+// another writer is active, so writers must never truncate the published file.
+func writeReportFile(path string, data []byte) error {
+	mode := os.FileMode(0o600)
+	var owner *syscall.Stat_t
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("report destination %s is not a regular file", path)
+		}
+		if err := checkReportACL(path); err != nil {
+			return err
+		}
+		mode = info.Mode().Perm()
+		owner = info.Sys().(*syscall.Stat_t)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".nixfleet-report-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	// Inherited ACLs can grant access independently of mode bits on Darwin,
+	// or become effective when Chmod restores a group mask on Linux. Refuse
+	// them before writing any report data to the temporary file.
+	if err := checkReportACL(temp.Name()); err != nil {
+		temp.Close()
+		return err
+	}
+	_, err = temp.Write(data)
+	if err == nil && owner != nil {
+		var info os.FileInfo
+		info, err = temp.Stat()
+		if err == nil {
+			current := info.Sys().(*syscall.Stat_t)
+			if current.Uid != owner.Uid || current.Gid != owner.Gid {
+				err = temp.Chown(int(owner.Uid), int(owner.Gid))
+				if err != nil {
+					err = fmt.Errorf("preserve ownership of report %s (uid %d, gid %d): %w", path, owner.Uid, owner.Gid, err)
+				}
+			}
+		}
+	}
+	if err == nil {
+		err = temp.Chmod(mode)
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(temp.Name(), path)
 }
