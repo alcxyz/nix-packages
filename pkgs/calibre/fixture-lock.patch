@@ -1,0 +1,26 @@
+--- a/src/calibre/ebooks/oeb/polish/tests/base.py
++++ b/src/calibre/ebooks/oeb/polish/tests/base.py
+@@ -81,9 +81,9 @@
+     cache = get_cache()
+     ans = os.path.join(cache, 'simple.' + fmt)
+     src = os.path.join(os.path.dirname(__file__), 'simple.html')
+-    if needs_recompile(ans, src):
+-        with ExclusiveFile(ans + '.lock', timeout=120):
+-            # Re-check after acquiring the lock: another worker may have just built it.
++    with ExclusiveFile(ans + '.lock', timeout=120):
++        if needs_recompile(ans, src):
++            # Keep both checks: the first CI call updates once_per_run.
+             # On the second call needs_recompile falls through to the mtime check
+             # (once_per_run already contains ans), so it returns False if ans is fresh.
+             if needs_recompile(ans, src):
+@@ -99,8 +99,8 @@
+     cache = get_cache()
+     ans = os.path.join(cache, 'split.' + fmt)
+     src = os.path.join(os.path.dirname(__file__), 'split.html')
+-    if needs_recompile(ans, src):
+-        with ExclusiveFile(ans + '.lock', timeout=120):
++    with ExclusiveFile(ans + '.lock', timeout=120):
++        if needs_recompile(ans, src):
+             if needs_recompile(ans, src):
+                 x = src.replace('split.html', 'index.html')
+                 with open(src, 'rb') as sf:

@@ -1,0 +1,52 @@
+--- a/src/calibre/ebooks/oeb/polish/tests/base.py
++++ b/src/calibre/ebooks/oeb/polish/tests/base.py
+@@ -77,2 +77,4 @@
+ def get_simple_book(fmt='epub'):
++    from calibre.utils.lock import ExclusiveFile
++
+     cache = get_cache()
+@@ -80,7 +82,8 @@
+     src = os.path.join(os.path.dirname(__file__), 'simple.html')
+-    if needs_recompile(ans, src):
+-        with TemporaryDirectory('bpt') as tdir, CurrentDir(tdir):
+-            x = setup_simple_book(src)
+-            build_book(x, ans, args=[
+-                '--level1-toc=//h:h2', '--language=en', '--authors=Kovid Goyal', '--cover=lt.png'])
++    with ExclusiveFile(ans + '.lock', timeout=120):
++        if needs_recompile(ans, src):
++            with TemporaryDirectory('bpt') as tdir, CurrentDir(tdir):
++                x = setup_simple_book(src)
++                build_book(x, ans, args=[
++                    '--level1-toc=//h:h2', '--language=en', '--authors=Kovid Goyal', '--cover=lt.png'])
+     return ans
+@@ -89,2 +92,4 @@
+ def get_split_book(fmt='epub'):
++    from calibre.utils.lock import ExclusiveFile
++
+     cache = get_cache()
+@@ -92,13 +97,14 @@
+     src = os.path.join(os.path.dirname(__file__), 'split.html')
+-    if needs_recompile(ans, src):
+-        x = src.replace('split.html', 'index.html')
+-        with open(src, 'rb') as sf:
+-            raw = sf.read().decode('utf-8')
+-        try:
+-            with open(x, 'wb') as f:
+-                f.write(raw.encode('utf-8'))
+-            build_book(x, ans, args=['--level1-toc=//h:h2', '--language=en', '--authors=Kovid Goyal',
+-                                        '--cover=' + I('lt.png')])
+-        finally:
+-            os.remove(x)
++    with ExclusiveFile(ans + '.lock', timeout=120):
++        if needs_recompile(ans, src):
++            x = src.replace('split.html', 'index.html')
++            with open(src, 'rb') as sf:
++                raw = sf.read().decode('utf-8')
++            try:
++                with open(x, 'wb') as f:
++                    f.write(raw.encode('utf-8'))
++                build_book(x, ans, args=['--level1-toc=//h:h2', '--language=en', '--authors=Kovid Goyal',
++                                            '--cover=' + I('lt.png')])
++            finally:
++                os.remove(x)
+     return ans
