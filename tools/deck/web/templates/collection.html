@@ -4,17 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{.Name}} | Deck</title>
-<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+<title>{{.Title}} | Deck</title>
+<link rel="stylesheet" href="{{.BasePath}}static/library.css">
 </head>
-<body>
-<header class="top"><a href="/">Deck</a><h1>{{.Name}}</h1><a href="{{.BasePath}}">Threads</a></header>
-<main class="library">
-<ul class="library-list">
-{{range .Pages}}
-<li><h2><a href="{{.URL}}">{{.Title}}</a></h2><time datetime="{{.Date}}">{{.Date}}</time>{{if .Summary}}<p>{{.Summary}}</p>{{end}}</li>
-{{else}}<li>No pages yet.</li>{{end}}
-</ul>
+<body class="lib">
+<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a></nav></header>
+<main class="lib-main">
+<header class="lib-head">
+  <nav class="lib-crumbs" aria-label="Breadcrumb"><a href="/">Deck</a><span aria-current="page">{{.Title}}</span></nav>
+  <h1>{{.Title}}</h1>
+  <p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}, newest first.</p>
+</header>
+{{range .Months}}
+<section class="lib-month">
+  <h2>{{.Label}}</h2>
+  <ul class="lib-list">{{range .Pages}}
+    <li><a class="lib-entry" href="{{.URL}}"><time datetime="{{.Date}}"><b>{{.Day}}</b>{{.Month}}</time><span class="lib-entry-text"><span class="lib-entry-title">{{.Title}}</span>{{if .Summary}}<span class="lib-entry-summary">{{.Summary}}</span>{{end}}</span></a></li>{{end}}
+  </ul>
+</section>
+{{else}}<p class="lib-empty">No pages yet.</p>
+{{end}}
 </main>
 </body>
 </html>

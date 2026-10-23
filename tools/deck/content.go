@@ -39,6 +39,58 @@ type LibraryView struct {
 	Collections []CollectionView
 }
 
+// MonthGroup is a calendar month of a collection's pages, for its index.
+type MonthGroup struct {
+	Label string
+	Pages []ContentPage
+}
+
+// recentPages is how many of a collection's newest pages the root index lists.
+const recentPages = 3
+
+// parsedDate parses the validated metadata date; readContentPage rejects others.
+func (p ContentPage) parsedDate() time.Time {
+	t, _ := time.Parse(time.DateOnly, p.Date)
+	return t
+}
+
+// DisplayDate formats the page date for reading, for example 23 Oct 2026.
+func (p ContentPage) DisplayDate() string { return p.parsedDate().Format("2 Jan 2006") }
+
+// Day and Month split the date for the collection index's date column.
+func (p ContentPage) Day() string   { return p.parsedDate().Format("2") }
+func (p ContentPage) Month() string { return p.parsedDate().Format("Jan") }
+
+// Title turns the collection's directory name into a heading.
+func (c CollectionView) Title() string {
+	words := strings.Split(c.Name, "-")
+	if len(words[0]) > 0 {
+		words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+	}
+	return strings.Join(words, " ")
+}
+
+// Recent returns the newest pages; Pages is already sorted newest first.
+func (c CollectionView) Recent() []ContentPage {
+	if len(c.Pages) > recentPages {
+		return c.Pages[:recentPages]
+	}
+	return c.Pages
+}
+
+// Months groups the date-sorted pages by calendar month, newest first.
+func (c CollectionView) Months() []MonthGroup {
+	var groups []MonthGroup
+	for _, page := range c.Pages {
+		label := page.parsedDate().Format("January 2006")
+		if len(groups) == 0 || groups[len(groups)-1].Label != label {
+			groups = append(groups, MonthGroup{Label: label})
+		}
+		groups[len(groups)-1].Pages = append(groups[len(groups)-1].Pages, page)
+	}
+	return groups
+}
+
 // openContentDirectory refuses symlink directory entries, and compares the
 // opened directory with the checked entry in case an operator replaced it.
 // All child access still uses Root, which enforces the filesystem boundary.

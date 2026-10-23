@@ -140,9 +140,3 @@ li.row .title:hover { text-decoration: underline; }
   main { padding: 0.4rem 0.5rem 2rem; }
   li.row > details > summary { padding: 0.5rem; }
 }
-
-.library { max-width: 52rem; padding-top: 1rem; }
-.library-list { list-style: none; padding: 0; }
-.library-list > li { margin: 0.8rem 0; padding: 1rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
-.library-list h2 { margin: 0 0 0.3rem; font-size: 1.1rem; }
-.library-list time { color: var(--muted); font-size: 0.85rem; }

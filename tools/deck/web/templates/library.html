@@ -5,18 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Deck</title>
-<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+<link rel="stylesheet" href="{{.BasePath}}static/library.css">
 </head>
-<body>
-<header class="top"><h1>Deck</h1></header>
-<main class="library">
-<p>Your content library and thread dashboard.</p>
-<p><a href="{{.BasePath}}">Threads</a></p>
-<h2>Collections</h2>
-<ul class="library-list">
-{{range .Collections}}<li><a href="{{.URL}}">{{.Name}}</a> <span class="n">({{len .Pages}})</span></li>
-{{else}}<li>No collections yet.</li>{{end}}
+<body class="lib">
+<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a></nav></header>
+<main class="lib-main">
+<header class="lib-head">
+  <h1>Deck</h1>
+  <p>Briefings, offers and worksheets, beside the live thread dashboard.</p>
+</header>
+<ul class="lib-grid">
+  <li class="lib-card lib-dashboard">
+    <a class="lib-cover" href="{{.BasePath}}"><span class="lib-kicker">Dashboard</span><h2>Threads</h2><p>Which threads wait on you, have stalled or are ready to settle.</p></a>
+  </li>
+{{range .Collections}}
+  <li class="lib-card">
+    <a class="lib-cover" href="{{.URL}}"><span class="lib-kicker">Collection</span><h2>{{.Title}}</h2><p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}</p></a>
+    {{with .Recent}}<ul class="lib-recent">{{range .}}
+      <li><a href="{{.URL}}">{{.Title}}</a><time datetime="{{.Date}}">{{.DisplayDate}}</time></li>{{end}}
+    </ul>{{end}}
+  </li>
+{{end}}
 </ul>
+{{if not .Collections}}<p class="lib-empty">No collections yet.</p>{{end}}
 </main>
 </body>
 </html>

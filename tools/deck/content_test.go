@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,46 @@ func TestContentIndexes(t *testing.T) {
 	}
 	if strings.Contains(body, `<script>`) || strings.Contains(body, `<img src=x`) {
 		t.Fatalf("metadata was not escaped: %s", body)
+	}
+	october, january := strings.Index(body, "<h2>October 2026</h2>"), strings.Index(body, "<h2>January 2026</h2>")
+	if october < 0 || january < 0 || october > january || !strings.Contains(body, "<h1>Notes</h1>") {
+		t.Errorf("collection lacks its heading or month groups: %s", body)
+	}
+	library = get(t, h, "/")
+	body = library.Body.String()
+	for _, want := range []string{`href="/notes/alpha/"`, `href="/notes/latest/"`, `href="/notes/old/"`, ">1 Oct 2026<", "3 pages", "1 page<"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("library missing recent page detail %s: %s", want, body)
+		}
+	}
+}
+
+func TestCollectionViewHelpers(t *testing.T) {
+	view := CollectionView{Name: "client-offers", Pages: []ContentPage{
+		{Title: "D", Date: "2026-11-02"},
+		{Title: "C", Date: "2026-10-23"},
+		{Title: "B", Date: "2026-10-01"},
+		{Title: "A", Date: "2025-10-30"},
+	}}
+	if got := view.Title(); got != "Client offers" {
+		t.Errorf("title: %q", got)
+	}
+	if got := view.Recent(); len(got) != 3 || got[0].Title != "D" || got[2].Title != "B" {
+		t.Errorf("recent: %+v", got)
+	}
+	if got := (CollectionView{Name: "notes"}).Recent(); len(got) != 0 {
+		t.Errorf("recent of an empty collection: %+v", got)
+	}
+	var months []string
+	for _, group := range view.Months() {
+		months = append(months, fmt.Sprintf("%s:%d", group.Label, len(group.Pages)))
+	}
+	if got := strings.Join(months, ","); got != "November 2026:1,October 2026:2,October 2025:1" {
+		t.Errorf("months: %s", got)
+	}
+	page := view.Pages[1]
+	if page.DisplayDate() != "23 Oct 2026" || page.Day() != "23" || page.Month() != "Oct" {
+		t.Errorf("date parts: %s %s %s", page.DisplayDate(), page.Day(), page.Month())
 	}
 }
 
