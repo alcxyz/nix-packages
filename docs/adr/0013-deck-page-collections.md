@@ -78,7 +78,9 @@ and proposals that outlive a work session, and nothing in them depends on T3.
 - **Pages-only mode.** A Deck process configured without thread instances runs
   no adapters or summaries and registers no dashboard routes. It serves the
   root index and the collections, and the root index links to a configured
-  dashboard URL instead. A dashboard process can turn its collections off.
+  dashboard URL instead. It still reserves the dashboard's base path, taken
+  from its configuration, so no collection can claim the path the proxy
+  routes to the dashboard. A dashboard process can turn its collections off.
 - **The two run apart.** The pages process runs on a host that stays up; the
   dashboard stays beside T3. The authenticating proxy routes the dashboard's
   base path to the dashboard process and every other path to the pages
