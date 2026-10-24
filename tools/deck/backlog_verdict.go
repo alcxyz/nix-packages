@@ -291,7 +291,8 @@ fence), with these keys:
   "unclear": you cannot tell.
 - "reason": one line, citing evidence such as a merged pull request or a
   comment.
-- "criteria": the issue's concrete completion criteria, or null.
+- "criteria": the issue's concrete completion criteria as one string, or
+  null.
 
 relatedItems are items in other repositories the issue links, with their
 state; a merged or closed one may be the evidence that the work is done.
@@ -351,6 +352,33 @@ func buildVerdictPrompt(issue BacklogIssue, item ItemText, related map[string]Ba
 	return b.String(), nil
 }
 
+// criteriaText reads criteria given as null, a string or a list of
+// strings, which it joins with "; ".
+func criteriaText(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return strings.TrimSpace(one), nil
+	}
+	// Pointers, so a null item is refused rather than read as "".
+	var list []*string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return "", errors.New("verdict: criteria must be a string, a list of strings or null")
+	}
+	var parts []string
+	for _, item := range list {
+		if item == nil {
+			return "", errors.New("verdict: criteria must be a string, a list of strings or null")
+		}
+		if t := strings.TrimSpace(*item); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "; "), nil
+}
+
 // parseVerdict validates an answer strictly, as parseSummary does: one JSON
 // object with only these keys. Errors name the field, never its value.
 func parseVerdict(out []byte) (Verdict, error) {
@@ -363,9 +391,11 @@ func parseVerdict(out []byte) (Verdict, error) {
 	dec := json.NewDecoder(strings.NewReader(text))
 	dec.DisallowUnknownFields()
 	var r struct {
-		Verdict  *string `json:"verdict"`
-		Reason   *string `json:"reason"`
-		Criteria *string `json:"criteria"`
+		Verdict *string `json:"verdict"`
+		Reason  *string `json:"reason"`
+		// Criteria may come as a list of strings, which models often
+		// prefer for criteria; it is joined into one line.
+		Criteria json.RawMessage `json:"criteria"`
 	}
 	if err := dec.Decode(&r); err != nil {
 		return Verdict{}, fmt.Errorf("verdict is not the expected JSON object: %s", jsonErrorKind(err))
@@ -385,8 +415,12 @@ func parseVerdict(out []byte) (Verdict, error) {
 	if !utf8.ValidString(v.Reason) || utf8.RuneCountInString(v.Reason) > maxVerdictReason {
 		return Verdict{}, fmt.Errorf("verdict: reason must be valid text of at most %d characters", maxVerdictReason)
 	}
-	if r.Criteria != nil && strings.TrimSpace(*r.Criteria) != "" {
-		c := strings.TrimSpace(*r.Criteria)
+	criteria, err := criteriaText(r.Criteria)
+	if err != nil {
+		return Verdict{}, err
+	}
+	if criteria != "" {
+		c := criteria
 		if !utf8.ValidString(c) || utf8.RuneCountInString(c) > maxVerdictCriteria {
 			return Verdict{}, fmt.Errorf("verdict: criteria must be valid text of at most %d characters", maxVerdictCriteria)
 		}

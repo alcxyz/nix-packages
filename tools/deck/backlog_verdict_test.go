@@ -93,10 +93,20 @@ func TestParseVerdict(t *testing.T) {
 	if v, err := parseVerdict([]byte(`{"verdict":"keep","reason":"Waits on upstream.","criteria":null}`)); err != nil || v.Criteria != nil {
 		t.Errorf("null criteria: %+v, %v", v, err)
 	}
+	// Models often answer criteria as a list.
+	if v, err := parseVerdict([]byte(`{"verdict":"keep","reason":"x","criteria":["The importer runs."," ","Docs updated."]}`)); err != nil || v.Criteria == nil || *v.Criteria != "The importer runs.; Docs updated." {
+		t.Errorf("list criteria: %+v, %v", v, err)
+	}
+	if v, err := parseVerdict([]byte(`{"verdict":"keep","reason":"x","criteria":[]}`)); err != nil || v.Criteria != nil {
+		t.Errorf("empty list criteria: %+v, %v", v, err)
+	}
 	for _, bad := range []string{
 		`{"verdict":"maybe","reason":"x","criteria":null}`,
 		`{"verdict":"close","reason":" ","criteria":null}`,
 		`{"verdict":"close","reason":"x","criteria":null,"extra":1}`,
+		`{"verdict":"close","reason":"x","criteria":{"a":1}}`,
+		`{"verdict":"close","reason":"x","criteria":[1,2]}`,
+		`{"verdict":"close","reason":"x","criteria":[null]}`,
 		`{"verdict":"close","reason":"` + strings.Repeat("x", 301) + `","criteria":null}`,
 		validVerdict + ` trailing`,
 		`not json`,
