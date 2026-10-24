@@ -6,7 +6,7 @@
 
 buildGoModule {
   pname = "gh-app";
-  version = "0.1.0";
+  version = "0.2.0";
 
   # The module replaces sopsstore with ../../lib/sopsstore, so the source
   # is the repository root, built from this module's directory.

@@ -197,6 +197,11 @@ type fakeGitHub struct {
 	orgCalls      int
 	expiresIn     time.Duration
 	headerProblem string
+	// requested holds the permissions of the last token request, nil
+	// for a full token; grant, when set, replaces what a restricted
+	// request is granted.
+	requested map[string]string
+	grant     map[string]string
 }
 
 func newFakeGitHub(t *testing.T, repos []string) (*fakeGitHub, *httptest.Server) {
@@ -252,12 +257,30 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && r.URL.Path == "/app/installations/777/access_tokens":
 		f.tokenCalls++
 		f.checkJWT(bearer)
+		var request struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		if r.ContentLength > 0 {
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				f.problem("token request body: %v", err)
+			}
+		}
+		f.requested = request.Permissions
 		expires := time.Now().Add(f.expiresIn).UTC().Format(time.RFC3339)
-		fmt.Fprintf(w, `{"token":%q,"expires_at":%q}`, f.token, expires)
+		if request.Permissions == nil {
+			fmt.Fprintf(w, `{"token":%q,"expires_at":%q,"permissions":{"issues":"write","metadata":"read"}}`, f.token, expires)
+			return
+		}
+		granted := request.Permissions
+		if f.grant != nil {
+			granted = f.grant
+		}
+		data, _ := json.Marshal(granted)
+		fmt.Fprintf(w, `{"token":%q,"expires_at":%q,"permissions":%s}`, f.token+"read", expires, data)
 	case r.Method == "GET" && r.URL.Path == "/installation/repositories":
 		f.repoCalls++
 		if bearer != f.token {
-			f.problem("repositories bearer is not the installation token")
+			f.problem("repositories bearer is not the full installation token")
 		}
 		if f.failRepos {
 			w.WriteHeader(http.StatusInternalServerError)

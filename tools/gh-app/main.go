@@ -25,6 +25,8 @@ Commands:
                                 (needs credential.useHttpPath=true)
   status                        show the installation, token expiry and
                                 installed repositories
+  read-only [--] CMD [ARGS...]  run CMD with a read-only installation token
+                                (see Read-only below)
   register --manifest FILE [--org ORG] [--port N]
            (--sops-file PATH --sops-key NAME | -- CMD [ARGS...])
                                 register a new GitHub App from a manifest and
@@ -67,6 +69,19 @@ when ssh cannot resolve one that gh might choose, gh runs as the operator.
 
 Limit: with GH_HOST unset gh-app assumes github.com, where gh may fall back
 to another configured host.
+
+Read-only:
+  gh-app read-only asks for an installation token with metadata, issues,
+  pull requests, checks and commit statuses, all read, and refuses a token
+  whose grant differs from that. It caches that token apart from the full one
+  and runs CMD, found on PATH, with it in GH_TOKEN and GH_CONFIG_DIR set to a
+  directory of its own beside the cache, so neither the operator's gh login
+  nor the full token reaches CMD. Other GitHub tokens, GH_HOST and the
+  GH_APP_* settings are removed from CMD's environment. If no token can be
+  had, CMD does not run.
+  Limit: GitHub lets any installation token open new issues in the public
+  repositories it can see, whatever its permissions; the token can write
+  nothing else.
 
 Register:
   gh-app register runs GitHub's App manifest flow. It serves a page at a
@@ -228,6 +243,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runCredential(cfg, args[1:], stdin, stdout, stderr)
 	case "status":
 		return runStatus(cfg, stdout, stderr)
+	case "read-only":
+		return runReadOnly(cfg, args[1:], stderr)
 	case "register":
 		return runRegister(args[1:], stdout, stderr)
 	default:

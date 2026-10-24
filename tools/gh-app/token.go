@@ -60,11 +60,24 @@ func (e cacheEntry) installed(owner, repo string) bool {
 	return false
 }
 
-// minter mints and caches the App's installation token.
+// readOnlyPermissions are what a read-only token is asked for: enough to read
+// repositories, issues, pull requests and their checks, nothing that writes.
+var readOnlyPermissions = map[string]string{
+	"metadata":      "read",
+	"issues":        "read",
+	"pull_requests": "read",
+	"checks":        "read",
+	"statuses":      "read",
+}
+
+// minter mints and caches the App's installation token. With permissions
+// set it asks for those only and keeps its own cache, so the full token and
+// a restricted one never replace each other.
 type minter struct {
-	cfg    config
-	client *http.Client
-	now    func() time.Time
+	cfg         config
+	client      *http.Client
+	now         func() time.Time
+	permissions map[string]string
 }
 
 func newMinter(cfg config) *minter {
@@ -75,8 +88,24 @@ func newMinter(cfg config) *minter {
 	}
 }
 
+// newReadOnlyMinter mints tokens with readOnlyPermissions.
+func newReadOnlyMinter(cfg config) *minter {
+	m := newMinter(cfg)
+	m.permissions = readOnlyPermissions
+	return m
+}
+
+// cacheName is the file name stem of the token's cache and lock.
+func (m *minter) cacheName() string {
+	name := m.cfg.appID + "-" + strings.ToLower(m.cfg.owner)
+	if m.permissions != nil {
+		name += "-read"
+	}
+	return name
+}
+
 func (m *minter) cachePath() string {
-	return filepath.Join(m.cfg.cacheDir, m.cfg.appID+"-"+strings.ToLower(m.cfg.owner)+".json")
+	return filepath.Join(m.cfg.cacheDir, m.cacheName()+".json")
 }
 
 func (m *minter) fresh(entry cacheEntry) bool {
@@ -203,7 +232,7 @@ func (m *minter) lock() (func(), error) {
 	if err := os.Chmod(m.cfg.cacheDir, 0o700); err != nil {
 		return nil, fmt.Errorf("restrict cache directory: %w", err)
 	}
-	lockPath := filepath.Join(m.cfg.cacheDir, m.cfg.appID+"-"+strings.ToLower(m.cfg.owner)+".lock")
+	lockPath := filepath.Join(m.cfg.cacheDir, m.cacheName()+".lock")
 	lock, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open cache lock: %w", err)
@@ -276,10 +305,10 @@ func (m *minter) mint() (entry cacheEntry, listErr error, err error) {
 	var installation struct {
 		ID int64 `json:"id"`
 	}
-	err = m.call("GET", "/users/"+m.cfg.owner+"/installation", jwt, &installation)
+	err = m.call("GET", "/users/"+m.cfg.owner+"/installation", jwt, nil, &installation)
 	var status *statusError
 	if errors.As(err, &status) && status.code == http.StatusNotFound {
-		err = m.call("GET", "/orgs/"+m.cfg.owner+"/installation", jwt, &installation)
+		err = m.call("GET", "/orgs/"+m.cfg.owner+"/installation", jwt, nil, &installation)
 	}
 	if err != nil {
 		return cacheEntry{}, nil, fmt.Errorf("find the App installation for %s: %w", m.cfg.owner, err)
@@ -288,23 +317,49 @@ func (m *minter) mint() (entry cacheEntry, listErr error, err error) {
 		return cacheEntry{}, nil, fmt.Errorf("find the App installation for %s: no installation id in response", m.cfg.owner)
 	}
 
-	var access struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
+	var request any
+	if m.permissions != nil {
+		request = struct {
+			Permissions map[string]string `json:"permissions"`
+		}{m.permissions}
 	}
-	if err := m.call("POST", fmt.Sprintf("/app/installations/%d/access_tokens", installation.ID), jwt, &access); err != nil {
+	var access struct {
+		Token       string            `json:"token"`
+		ExpiresAt   time.Time         `json:"expires_at"`
+		Permissions map[string]string `json:"permissions"`
+	}
+	if err := m.call("POST", fmt.Sprintf("/app/installations/%d/access_tokens", installation.ID), jwt, request, &access); err != nil {
 		return cacheEntry{}, nil, fmt.Errorf("create an installation token: %w", err)
 	}
 	if access.Token == "" || access.ExpiresAt.IsZero() {
 		return cacheEntry{}, nil, errors.New("create an installation token: incomplete response")
+	}
+	if m.permissions != nil {
+		// GitHub grants what was asked or refuses; a token whose grant
+		// differs from the request, by more or by less, is not used.
+		for name, level := range access.Permissions {
+			if m.permissions[name] != level {
+				return cacheEntry{}, nil, fmt.Errorf("create an installation token: GitHub granted %s: %s, which was not requested", name, level)
+			}
+		}
+		for name, level := range m.permissions {
+			if access.Permissions[name] != level {
+				return cacheEntry{}, nil, fmt.Errorf("create an installation token: GitHub did not grant %s: %s", name, level)
+			}
+		}
 	}
 
 	entry = cacheEntry{
 		InstallationID: installation.ID,
 		Token:          access.Token,
 		ExpiresAt:      access.ExpiresAt,
-		ListTriedAt:    m.now(),
 	}
+	if m.permissions != nil {
+		// A restricted token serves read-only, which needs no repository
+		// list, so a failed listing cannot keep it from running.
+		return entry, nil, nil
+	}
+	entry.ListTriedAt = m.now()
 	repositories, listErr := m.listRepositories(access.Token)
 	if listErr != nil {
 		return entry, listErr, nil
@@ -334,7 +389,7 @@ func (m *minter) listRepositories(token string) ([]string, error) {
 			} `json:"repositories"`
 		}
 		path := fmt.Sprintf("/installation/repositories?per_page=%d&page=%d", reposPerPage, page)
-		if err := m.call("GET", path, token, &list); err != nil {
+		if err := m.call("GET", path, token, nil, &list); err != nil {
 			return nil, fmt.Errorf("list installed repositories: %w", err)
 		}
 		for _, repo := range list.Repositories {
@@ -347,13 +402,24 @@ func (m *minter) listRepositories(token string) ([]string, error) {
 	return repositories, nil
 }
 
-// call sends an authenticated API request and decodes the JSON response.
-// Errors carry the status and GitHub's error message only, never the
-// credential or the raw body.
-func (m *minter) call(method, path, bearer string, out any) error {
-	req, err := http.NewRequest(method, m.cfg.apiURL+path, nil)
+// call sends an authenticated API request, with in as its JSON body unless
+// nil, and decodes the JSON response. Errors carry the status and GitHub's
+// error message only, never the credential or the raw body.
+func (m *minter) call(method, path, bearer string, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return fmt.Errorf("%s %s: encode request: %v", method, stripQuery(path), err)
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(method, m.cfg.apiURL+path, body)
 	if err != nil {
 		return fmt.Errorf("%s %s: invalid request", method, stripQuery(path))
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -365,7 +431,7 @@ func (m *minter) call(method, path, bearer string, out any) error {
 		return fmt.Errorf("%s %s: %v", method, stripQuery(path), redact(err.Error(), bearer))
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return fmt.Errorf("%s %s: read response: %v", method, stripQuery(path), err)
 	}
@@ -374,12 +440,12 @@ func (m *minter) call(method, path, bearer string, out any) error {
 			Message string `json:"message"`
 		}
 		msg := ""
-		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
+		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Message != "" {
 			msg = ": " + redact(apiErr.Message, bearer)
 		}
 		return &statusError{code: resp.StatusCode, text: fmt.Sprintf("%s %s: %s%s", method, stripQuery(path), resp.Status, msg)}
 	}
-	if err := json.Unmarshal(body, out); err != nil {
+	if err := json.Unmarshal(respBody, out); err != nil {
 		return fmt.Errorf("%s %s: invalid JSON response", method, stripQuery(path))
 	}
 	return nil
