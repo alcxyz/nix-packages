@@ -141,14 +141,35 @@ be done (in the close lane, or flagged `untouched-since-merge` or
 other stale issues, idlest first. Pull requests follow by lane, then every
 other issue, collapsed. Suggested actions are shown, never performed.
 
+With an item command, each shortlisted issue also gets a verdict, as the
+skill's readers give: `close`, `dispatch`, `refresh`, `keep`, `drop` or
+`unclear`, a one-line reason and the issue's completion criteria. deck runs
+`ITEM --max-chars 2000 REF [PR_REF...]` for the issue and its three newest
+merged pull requests (each reference checked and passed as its own argument),
+then makes one model call with no tools through `verdictRole`, at
+`verdictEffort`. The prompt holds deck's facts, then the issue's text as
+untrusted data. Verdicts are cached in
+`$XDG_STATE_HOME/deck/backlog/verdicts.json` against the issue's `updatedAt`
+and merged pull requests. A changed issue is judged again once its last
+attempt is `verdictIntervalMinutes` old; failures back off as summaries do.
+Automatic verdicts run one at a time and share `threads.callsPerHour` with the
+summaries, starting only while more than a quarter of it is left. **Refresh
+verdict**, with the role picker of `threads.summaryRoles`, and **Refresh
+now**, which queues every shortlisted issue without a current verdict, skip
+the reserve, the interval and the backoff, not the budget.
+
 ```toml
 [backlog]
 basePath = "/backlog/"   # default; must not overlap basePath
 intervalMinutes = 15     # default
 timeoutMinutes = 5       # default
+verdictRole = "light"    # default; one of threads.summaryRoles
+verdictEffort = "low"    # default; "" keeps the role's own effort
+verdictIntervalMinutes = 360 # default; least time between automatic attempts at a changed issue
 
-[backlog.commands]       # required: deck has no default
-inventory = "deck-backlog-inventory"
+[backlog.commands]
+inventory = "deck-backlog-inventory" # required: deck has no default
+item = "deck-backlog-item"           # optional; without it the view shows facts only
 ```
 
 ## Authentication

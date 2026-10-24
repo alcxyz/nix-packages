@@ -26,6 +26,12 @@ type BacklogPageView struct {
 	Ready       int
 	Sections    []BacklogSectionView
 	Empty       bool
+	// Verdicts: why they are off, or the queue and the shared budget.
+	VerdictsOff  string
+	Queued       int
+	Judging      bool
+	BudgetLeft   int
+	CallsPerHour int
 	// SeenUpTo is when the shown facts were read, for "new since your
 	// last visit".
 	SeenUpTo time.Time
@@ -72,6 +78,70 @@ type BacklogRowView struct {
 	Links      []LinkView
 	Related    []string
 	Suggestion string
+
+	// The verdict of a shortlisted issue, its age and the refresh form.
+	HasVerdict      bool
+	Verdict         string
+	VerdictReason   string
+	Criteria        string
+	VerdictOutdated bool
+	VerdictModel    string
+	VerdictRole     string
+	VerdictAt       time.Time
+	VerdictError    string
+	VerdictState    string
+	CanJudge        bool
+	Roles           []string
+	DefaultRole     string
+}
+
+var verdictSuggestions = map[string]string{
+	"close":    "Close",
+	"drop":     "Close as not planned",
+	"dispatch": "Dispatch",
+	"refresh":  "Refresh the status",
+	"keep":     "Keep",
+	"unclear":  "Look at it",
+}
+
+// withVerdict adds a shortlisted issue's cached verdict and its refresh
+// form; a verdict suggests the action in place of the facts' guess.
+func (b *Backlog) withVerdict(row BacklogRowView, issue BacklogIssue, queued map[string]bool) BacklogRowView {
+	if !b.verdictsEnabled() {
+		return row
+	}
+	row.CanJudge = true
+	for _, role := range b.deck.cfg.Threads.SummaryRoles {
+		if len(b.deck.models[role]) > 0 {
+			row.Roles = append(row.Roles, role)
+		}
+	}
+	row.DefaultRole = b.cfg.VerdictRole
+	switch {
+	case b.judging == issue.Ref:
+		row.VerdictState = "being judged"
+	case queued[issue.Ref]:
+		row.VerdictState = "queued"
+	}
+	e, ok := b.cache.get(issue.Ref)
+	if !ok {
+		return row
+	}
+	if e.Verdict != nil {
+		row.HasVerdict = true
+		row.Verdict = e.Verdict.Verdict
+		row.VerdictReason = e.Verdict.Reason
+		row.Criteria = deref(e.Verdict.Criteria)
+		row.VerdictOutdated = e.Basis != verdictBasis(issue)
+		row.VerdictModel, row.VerdictRole, row.VerdictAt = e.Model, e.Role, e.MadeAt
+		if s, ok := verdictSuggestions[e.Verdict.Verdict]; ok && !row.VerdictOutdated {
+			row.Suggestion = s
+		}
+	}
+	if e.Error != "" && e.AttemptedAt.After(e.MadeAt) {
+		row.VerdictError = e.Error
+	}
+	return row
 }
 
 var issueLaneLabels = map[string]string{
@@ -221,6 +291,15 @@ func (b *Backlog) view(basePath string) BacklogPageView {
 		ErrAt:       b.errAt,
 		SeenUpTo:    b.asOf,
 	}
+	v.VerdictsOff = b.verdictsOff()
+	if b.verdictsEnabled() {
+		v.Queued, v.Judging = len(b.queue), b.judging != ""
+		v.BudgetLeft, v.CallsPerHour = b.deck.budgetLeft(), b.deck.cfg.Threads.CallsPerHour
+	}
+	queued := map[string]bool{}
+	for _, ref := range b.queue {
+		queued[ref] = true
+	}
 	if b.inv == nil {
 		v.Empty = true
 		return v
@@ -248,11 +327,11 @@ func (b *Backlog) view(basePath string) BacklogPageView {
 		if issue.Lane == "close" {
 			suggestion = "Close?"
 		}
-		doneRows = append(doneRows, issueRow(issue, related, suggestion))
+		doneRows = append(doneRows, b.withVerdict(issueRow(issue, related, suggestion), issue, queued))
 	}
 	for _, issue := range stale {
 		shortlisted[issue.Ref] = true
-		staleRows = append(staleRows, issueRow(issue, related, "Drop, refresh or dispatch?"))
+		staleRows = append(staleRows, b.withVerdict(issueRow(issue, related, "Drop, refresh or dispatch?"), issue, queued))
 	}
 	v.MaybeDone, v.Stale = len(doneRows), len(staleRows)
 	if len(doneRows) > 0 {

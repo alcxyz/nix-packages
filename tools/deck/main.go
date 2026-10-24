@@ -93,6 +93,15 @@ func serve(args []string) error {
 	}
 
 	d := newDeck(cfg, cache, models, roleErr, log)
+	if d.backlog != nil && cfg.Backlog.Commands.Item != "" {
+		path, err := defaultVerdictPath()
+		if err != nil {
+			return err
+		}
+		if d.backlog.cache, err = openVerdictCache(path); err != nil {
+			return err
+		}
+	}
 	handler, err := newHandler(d, auth, log)
 	if err != nil {
 		return err

@@ -21,6 +21,7 @@ func newBacklogDeck(t *testing.T) (*Deck, http.Handler) {
 		t.Fatal(err)
 	}
 	d.backlog = newBacklog(*d.cfg.Backlog, quietLog())
+	d.backlog.deck = d
 	d.backlog.now = func() time.Time { return testClock }
 	d.backlog.refresh(context.Background())
 	return d, contentTestHandler(t, d, nil)

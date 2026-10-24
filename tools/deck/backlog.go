@@ -174,11 +174,17 @@ func shortlist(issues []BacklogIssue) (maybeDone, stale []BacklogIssue) {
 	return maybeDone, rest
 }
 
-// Backlog keeps the last good inventory and refreshes it on an interval.
+// Backlog keeps the last good inventory and refreshes it on an interval,
+// and judges the shortlisted issues one at a time.
 type Backlog struct {
 	cfg BacklogConfig
 	log *slog.Logger
 	now func() time.Time
+	// deck lends its model roles, model runner and call budget; cache holds
+	// the verdicts. Without either, or without an item command, the view
+	// shows facts only.
+	deck  *Deck
+	cache *VerdictCache
 
 	mu      sync.Mutex
 	inv     *BacklogInventory
@@ -186,12 +192,26 @@ type Backlog struct {
 	err     string
 	errAt   time.Time
 	running bool
+	// queue holds the issues asked for by hand, first come first; manual
+	// has the role each was asked with. judging is the issue being judged,
+	// and judgingBasis the basis it is judged against, once read.
+	queue           []string
+	manual          map[string]string
+	judging         string
+	judgingBasis    string
+	refreshVerdicts bool
 
 	refreshCh chan struct{}
+	wake      chan struct{}
 }
 
 func newBacklog(cfg BacklogConfig, log *slog.Logger) *Backlog {
-	return &Backlog{cfg: cfg, log: log, now: time.Now, refreshCh: make(chan struct{}, 1)}
+	return &Backlog{
+		cfg: cfg, log: log, now: time.Now,
+		manual:    map[string]string{},
+		refreshCh: make(chan struct{}, 1),
+		wake:      make(chan struct{}, 1),
+	}
 }
 
 // loop refreshes the inventory every intervalMinutes and when asked, until
@@ -222,28 +242,60 @@ func (b *Backlog) requestRefresh() {
 // refresh runs the inventory command under its deadline. A failure keeps
 // the last good inventory and records the error. The facts are dated from
 // when the read started, so a change made during a slow read is not marked
-// as already seen.
+// as already seen. Then the verdict worker is woken for what changed.
 func (b *Backlog) refresh(ctx context.Context) {
 	b.mu.Lock()
 	b.running = true
 	started := b.now()
+	// A Refresh now asked for during this read waits for the next one,
+	// which reads what changed since this one started.
+	refreshVerdicts := b.refreshVerdicts
+	b.refreshVerdicts = false
 	b.mu.Unlock()
 	inv, err := b.readInventory(ctx)
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.running = false
-	if err != nil {
-		if ctx.Err() != nil {
-			return // shutting down; nothing went wrong with the facts
-		}
+	switch {
+	case err != nil && ctx.Err() != nil:
+		b.mu.Unlock()
+		return // shutting down; nothing went wrong with the facts or the requests
+	case err != nil:
 		b.log.Warn("backlog inventory failed", "err", err.Error())
 		b.err = err.Error()
 		b.errAt = b.now()
-		return
+	default:
+		b.inv = &inv
+		b.asOf = started
+		b.err = ""
 	}
-	b.inv = &inv
-	b.asOf = started
-	b.err = ""
+	// On failure, Refresh now queues verdicts from the last good facts.
+	if refreshVerdicts {
+		b.queueOutdatedLocked()
+	}
+	b.mu.Unlock()
+	if err == nil && inventoryComplete(inv) {
+		b.pruneVerdicts(inv)
+	}
+	b.signal()
+}
+
+// inventoryComplete reports whether every source the inventory read
+// answered, so an issue missing from it has really left: a failed GitHub
+// read or a scoped repository not found must not prune good verdicts.
+func inventoryComplete(inv BacklogInventory) bool {
+	for _, state := range inv.Sources {
+		if strings.HasPrefix(state, "error") {
+			return false
+		}
+	}
+	return len(inv.Scope.Missing) == 0
+}
+
+func (b *Backlog) signal() {
+	select {
+	case b.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (b *Backlog) readInventory(parent context.Context) (BacklogInventory, error) {

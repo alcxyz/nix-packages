@@ -89,6 +89,7 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 		app.HandleFunc("GET "+backlogBase+"fragment", s.backlogFragment)
 		app.Handle("GET "+backlogBase+"static/", http.StripPrefix(backlogBase+"static/", http.FileServerFS(static)))
 		app.HandleFunc("POST "+backlogBase+"actions/refresh-all", s.backlogRefresh)
+		app.HandleFunc("POST "+backlogBase+"actions/verdict", s.backlogVerdict)
 		app.Handle("GET "+backlogBase[:len(backlogBase)-1], http.RedirectHandler(backlogBase, http.StatusMovedPermanently))
 	}
 
@@ -182,10 +183,40 @@ func (s *Server) backlogFragment(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "backlog-content", s.deck.backlog.view(s.deck.cfg.Backlog.BasePath))
 }
 
-// backlogRefresh asks for the inventory now; the page shows it once read.
+// backlogRefresh asks for the inventory now, then verdicts for the
+// shortlisted issues without a current one; the page shows them once made.
 func (s *Server) backlogRefresh(w http.ResponseWriter, r *http.Request) {
-	s.deck.backlog.requestRefresh()
+	s.deck.backlog.requestRefreshAll()
 	s.log.Info("backlog refresh requested")
+	s.doneAt(w, r, s.deck.cfg.Backlog.BasePath)
+}
+
+// backlogVerdict queues a verdict for one shortlisted issue, with the role
+// picked on the row.
+func (s *Server) backlogVerdict(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	ref := r.PostForm.Get("ref")
+	if !validBacklogRef(ref) {
+		http.Error(w, "invalid issue reference", http.StatusBadRequest)
+		return
+	}
+	role := r.PostForm.Get("role")
+	if role == "" {
+		role = s.deck.cfg.Backlog.VerdictRole
+	}
+	if len(s.deck.models[role]) == 0 {
+		http.Error(w, "unknown or unusable role", http.StatusBadRequest)
+		return
+	}
+	if err := s.deck.backlog.requestVerdict(ref, role); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	s.log.Info("verdict requested", "issue", ref, "role", role)
 	s.doneAt(w, r, s.deck.cfg.Backlog.BasePath)
 }
 

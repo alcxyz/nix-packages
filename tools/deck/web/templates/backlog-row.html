@@ -7,6 +7,7 @@
     <span class="chip">{{.LaneLabel}}</span>
     {{range .Flags}}<span class="badge stale">{{.}}</span>{{end}}
     {{if .Suggestion}}<span class="badge owner-user">{{.Suggestion}}</span>{{end}}
+    {{if .VerdictOutdated}}<span class="badge stale" title="the issue or its merged pull requests changed since the verdict">older verdict</span>{{end}}
     {{if .Next}}<span class="next">Next: {{.Next}}</span>{{end}}
   </summary>
   <div class="body">
@@ -19,6 +20,27 @@
     </p>
     {{if .Links}}<p>{{range .Links}}{{if .URL}}<a href="{{.URL}}" rel="noreferrer" target="_blank">{{.Text}}</a>{{else}}{{.Text}}{{end}} {{end}}</p>{{end}}
     {{if .Related}}<p><b>Related</b></p><ul>{{range .Related}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    {{if .HasVerdict}}
+    <p><b>Verdict:</b> {{.Verdict}}: {{.VerdictReason}}</p>
+    {{if .Criteria}}<p><b>Done when:</b> {{.Criteria}}</p>{{end}}
+    {{end}}
+    {{if .CanJudge}}
+    <p class="meta">
+      {{if .HasVerdict}}<span>verdict by {{.VerdictModel}} ({{.VerdictRole}}) at <time datetime="{{iso .VerdictAt}}">{{clock .VerdictAt}}</time></span>{{else}}<span>no verdict yet</span>{{end}}
+      {{if .VerdictOutdated}}<span>older verdict: the issue changed since</span>{{end}}
+      {{if .VerdictState}}<span>verdict {{.VerdictState}}</span>{{end}}
+      {{if .VerdictError}}<span class="error">last verdict failed: {{.VerdictError}}</span>{{end}}
+    </p>
+    <div class="actions">
+      <form method="post" action="actions/verdict" data-action>
+        <input type="hidden" name="ref" value="{{.Ref}}">
+        <select name="role" aria-label="Verdict role">
+          {{range .Roles}}<option value="{{.}}"{{if eq . $.DefaultRole}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        <button type="submit">Refresh verdict</button>
+      </form>
+    </div>
+    {{end}}
   </div>
 </details>
 </li>

@@ -15,6 +15,8 @@
     {{if .User}}<span>read as {{.User}}</span>{{end}}
     {{range .Sources}}<span class="error">{{.}}</span>{{end}}
     {{if .Missing}}<span class="error">{{.Missing}} scoped repositories not found</span>{{end}}
+    {{if .CallsPerHour}}<span>verdicts: {{.Queued}} queued{{if .Judging}}, 1 being judged{{end}}, {{.BudgetLeft}}/{{.CallsPerHour}} calls left this hour</span>{{end}}
+    {{if .VerdictsOff}}<span{{if .CallsPerHour}} class="error"{{end}}>verdicts off: {{.VerdictsOff}}</span>{{end}}
   </p>
 </section>
 {{if .Empty}}<p class="empty">{{if .HasRun}}No open issues or pull requests.{{else}}No inventory yet.{{end}}</p>{{end}}

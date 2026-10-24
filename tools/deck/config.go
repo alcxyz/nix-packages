@@ -27,19 +27,29 @@ type Config struct {
 	Backlog *BacklogConfig `toml:"backlog"`
 }
 
-// BacklogConfig configures the backlog view: where it is served and the
-// adapter command that prints the inventory (nix-config ADR-0093).
+// BacklogConfig configures the backlog view: where it is served, the
+// adapter commands that print the inventory and an issue's text (nix-config
+// ADR-0093), and how its verdicts are made.
 type BacklogConfig struct {
-	BasePath        string                `toml:"basePath"`
-	IntervalMinutes int                   `toml:"intervalMinutes"`
-	TimeoutMinutes  int                   `toml:"timeoutMinutes"`
-	Commands        BacklogCommandsConfig `toml:"commands"`
+	BasePath        string `toml:"basePath"`
+	IntervalMinutes int    `toml:"intervalMinutes"`
+	TimeoutMinutes  int    `toml:"timeoutMinutes"`
+	// VerdictRole makes automatic verdicts, at VerdictEffort; nil effort
+	// is "low", as the skill's readers run, and "" keeps the role's own.
+	VerdictRole   string  `toml:"verdictRole"`
+	VerdictEffort *string `toml:"verdictEffort"`
+	// VerdictIntervalMinutes is the least time between automatic attempts
+	// at a changed issue; a pointer so 0 differs from unset (360).
+	VerdictIntervalMinutes *int                  `toml:"verdictIntervalMinutes"`
+	Commands               BacklogCommandsConfig `toml:"commands"`
 }
 
 // BacklogCommandsConfig names the backlog adapter commands. They have no
 // default: the consumer's wrapper chooses the scope and the credentials.
+// Without Item the view shows facts only.
 type BacklogCommandsConfig struct {
 	Inventory string `toml:"inventory"`
+	Item      string `toml:"item"`
 }
 
 type AuthConfig struct {
@@ -220,6 +230,11 @@ func (c *Config) normalize() error {
 		if err := c.Backlog.normalize(c.BasePath); err != nil {
 			return err
 		}
+		// Verdicts use the roles loaded for summaries; without an item
+		// command there are none, and the role does not matter.
+		if c.Backlog.Commands.Item != "" && !oneOf(c.Backlog.VerdictRole, c.Threads.SummaryRoles) {
+			return fmt.Errorf("backlog.verdictRole %q must be one of threads.summaryRoles", c.Backlog.VerdictRole)
+		}
 	}
 
 	if len(c.Threads.Instances) == 0 {
@@ -291,6 +306,20 @@ func (b *BacklogConfig) normalize(threadsBase string) error {
 	}
 	if b.Commands.Inventory == "" {
 		return errors.New("backlog.commands.inventory is required: the command that prints the backlog inventory")
+	}
+	if b.VerdictRole == "" {
+		b.VerdictRole = summaryRole
+	}
+	if b.VerdictEffort == nil {
+		low := "low"
+		b.VerdictEffort = &low
+	}
+	if b.VerdictIntervalMinutes == nil {
+		interval := 360
+		b.VerdictIntervalMinutes = &interval
+	}
+	if *b.VerdictIntervalMinutes < 0 {
+		return errors.New("backlog.verdictIntervalMinutes must not be negative")
 	}
 	return nil
 }

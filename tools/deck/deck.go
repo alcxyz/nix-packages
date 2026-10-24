@@ -141,6 +141,7 @@ func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, r
 	}
 	if cfg.Backlog != nil {
 		d.backlog = newBacklog(*cfg.Backlog, log)
+		d.backlog.deck = d
 	}
 	return d
 }
@@ -163,10 +164,14 @@ func (d *Deck) run(ctx context.Context) {
 		d.dispatch(ctx)
 	}()
 	if d.backlog != nil {
-		d.work.Add(1)
+		d.work.Add(2)
 		go func() {
 			defer d.work.Done()
 			d.backlog.loop(ctx)
+		}()
+		go func() {
+			defer d.work.Done()
+			d.backlog.verdictLoop(ctx)
 		}()
 	}
 }
@@ -756,11 +761,25 @@ func (d *Deck) budgetLeftLocked() int {
 	return d.cfg.Threads.CallsPerHour - len(d.calls)
 }
 
-// takeCall spends one model call of the budget, if any is left.
-func (d *Deck) takeCall() bool {
+// budgetLeft is budgetLeftLocked for callers outside d.mu, such as the
+// backlog's verdicts, which share the budget.
+func (d *Deck) budgetLeft() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.budgetLeftLocked() <= 0 {
+	return d.budgetLeftLocked()
+}
+
+// takeCall spends one model call of the budget, if any is left.
+func (d *Deck) takeCall() bool {
+	return d.takeCallAbove(0)
+}
+
+// takeCallAbove spends one model call only while more than keep calls are
+// left, so automatic verdicts leave the reserve to summaries.
+func (d *Deck) takeCallAbove(keep int) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.budgetLeftLocked() <= keep {
 		return false
 	}
 	d.calls = append(d.calls, d.now())

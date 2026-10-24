@@ -147,7 +147,8 @@ func jsonErrorKind(err error) string {
 	case errors.As(err, &typ):
 		return fmt.Sprintf("wrong type for %s", typ.Field)
 	case strings.HasPrefix(err.Error(), "json: unknown field"):
-		return err.Error()
+		// The error quotes the field's name, which is the model's text.
+		return "an unknown field"
 	default:
 		return "invalid JSON"
 	}

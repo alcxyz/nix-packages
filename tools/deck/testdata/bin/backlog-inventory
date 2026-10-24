@@ -1,5 +1,7 @@
 #!/bin/sh
 # Fake backlog adapter command for tests and local development.
 [ -n "$DECK_ARGS_LOG" ] && printf 'backlog-inventory %s\n' "$*" >> "$DECK_ARGS_LOG"
+# DECK_BACKLOG_WAIT holds the read until that file exists.
+[ -n "$DECK_BACKLOG_WAIT" ] && while [ ! -e "$DECK_BACKLOG_WAIT" ]; do sleep 0.05; done
 [ -n "$DECK_BACKLOG_FAIL" ] && { echo "backlog inventory failed on purpose" >&2; exit 3; }
 exec cat "${0%/*}/../backlog-inventory.json"
