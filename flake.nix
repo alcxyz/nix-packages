@@ -44,6 +44,7 @@
         # All packages — some are platform-specific
         allPackages = {
           forge-mirror = pkgs.callPackage ./tools/forge-mirror { };
+          forgejo-deploy-key = pkgs.callPackage ./tools/forgejo-deploy-key { };
           gh-app = pkgs.callPackage ./tools/gh-app { };
           # gh routed through gh-app.
           gh-app-gh = pkgs.callPackage ./tools/gh-app/gh.nix {
@@ -179,6 +180,8 @@
         checks.revkit = allPackages.revkit;
         # The package build runs deck's Go tests, with fake adapter commands.
         checks.deck = allPackages.deck;
+        # The package build runs forgejo-deploy-key's Go tests, with fake ssh and sops.
+        checks.forgejo-deploy-key = allPackages.forgejo-deploy-key;
         # The package build runs gh-app's Go tests, with a fake GitHub API.
         checks.gh-app = allPackages.gh-app;
         # Unconfigured, the wrapped gh is plain gh.

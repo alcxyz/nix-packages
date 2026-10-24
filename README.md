@@ -38,6 +38,7 @@ Internal tools built from source, tracked in this repo.
 | Tool | Description | Platforms |
 |------|-------------|-----------|
 | [deck](tools/deck/README.md) | T3 thread dashboard and operator-authored interactive page collections | all |
+| [forgejo-deploy-key](tools/forgejo-deploy-key/README.md) | Creates a write deploy key for one Forgejo repository and stores its private half straight into a new SOPS file | all |
 | gh-app | Routes gh and Git through a GitHub App's installation token for the App's installed repositories, and registers new Apps from a manifest (`gh-app register`) | all |
 | gh-app-gh | A `gh` that runs through gh-app, and is plain gh until the App is configured; used by t3code | all |
 | k8s-node-reboot | Guarded Kubernetes node reboot, power, and network-path lifecycle helpers | all |
