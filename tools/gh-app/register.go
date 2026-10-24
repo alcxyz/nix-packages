@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,14 +18,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unicode"
+
+	"sopsstore"
 )
 
 // Injectable for tests.
@@ -38,8 +37,6 @@ var (
 )
 
 const defaultRegisterPort = 3999
-
-var sopsKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 // manifestFields are the top-level keys GitHub accepts in an App manifest.
 // redirect_url is accepted but always replaced by the local callback.
@@ -110,13 +107,11 @@ func parseRegisterArgs(args []string) (registerOptions, error) {
 		if opts.sopsFile == "" || opts.sopsKey == "" {
 			return opts, errors.New("--sops-file and --sops-key must be given together")
 		}
-		if !sopsKeyPattern.MatchString(opts.sopsKey) {
+		if !sopsstore.KeyPattern.MatchString(opts.sopsKey) {
 			return opts, errors.New("--sops-key may only contain letters, digits and underscores")
 		}
-		// sops takes the format from the file name, and the document is YAML.
-		ext := strings.ToLower(filepath.Ext(opts.sopsFile))
-		if ext != ".yaml" && ext != ".yml" {
-			return opts, errors.New("--sops-file must end in .yaml or .yml")
+		if err := sopsstore.ValidPath(opts.sopsFile); err != nil {
+			return opts, fmt.Errorf("--sops-file %v", err)
 		}
 	}
 	return opts, nil
@@ -166,11 +161,13 @@ type keyStore struct {
 	command  []string
 }
 
+func (s keyStore) sops() sopsstore.File {
+	return sopsstore.File{Path: s.sopsFile, Key: s.sopsKey, Command: sopsCommand, Timeout: storeTimeout}
+}
+
 // check runs before the server starts, so that a store that cannot work
 // is found before the App exists. For a command it checks that the program
-// exists. For SOPS it checks that PATH does not exist yet, that its
-// directory does, that sops is installed, and that sops would encrypt the
-// key under the creation rules for PATH, by encrypting a synthetic key.
+// exists; for SOPS, see sopsstore.File.Check.
 func (s keyStore) check(ctx context.Context) error {
 	if s.sopsFile == "" {
 		if _, err := exec.LookPath(s.command[0]); err != nil {
@@ -178,96 +175,16 @@ func (s keyStore) check(ctx context.Context) error {
 		}
 		return nil
 	}
-	if _, err := os.Lstat(s.sopsFile); err == nil {
-		return fmt.Errorf("%s already exists; not overwriting it", s.sopsFile)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	dir := filepath.Dir(s.sopsFile)
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return fmt.Errorf("the directory %s does not exist", dir)
-	}
-	if _, err := exec.LookPath(sopsCommand); err != nil {
-		return fmt.Errorf("sops: %v", err)
-	}
-
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return err
-	}
-	marker := "ghappPreflight" + hex.EncodeToString(buf)
-	synthetic := "-----BEGIN GH-APP PREFLIGHT KEY-----\n" +
-		marker + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n" +
-		"-----END GH-APP PREFLIGHT KEY-----\n"
-	out, err := s.encrypt(ctx, synthetic)
-	if err == nil && bytes.Contains(out, []byte(marker)) {
-		err = errors.New("output contains the synthetic key")
-	}
-	if err == nil {
-		err = s.checkEncrypted(out, synthetic)
-	}
-	if err != nil {
-		return fmt.Errorf("sops would not encrypt %s in %s; check .sops.yaml creation rules (%v)", s.sopsKey, s.sopsFile, err)
-	}
-	return nil
+	return s.sops().Check(ctx)
 }
 
-// sopsDocument is the YAML document holding the key. The key name is
-// quoted, so that a name such as 123 or true stays a string.
 func (s keyStore) sopsDocument(key string) string {
-	var document strings.Builder
-	document.WriteString(strconv.Quote(s.sopsKey) + ": |\n")
-	for _, line := range strings.Split(strings.TrimSpace(key), "\n") {
-		document.WriteString("    " + strings.TrimRight(line, "\r") + "\n")
-	}
-	return document.String()
-}
-
-// encrypt runs sops encrypt on the key's document and returns its output.
-// It runs in the current directory, so the repository's .sops.yaml
-// creation rules apply to the file name.
-func (s keyStore) encrypt(ctx context.Context, key string) ([]byte, error) {
-	var out bytes.Buffer
-	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
-	defer cancel()
-	cmd := boundedCommand(ctx, sopsCommand, "encrypt", "--filename-override", s.sopsFile, "/dev/stdin")
-	cmd.Stdin = strings.NewReader(s.sopsDocument(key))
-	cmd.Stdout = &out
-	if err := storeError(ctx, "sops encrypt", cmd.Run()); err != nil {
-		return nil, err
-	}
-	return out.Bytes(), nil
-}
-
-// minKeyLineCheck is the shortest key line looked for in sops's output;
-// shorter ones could occur in ciphertext by chance.
-const minKeyLineCheck = 16
-
-// checkEncrypted checks that sops's output holds the key's value encrypted
-// and none of the key's lines in plaintext.
-func (s keyStore) checkEncrypted(out []byte, key string) error {
-	for _, line := range strings.Split(key, "\n") {
-		line = strings.TrimSpace(line)
-		if len(line) >= minKeyLineCheck && bytes.Contains(out, []byte(line)) {
-			return errors.New("output contains the key in plaintext")
-		}
-	}
-	quoted := strconv.Quote(s.sopsKey) + ":"
-	plain := s.sopsKey + ":"
-	for _, line := range strings.Split(string(out), "\n") {
-		if !strings.HasPrefix(line, quoted) && !strings.HasPrefix(line, plain) {
-			continue
-		}
-		if strings.Contains(line, "ENC[AES256_GCM,") {
-			return nil
-		}
-	}
-	return fmt.Errorf("output has no ENC[AES256_GCM, value for %s", s.sopsKey)
+	return s.sops().Document(key)
 }
 
 func (s keyStore) describe() string {
 	if s.sopsFile != "" {
-		return fmt.Sprintf("%s (SOPS key %s)", s.sopsFile, s.sopsKey)
+		return s.sops().Describe()
 	}
 	quoted := make([]string, 0, len(s.command))
 	for _, arg := range s.command {
@@ -279,69 +196,19 @@ func (s keyStore) describe() string {
 // save stores the key. Neither the key nor the store's output is ever
 // reported, since a command may echo its input.
 func (s keyStore) save(ctx context.Context, key string) error {
-	if s.sopsFile == "" {
-		ctx, cancel := context.WithTimeout(ctx, storeTimeout)
-		defer cancel()
-		cmd := boundedCommand(ctx, s.command[0], s.command[1:]...)
-		cmd.Stdin = strings.NewReader(strings.TrimRight(key, "\n") + "\n")
-		return storeError(ctx, "the store command", cmd.Run())
+	if s.sopsFile != "" {
+		return s.sops().Save(ctx, key)
 	}
-
-	encrypted, err := s.encrypt(ctx, key)
-	if err != nil {
-		return err
-	}
-	if err := s.checkEncrypted(encrypted, key); err != nil {
-		return fmt.Errorf("sops did not encrypt the key (%v); nothing was written to %s", err, s.sopsFile)
-	}
-	f, err := os.OpenFile(s.sopsFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(encrypted); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
-}
-
-// boundedCommand runs a store program in its own process group. When ctx
-// ends (the time limit, or an interrupt of gh-app), the whole group is
-// killed, so a child such as gpg under pass cannot finish writing later, and
-// Run waits at most a few seconds more for the output pipes to close. The
-// group is a background group of the terminal, so a store that prompts there
-// stops until the time limit kills it.
-func boundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = 5 * time.Second
-	return cmd
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+	cmd := sopsstore.BoundedCommand(ctx, s.command[0], s.command[1:]...)
+	cmd.Stdin = strings.NewReader(strings.TrimRight(key, "\n") + "\n")
+	return sopsstore.RunError(ctx, "the store command", storeTimeout, cmd.Run())
 }
 
 // storeTimeout bounds sops and the store command, so a store waiting on a
 // prompt it cannot show does not keep gh-app running past its time limit.
-var storeTimeout = 5 * time.Minute
-
-func storeError(ctx context.Context, what string, err error) error {
-	if err == nil {
-		return nil
-	}
-	// A killed group exits with -1; say why it was stopped.
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%s was stopped after %v", what, storeTimeout)
-	}
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return fmt.Errorf("%s was stopped by an interrupt", what)
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return fmt.Errorf("%s failed with exit status %d (output withheld)", what, exitErr.ExitCode())
-	}
-	return fmt.Errorf("%s failed: %v", what, err)
-}
+var storeTimeout = sopsstore.DefaultTimeout
 
 // createdApp is what is reported about a new App: none of its secrets.
 type createdApp struct {

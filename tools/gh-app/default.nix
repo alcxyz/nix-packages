@@ -1,12 +1,28 @@
-{ buildGoModule, git }:
+{
+  lib,
+  buildGoModule,
+  git,
+}:
 
 buildGoModule {
   pname = "gh-app";
   version = "0.1.0";
 
-  src = ./.;
+  # The module replaces sopsstore with ../../lib/sopsstore, so the source
+  # is the repository root, built from this module's directory.
+  src = lib.fileset.toSource {
+    root = ../..;
+    fileset = lib.fileset.unions [
+      ./.
+      ../../lib/sopsstore
+    ];
+  };
+  modRoot = "tools/gh-app";
 
   vendorHash = null;
+  # With vendorHash = null, buildGoModule forces -mod=vendor unless proxyVendor
+  # is set, and there is no vendor directory to satisfy the sopsstore replace.
+  proxyVendor = true;
 
   nativeCheckInputs = [ git ];
 
