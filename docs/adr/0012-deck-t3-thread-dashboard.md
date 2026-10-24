@@ -1,6 +1,6 @@
 # ADR-0012: deck, a live T3 thread dashboard
 
-**Status:** Accepted
+**Status:** Accepted; summary interval amended 2026-10-24
 **Date:** 2026-10-20
 **Applies to:** `tools/deck/`
 
@@ -52,7 +52,11 @@ that runs T3 and reached through an authenticating proxy.
   and its settle time. A thread gets a new one only when one of those
   changes (so a thread that settles without new messages gets a settled
   summary with a verdict), it has been quiet for a while (or is settled),
-  and its facts do not already settle it (settled and done, or accepted). A
+  its last attempt, failed or not, is at least the summary interval old (six
+  hours by default, so at most four automatic attempts a day at a thread that
+  keeps changing; retries of an unchanged thread follow the backoff below),
+  and its facts do not
+  already settle it (settled and done, or accepted). A
   worker makes one model call per thread through the shared `light` role of
   the LLM configuration devlog uses (ADR-0002), over the CLI transport,
   trying the role's backups in turn, under a concurrency cap and an hourly
@@ -120,6 +124,11 @@ that runs T3 and reached through an authenticating proxy.
 - Summaries can lag behind a busy thread by the quiet period, and longer when
   the budget is used up; the page shows when a summary predates the latest
   activity.
+- The summary interval was added after a day of service logs: a thread that
+  wakes on a schedule every 15 minutes outlasted the quiet period each time
+  and took about 80 of 124 calls. With the interval a changed or newly
+  settled thread can keep an outdated summary, or show no verdict, for up to
+  six hours; Refresh summary and Refresh now are the way to get one sooner.
 - A role with no Claude CLI entry leaves summaries off; the page says so
   and the facts still work. Summaries for such a role would need an API
   transport, which deck does not have yet.

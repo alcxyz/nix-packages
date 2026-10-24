@@ -33,6 +33,7 @@ var (
 	errBudget    = errors.New("model call budget for this hour is used up")
 	errNotQuiet  = errors.New("thread is active again")
 	errAttempted = errors.New("this revision was already attempted")
+	errInterval  = errors.New("thread was attempted within the summary interval")
 )
 
 // instanceFacts is the last good view of one T3 instance plus its last error.
@@ -389,7 +390,11 @@ func (d *Deck) prune(in InstanceConfig, inv Inventory) {
 		}
 	}
 	d.mu.Unlock()
-	cutoff := d.now().Add(-time.Duration(d.cfg.Threads.WindowDays+1) * 24 * time.Hour)
+	// Keep an absent thread's entry for the summary interval too, so a
+	// thread that returns cannot skip it.
+	keep := max(time.Duration(d.cfg.Threads.WindowDays+1)*24*time.Hour,
+		time.Duration(*d.cfg.Threads.SummaryIntervalMinutes)*time.Minute)
+	cutoff := d.now().Add(-keep)
 	err := d.cache.prune(func(k string, e CacheEntry) bool {
 		return !strings.HasPrefix(k, prefix) || present[k] || e.AttemptedAt.After(cutoff) || e.MadeAt.After(cutoff)
 	})
@@ -624,6 +629,15 @@ func (d *Deck) probeChanged(ctx context.Context, in InstanceConfig) bool {
 	return changed
 }
 
+// waitsForIntervalLocked reports whether a changed thread must still wait
+// for the summary interval after its last attempt, failed or not and by hand
+// or not; a retry of the same basis follows its backoff instead.
+func (d *Deck) waitsForIntervalLocked(key string, basis Basis, now time.Time) bool {
+	interval := time.Duration(*d.cfg.Threads.SummaryIntervalMinutes) * time.Minute
+	e, ok := d.cache.get(key)
+	return ok && e.AttemptBasis != basis && !e.AttemptedAt.IsZero() && now.Sub(e.AttemptedAt) < interval
+}
+
 // candidate is a thread that needs a summary and may get one now.
 type candidate struct {
 	key     string
@@ -631,7 +645,9 @@ type candidate struct {
 }
 
 // candidatesLocked lists the threads that need a (new) summary and are
-// eligible for one, oldest change first.
+// eligible for one, oldest change first. A thread attempted less than
+// summaryIntervalMinutes ago waits, settled or not; a refresh by hand does
+// not.
 func (d *Deck) candidatesLocked() []candidate {
 	if d.roleErr != nil {
 		return nil // automatic summaries need the default role
@@ -654,7 +670,11 @@ func (d *Deck) candidatesLocked() []candidate {
 			if p.revision == "" {
 				continue // no finished messages to summarise
 			}
-			if d.attemptedLocked(key, basisOf(p.revision, t), now) {
+			basis := basisOf(p.revision, t)
+			if d.attemptedLocked(key, basis, now) {
+				continue
+			}
+			if d.waitsForIntervalLocked(key, basis, now) {
 				continue
 			}
 			changed := lastChange(p.lastActivityAt, t.UpdatedAt)
@@ -852,6 +872,9 @@ func (d *Deck) summarize(ctx context.Context, key, role string) {
 	if errors.Is(err, errNotQuiet) {
 		return // rescheduled once the thread has been quiet long enough
 	}
+	if errors.Is(err, errInterval) {
+		return // the thread changed since it was queued; rescheduled after the interval
+	}
 	if errors.Is(err, errAttempted) {
 		return // queued on an older revision than the one read
 	}
@@ -900,9 +923,13 @@ func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t Invento
 	d.mu.Lock()
 	d.publishProbeLocked(key, seen)
 	attempted := d.attemptedLocked(key, basisOf(seen.revision, t), d.now())
+	waits := d.waitsForIntervalLocked(key, basisOf(seen.revision, t), d.now())
 	d.mu.Unlock()
 	if !manual && attempted {
 		return errAttempted
+	}
+	if !manual && waits {
+		return errInterval
 	}
 	if seen.revision == "" {
 		return d.recordFailure(ctx, key, t, seen, errors.New("thread has no finished messages"), false)

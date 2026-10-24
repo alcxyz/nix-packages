@@ -34,12 +34,15 @@ type ThreadsConfig struct {
 	WindowDays int `toml:"windowDays"`
 	// QuietMinutes is a pointer so an explicit 0 (no quiet period) differs
 	// from unset (10).
-	QuietMinutes       *int             `toml:"quietMinutes"`
-	RefreshConcurrency int              `toml:"refreshConcurrency"`
-	CallsPerHour       int              `toml:"callsPerHour"`
-	SummaryRole        string           `toml:"summaryRole"`
-	SummaryRoles       []string         `toml:"summaryRoles"`
-	Instances          []InstanceConfig `toml:"instance"`
+	QuietMinutes *int `toml:"quietMinutes"`
+	// SummaryIntervalMinutes is the least time between a thread's automatic
+	// summaries; a pointer for the same reason (unset is 360).
+	SummaryIntervalMinutes *int             `toml:"summaryIntervalMinutes"`
+	RefreshConcurrency     int              `toml:"refreshConcurrency"`
+	CallsPerHour           int              `toml:"callsPerHour"`
+	SummaryRole            string           `toml:"summaryRole"`
+	SummaryRoles           []string         `toml:"summaryRoles"`
+	Instances              []InstanceConfig `toml:"instance"`
 }
 
 // InstanceConfig names one T3 server: its state database and web app.
@@ -148,6 +151,10 @@ func (c *Config) normalize() error {
 		quiet := 10
 		c.Threads.QuietMinutes = &quiet
 	}
+	if c.Threads.SummaryIntervalMinutes == nil {
+		interval := 360
+		c.Threads.SummaryIntervalMinutes = &interval
+	}
 	if c.Threads.RefreshConcurrency == 0 {
 		c.Threads.RefreshConcurrency = 2
 	}
@@ -175,6 +182,9 @@ func (c *Config) normalize() error {
 	}
 	if *c.Threads.QuietMinutes < 0 {
 		return errors.New("threads.quietMinutes must not be negative")
+	}
+	if *c.Threads.SummaryIntervalMinutes < 0 {
+		return errors.New("threads.summaryIntervalMinutes must not be negative")
 	}
 	if c.Threads.RefreshConcurrency < 1 {
 		return errors.New("threads.refreshConcurrency must be at least 1")

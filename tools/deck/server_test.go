@@ -272,7 +272,7 @@ webURL = "https://t3.example.com"
 		t.Fatal(err)
 	}
 	if cfg.Listen != "127.0.0.1:3775" || cfg.BasePath != "/threads/" || cfg.PublicOrigin != "https://deck.example.com" ||
-		cfg.Threads.WindowDays != 3 || *cfg.Threads.QuietMinutes != 10 || cfg.Threads.RefreshConcurrency != 2 ||
+		cfg.Threads.WindowDays != 3 || *cfg.Threads.QuietMinutes != 10 || *cfg.Threads.SummaryIntervalMinutes != 360 || cfg.Threads.RefreshConcurrency != 2 ||
 		cfg.Threads.CallsPerHour != 60 || cfg.Threads.SummaryRole != "light" ||
 		!reflect.DeepEqual(cfg.Threads.SummaryRoles, []string{"light", "standard", "deep"}) || cfg.Commands.Messages != "t3-thread-messages" || cfg.Threads.Instances[0].Label != "main" {
 		t.Fatalf("defaults: %+v", cfg)

@@ -79,6 +79,8 @@ func TestRefreshBuildsReportAndProbes(t *testing.T) {
 
 func TestEligibilityAndInvalidation(t *testing.T) {
 	d, _ := newTestDeck(t)
+	zero := 0 // the interval has its own tests
+	d.cfg.Threads.SummaryIntervalMinutes = &zero
 	refreshAndProbe(d, d.cfg.Threads.Instances[0])
 
 	// The fixture's last activity is 09:00 and the clock 12:00, so every
@@ -332,6 +334,8 @@ func thread(t *testing.T, d *Deck, id string) InventoryThread {
 
 func TestSettlingInvalidatesSummary(t *testing.T) {
 	d, _ := newTestDeck(t)
+	zero := 0
+	d.cfg.Threads.SummaryIntervalMinutes = &zero
 	in := d.cfg.Threads.Instances[0]
 	refreshAndProbe(d, in)
 	var prompts []string
@@ -448,6 +452,88 @@ func TestQuietMinutesZero(t *testing.T) {
 	d.now = func() time.Time { return time.Date(2026, 10, 20, 9, 0, 1, 0, time.UTC) }
 	if got := len(candidateKeys(d)); got != 4 {
 		t.Fatalf("%d candidates", got)
+	}
+}
+
+func TestSummaryInterval(t *testing.T) {
+	d, _ := newTestDeck(t)
+	in := d.cfg.Threads.Instances[0]
+	refreshAndProbe(d, in)
+	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
+		return []byte(validSummary), nil
+	}
+	a1 := thread(t, d, "thread-a1")
+	if err := d.summarizeThread(context.Background(), in, a1, StatusThread{}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The thread changes; it waits for the interval, settled or not.
+	d.mu.Lock()
+	f := d.facts["main"]
+	f.inventory.Threads[0].Bucket = "recently-settled"
+	f.inventory.Threads[0].SettledAt = "2026-10-20T11:00:00Z"
+	d.mu.Unlock()
+	d.now = func() time.Time { return testClock.Add(359 * time.Minute) }
+	if strings.Contains(strings.Join(candidateKeys(d), ","), "thread-a1") {
+		t.Fatal("a thread was queued within the summary interval")
+	}
+	d.now = func() time.Time { return testClock.Add(360 * time.Minute) }
+	if !strings.Contains(strings.Join(candidateKeys(d), ","), "thread-a1") {
+		t.Fatal("a changed thread was not queued after the summary interval")
+	}
+}
+
+func TestSummaryIntervalCountsFailures(t *testing.T) {
+	d, _ := newTestDeck(t)
+	in := d.cfg.Threads.Instances[0]
+	refreshAndProbe(d, in)
+	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
+		return nil, errors.New("model down")
+	}
+	a1 := thread(t, d, "thread-a1")
+	if err := d.summarizeThread(context.Background(), in, a1, StatusThread{}, ""); err == nil {
+		t.Fatal("a failing model call succeeded")
+	}
+
+	// The same basis is retried after its backoff.
+	d.now = func() time.Time { return testClock.Add(15 * time.Minute) }
+	if !strings.Contains(strings.Join(candidateKeys(d), ","), "thread-a1") {
+		t.Fatal("a failed attempt was not retried after its backoff")
+	}
+
+	// A changed thread waits for the interval after the failed attempt.
+	d.mu.Lock()
+	f := d.facts["main"]
+	f.inventory.Threads[0].Bucket = "recently-settled"
+	f.inventory.Threads[0].SettledAt = "2026-10-20T11:00:00Z"
+	d.mu.Unlock()
+	if strings.Contains(strings.Join(candidateKeys(d), ","), "thread-a1") {
+		t.Fatal("a changed thread was queued within the interval after a failure")
+	}
+	// A job queued before the change checks the interval when it runs.
+	calls := 0
+	d.runModel = func(ctx context.Context, m ModelConfig, prompt string) ([]byte, error) {
+		calls++
+		return []byte(strings.Replace(validSummary, `"verdict": null`, `"verdict": "follow-up"`, 1)), nil
+	}
+	settled := thread(t, d, "thread-a1")
+	if err := d.summarizeThread(context.Background(), in, settled, StatusThread{}, ""); !errors.Is(err, errInterval) || calls != 0 {
+		t.Fatalf("a queued job within the interval: %v, %d calls", err, calls)
+	}
+	if err := d.summarizeThread(context.Background(), in, settled, StatusThread{}, summaryRole); err != nil || calls != 1 {
+		t.Fatalf("a refresh by hand runs at once: %v, %d calls", err, calls)
+	}
+	// The refresh by hand was an attempt too; the next change waits again.
+	d.mu.Lock()
+	f.inventory.Threads[0].SettledAt = "2026-10-20T11:30:00Z"
+	d.mu.Unlock()
+	d.now = func() time.Time { return testClock.Add(374 * time.Minute) }
+	if strings.Contains(strings.Join(candidateKeys(d), ","), "thread-a1") {
+		t.Fatal("a refresh by hand did not restart the interval")
+	}
+	d.now = func() time.Time { return testClock.Add(375 * time.Minute) }
+	if !strings.Contains(strings.Join(candidateKeys(d), ","), "thread-a1") {
+		t.Fatal("a changed thread was not queued after the summary interval")
 	}
 }
 
@@ -588,6 +674,19 @@ func TestPruneForgetsOldThreads(t *testing.T) {
 	}
 }
 
+func TestPruneKeepsEntriesForTheInterval(t *testing.T) {
+	d, _ := newTestDeck(t)
+	interval := 15 * 24 * 60 // longer than the window
+	d.cfg.Threads.SummaryIntervalMinutes = &interval
+	if err := d.cache.put("main/gone-old", CacheEntry{AttemptedAt: testClock.Add(-10 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	refreshAndProbe(d, d.cfg.Threads.Instances[0])
+	if _, ok := d.cache.get("main/gone-old"); !ok {
+		t.Error("an entry within the summary interval was pruned")
+	}
+}
+
 func TestBudgetRequeueIsAtomic(t *testing.T) {
 	d, _ := newTestDeck(t)
 	refreshAndProbe(d, d.cfg.Threads.Instances[0])
@@ -701,6 +800,8 @@ func TestAverageOverAllInstances(t *testing.T) {
 
 func TestSlowProbeCannotReplaceANewerRead(t *testing.T) {
 	d, _ := newTestDeck(t)
+	zero := 0 // the interval has its own tests
+	d.cfg.Threads.SummaryIntervalMinutes = &zero
 	in := d.cfg.Threads.Instances[0]
 	dir := t.TempDir()
 	release := filepath.Join(dir, "release")
@@ -1206,6 +1307,8 @@ func TestRefreshAllHonoursConcurrencyAndBudget(t *testing.T) {
 
 func TestOneShotRoleAndAutomaticDefault(t *testing.T) {
 	d, _ := newTestDeck(t)
+	zero := 0 // the interval has its own tests
+	d.cfg.Threads.SummaryIntervalMinutes = &zero
 	in := d.cfg.Threads.Instances[0]
 	refreshAndProbe(d, in)
 	d.models["deep"] = []ModelConfig{{Provider: "anthropic", Model: "deep-model", Transport: "cli"}}

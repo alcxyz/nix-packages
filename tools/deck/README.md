@@ -32,8 +32,10 @@ preserved when Refresh now queues the default role.
 Each thread that needs one gets a summary, cached in
 `$XDG_STATE_HOME/deck/threads/summaries.json` against the thread's message
 revision, bucket and settle time. A thread is summarised again only when one
-of those changes and it has been quiet for `quietMinutes` (0 for no wait; it
-need not wait once settled), by one model call through `summaryRole`
+of those changes, it has been quiet for `quietMinutes` (0 for no wait; it
+need not wait once settled) and its last attempt, failed or not, is at least
+`summaryIntervalMinutes` old (default 360, so at most four automatic attempts
+a day for a thread that keeps changing; settled threads wait too), by one model call through `summaryRole`
 (default `light`) from `$XDG_CONFIG_HOME/llm/config.toml` (the format devlog
 reads; only CLI transports are used), trying its backups in turn on failure. A failed
 command or model call is retried after 15 minutes, doubling up to six hours;
@@ -42,8 +44,8 @@ A worker runs `refreshConcurrency` calls at a time within `callsPerHour`.
 Beside each thread's **Refresh summary** button, a role picker offers usable
 roles from `summaryRoles` (default `light`, `standard`, `deep`). The selected
 role applies to that refresh only; automatic summaries after a thread changes
-use `summaryRole`. Refresh summary and Refresh now bypass the quiet period
-and retry backoff, while still waiting for concurrency and call budget.
+use `summaryRole`. Refresh summary and Refresh now bypass the quiet period,
+summary interval and retry backoff (and, being attempts, restart the interval), while still waiting for concurrency and call budget.
 Settled threads the facts call done or left for you, and accepted ones, need
 no summary.
 
@@ -89,6 +91,7 @@ group = "deck-users"
 [threads]
 windowDays = 3           # default
 quietMinutes = 10        # default; 0 for no quiet period
+summaryIntervalMinutes = 360 # default; least time between automatic attempts at a changed thread
 refreshConcurrency = 2   # default
 callsPerHour = 60        # default
 summaryRole = "light"    # default role for automatic summaries and Refresh now
