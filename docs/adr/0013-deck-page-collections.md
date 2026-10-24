@@ -82,13 +82,21 @@ and proposals that outlive a work session, and nothing in them depends on T3.
   from its configuration, so no collection can claim a path the proxy routes
   to the dashboard. It serves its own static assets, such as the index
   stylesheet, outside those paths, so its pages do not depend on the
-  dashboard process. A dashboard process can turn its collections off.
+  dashboard process, and reserves that asset path from collection names as
+  well. A dashboard process can turn its collections off.
 - **The two run apart.** The pages process runs on a host that stays up; the
   dashboard stays beside T3. The authenticating proxy routes the dashboard
   views' paths (such as the thread dashboard's base path) to the dashboard
   process and every other path to the pages process. Both keep verifying the
   forwarded token themselves, with the same issuer, audience, group and
   content security policy.
+- **One origin, one trust boundary.** Both processes share the public origin,
+  so links stay stable and one sign-in covers both. A page's script can
+  therefore act on the dashboard as the signed-in operator. The served branch,
+  everyone who can push to it, the sync process and the host running the pages
+  process are inside the dashboard's trust boundary, as page bundles already
+  were as trusted application content. The served branch changes only through
+  reviewed pull requests, and the sync credential is read-only.
 - **An image of the pages mode** is built from the Nix package, so a cluster
   can run it without a Nix toolchain.
 
@@ -100,6 +108,11 @@ and proposals that outlive a work session, and nothing in them depends on T3.
 - **Object storage as the content source.** Rejected: objects have no review
   or history, Deck would need a storage client and credentials, and publishing
   would still need its own tool.
+- **A separate origin for the collections.** Would keep page script away from
+  the dashboard, but needs its own hostname, certificate and proxy client, and
+  changes existing page links. Not chosen: the authenticating proxy in front
+  of both already sees and could forge all dashboard traffic, so the pages
+  host adds little to what the dashboard already trusts.
 - **A generic static server for the collections.** Rejected: it would drop
   Deck's own token check, generated indexes, metadata handling and content
   confinement, or have to reimplement them.
