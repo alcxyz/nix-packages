@@ -1,0 +1,25 @@
+{{define "backlog-row"}}
+<li class="row" data-key="{{.Key}}" data-title="{{.Title}} {{.Ref}}" data-project="{{.Repo}}" data-prefix="{{.LaneLabel}}" data-next="{{.Next}}" data-idle="{{.IdleDays}}" data-updated="{{.UpdatedAt}}">
+<details data-key="{{.Key}}">
+  <summary>
+    {{if .URL}}<a class="title" href="{{.URL}}" rel="noreferrer" target="_blank">{{.Title}}</a>{{else}}<span class="title">{{.Title}}</span>{{end}}
+    <span class="chip">{{.Ref}}</span>
+    <span class="chip">{{.LaneLabel}}</span>
+    {{range .Flags}}<span class="badge stale">{{.}}</span>{{end}}
+    {{if .Suggestion}}<span class="badge owner-user">{{.Suggestion}}</span>{{end}}
+    {{if .Next}}<span class="next">Next: {{.Next}}</span>{{end}}
+  </summary>
+  <div class="body">
+    <p class="meta">
+      <span>idle {{.Idle}}</span>
+      {{if .Author}}<span>by {{.Author}}</span>{{end}}
+      {{if .Checks}}<span>{{.Checks}}</span>{{end}}
+      {{if .Owner}}<span>owner {{.Owner}}</span>{{end}}
+      {{if .Thread}}<span>thread: {{.Thread}}</span>{{end}}
+    </p>
+    {{if .Links}}<p>{{range .Links}}{{if .URL}}<a href="{{.URL}}" rel="noreferrer" target="_blank">{{.Text}}</a>{{else}}{{.Text}}{{end}} {{end}}</p>{{end}}
+    {{if .Related}}<p><b>Related</b></p><ul>{{range .Related}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  </div>
+</details>
+</li>
+{{end}}

@@ -46,10 +46,10 @@ to the dashboard process's view.
     deck checks every reference against the inventory's ref pattern
     (`OWNER/REPO#N`, or `gh:OWNER/REPO#N`), never starting with a dash, and
     passes each as its own argv entry.
-- **Shortlist.** Only the skill's overview shortlist gets verdicts: up to
-  `maybeDone` (24) issues in the `close` lane or flagged
-  `untouched-since-merge` or `related-closed`, in inventory order, then up to
-  `stale` (12) other `stale` issues, idlest first; about 36 at most. Every
+- **Shortlist.** Only the skill's overview shortlist gets verdicts: up to 24
+  issues in the `close` lane, or flagged `untouched-since-merge` or
+  `related-closed` and not in the `inflight` lane, in inventory order, then up
+  to 12 other `stale` issues, idlest first; about 36 at most. Every
   other issue, and every pull request, shows facts only. The limits are
   deck's, as the call budget is: they bound cost, not what the facts say.
 - **Verdicts are cached per issue.** One model call per shortlisted issue

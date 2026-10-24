@@ -14,7 +14,9 @@
   const newOnly = document.getElementById("f-new");
 
   // Storage may be denied; the page then works without a visit marker.
-  const visitKey = "deck.lastVisit";
+  // Each view keeps its own marker, so a visit to one does not mark the
+  // other as seen.
+  const visitKey = document.body.dataset.visitKey || "deck.lastVisit";
   const stored = () => {
     try {
       return Date.parse(localStorage.getItem(visitKey) || "") || 0;

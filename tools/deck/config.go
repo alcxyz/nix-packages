@@ -22,6 +22,24 @@ type Config struct {
 	Auth         AuthConfig     `toml:"auth"`
 	Threads      ThreadsConfig  `toml:"threads"`
 	Commands     CommandsConfig `toml:"commands"`
+	// Backlog is the optional backlog view (ADR-0014); nil leaves it off,
+	// with no route under its path.
+	Backlog *BacklogConfig `toml:"backlog"`
+}
+
+// BacklogConfig configures the backlog view: where it is served and the
+// adapter command that prints the inventory (nix-config ADR-0093).
+type BacklogConfig struct {
+	BasePath        string                `toml:"basePath"`
+	IntervalMinutes int                   `toml:"intervalMinutes"`
+	TimeoutMinutes  int                   `toml:"timeoutMinutes"`
+	Commands        BacklogCommandsConfig `toml:"commands"`
+}
+
+// BacklogCommandsConfig names the backlog adapter commands. They have no
+// default: the consumer's wrapper chooses the scope and the credentials.
+type BacklogCommandsConfig struct {
+	Inventory string `toml:"inventory"`
 }
 
 type AuthConfig struct {
@@ -105,20 +123,9 @@ func (c *Config) normalize() error {
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		return fmt.Errorf("listen %q: %w", c.Listen, err)
 	}
-	if c.BasePath == "" {
-		c.BasePath = "/threads/"
-	}
-	if !strings.HasPrefix(c.BasePath, "/") {
-		c.BasePath = "/" + c.BasePath
-	}
-	if !strings.HasSuffix(c.BasePath, "/") {
-		c.BasePath += "/"
-	}
-	if !basePathRE.MatchString(c.BasePath) {
-		return fmt.Errorf("basePath %q may hold only letters, digits and . _ ~ - in its segments", c.BasePath)
-	}
-	if c.BasePath == "/healthz/" {
-		return errors.New("basePath must not be /healthz/")
+	var err error
+	if c.BasePath, err = normalizeBasePath("basePath", c.BasePath, "/threads/"); err != nil {
+		return err
 	}
 	if c.ContentDir == "" {
 		dir := os.Getenv("XDG_DATA_HOME")
@@ -209,6 +216,12 @@ func (c *Config) normalize() error {
 		c.Commands.Ack = "t3-thread-overview-ack"
 	}
 
+	if c.Backlog != nil {
+		if err := c.Backlog.normalize(c.BasePath); err != nil {
+			return err
+		}
+	}
+
 	if len(c.Threads.Instances) == 0 {
 		return errors.New("at least one [[threads.instance]] is required")
 	}
@@ -233,6 +246,51 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("threads.instance %q: webURL %q must be an http or https URL", in.Name, in.WebURL)
 		}
 		in.WebURL = strings.TrimRight(in.WebURL, "/")
+	}
+	return nil
+}
+
+// normalizeBasePath adds the slashes a base path needs and checks it.
+func normalizeBasePath(name, p, def string) (string, error) {
+	if p == "" {
+		p = def
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	if !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	if !basePathRE.MatchString(p) {
+		return "", fmt.Errorf("%s %q may hold only letters, digits and . _ ~ - in its segments", name, p)
+	}
+	if p == "/healthz/" {
+		return "", fmt.Errorf("%s must not be /healthz/", name)
+	}
+	return p, nil
+}
+
+// normalize fills the backlog view's defaults. Its path must not overlap
+// the thread dashboard's, so each view keeps its own namespace.
+func (b *BacklogConfig) normalize(threadsBase string) error {
+	var err error
+	if b.BasePath, err = normalizeBasePath("backlog.basePath", b.BasePath, "/backlog/"); err != nil {
+		return err
+	}
+	if strings.HasPrefix(b.BasePath, threadsBase) || strings.HasPrefix(threadsBase, b.BasePath) {
+		return fmt.Errorf("backlog.basePath %q must not overlap basePath %q", b.BasePath, threadsBase)
+	}
+	if b.IntervalMinutes == 0 {
+		b.IntervalMinutes = 15
+	}
+	if b.TimeoutMinutes == 0 {
+		b.TimeoutMinutes = 5
+	}
+	if b.IntervalMinutes < 1 || b.TimeoutMinutes < 1 {
+		return errors.New("backlog.intervalMinutes and backlog.timeoutMinutes must be at least 1")
+	}
+	if b.Commands.Inventory == "" {
+		return errors.New("backlog.commands.inventory is required: the command that prints the backlog inventory")
 	}
 	return nil
 }

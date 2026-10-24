@@ -1,0 +1,29 @@
+{
+ "generatedAt": "2026-10-20T11:00:00Z",
+ "user": "example-agent",
+ "staleDays": 45,
+ "mergedDays": 60,
+ "scope": {"kind": "all", "groups": [], "repos": [], "missing": ["gh:example/gone"]},
+ "sources": {"forgejo": "https://git.example.com", "github": "error: gh api: HTTP 403", "threads": "ok", "related": "ok", "branches": "skipped"},
+ "totals": {},
+ "repos": [],
+ "issues": [
+  {"ref": "example/app#1", "forge": "forgejo", "repo": "example/app", "number": 1, "url": "https://git.example.com/example/app/issues/1", "title": "Ship the importer", "author": "example-agent", "ageDays": 13, "idleDays": 3, "updatedAt": "2026-10-17T12:00:00Z", "comments": 1, "labels": [], "milestone": null, "assignees": [], "checks": {"done": 3, "total": 3}, "status": null, "openPrs": [], "mergedPrs": [{"ref": "example/app#9", "url": "https://git.example.com/example/app/pulls/9", "closes": true, "mergedAt": "2026-10-15T10:00:00Z"}], "thread": null, "related": [], "lane": "close", "flags": []},
+  {"ref": "example/app#2", "forge": "forgejo", "repo": "example/app", "number": 2, "url": "https://git.example.com/example/app/issues/2", "title": "Fix <script>alert(1)</script> in titles", "author": "example-agent", "ageDays": 13, "idleDays": 3, "updatedAt": "2026-10-17T12:00:00Z", "comments": 1, "labels": [], "milestone": null, "assignees": [], "checks": null, "status": null, "openPrs": [], "mergedPrs": [{"ref": "example/app#10", "url": "javascript:alert(1)", "closes": false, "mergedAt": "2026-10-10T10:00:00Z"}], "thread": null, "related": [], "lane": "active", "flags": ["untouched-since-merge", "mentioned-by-merged-pr"]},
+  {"ref": "example/lib#3", "forge": "forgejo", "repo": "example/lib", "number": 3, "url": "https://git.example.com/example/lib/issues/3", "title": "Held by a thread", "author": "example-agent", "ageDays": 13, "idleDays": 3, "updatedAt": "2026-10-17T12:00:00Z", "comments": 1, "labels": [], "milestone": null, "assignees": [], "checks": null, "status": null, "openPrs": [], "mergedPrs": [], "thread": {"threadId": "thread-a1", "title": "Lib work", "bucket": "unsettled", "status": "running"}, "related": [], "lane": "inflight", "flags": ["related-closed"]},
+  {"ref": "example/lib#4", "forge": "forgejo", "repo": "example/lib", "number": 4, "url": "https://git.example.com/example/lib/issues/4", "title": "Old idea", "author": "example-agent", "ageDays": 100, "idleDays": 90, "updatedAt": "2026-07-22T12:00:00Z", "comments": 1, "labels": [], "milestone": null, "assignees": [], "checks": null, "status": {"date": "2026-07-01", "ageDays": 110, "owner": "user", "next": "decide whether to keep it"}, "openPrs": [], "mergedPrs": [], "thread": null, "related": ["other/tool#5"], "lane": "stale", "flags": []},
+  {"ref": "example/lib#6", "forge": "forgejo", "repo": "example/lib", "number": 6, "url": "https://git.example.com/example/lib/issues/6", "title": "Older idea", "author": "example-agent", "ageDays": 130, "idleDays": 120, "updatedAt": "2026-06-22T12:00:00Z", "comments": 0, "labels": [], "milestone": null, "assignees": [], "checks": null, "status": null, "openPrs": [], "mergedPrs": [], "thread": null, "related": [], "lane": "stale", "flags": []},
+  {"ref": "gh:example/site#7", "forge": "github", "repo": "example/site", "number": 7, "url": "javascript:alert(2)", "title": "Current work", "author": "example-agent", "ageDays": 13, "idleDays": 3, "updatedAt": "2026-10-17T12:00:00Z", "comments": 1, "labels": [], "milestone": null, "assignees": [], "checks": null, "status": null, "openPrs": [], "mergedPrs": [], "thread": null, "related": [], "lane": "active", "flags": []},
+  {"ref": "example/app#8", "forge": "forgejo", "repo": "example/app", "number": 8, "url": "https://git.example.com/example/app/issues/8", "title": "Dependency dashboard", "author": "renovate", "ageDays": 13, "idleDays": 3, "updatedAt": "2026-10-17T12:00:00Z", "comments": 0, "labels": [], "milestone": null, "assignees": [], "checks": null, "status": null, "openPrs": [], "mergedPrs": [], "thread": null, "related": [], "lane": "dashboard", "flags": []}
+ ],
+ "prs": [
+  {"ref": "example/app#11", "forge": "forgejo", "repo": "example/app", "number": 11, "url": "https://git.example.com/example/app/pulls/11", "title": "Add the importer", "author": "example-agent", "kind": "own", "draft": false, "base": "dev", "head": "abcdef123456", "mergeable": true, "ci": "success", "review": "head", "reviewDecision": null, "issues": ["example/app#1"], "ageDays": 2, "idleDays": 1, "updatedAt": "2026-10-19T12:00:00Z", "thread": null, "related": [], "lane": "ready", "flags": []},
+  {"ref": "gh:example/site#12", "forge": "github", "repo": "example/site", "number": 12, "url": "https://github.com/example/site/pull/12", "title": "Update dependency x", "author": "renovate[bot]", "kind": "bot", "draft": false, "base": "main", "head": "123456abcdef", "mergeable": true, "ci": "pending", "review": "n/a", "reviewDecision": null, "issues": [], "ageDays": 1, "idleDays": 1, "updatedAt": "2026-10-19T12:00:00Z", "thread": null, "related": [], "lane": "renovate", "flags": []}
+ ],
+ "related": [
+  {"ref": "other/tool#5", "forge": "forgejo", "repo": "other/tool", "number": 5, "pulledBy": ["example/lib#4"], "kind": "issue", "state": "closed", "title": "Tool support <b>done</b>", "updatedAt": "2026-09-01T00:00:00Z", "closedAt": "2026-09-01T00:00:00Z"}
+ ],
+ "branches": [],
+ "branchesTruncated": [],
+ "branchScan": []
+}

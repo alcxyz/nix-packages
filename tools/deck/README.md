@@ -1,7 +1,9 @@
 # deck
 
 Deck also serves operator-authored interactive briefings in read-only page
-collections. The root index links to the thread dashboard and each collection.
+collections, and optionally a live backlog view (below). The root index links
+to the thread dashboard, the backlog view when configured, and each
+collection.
 See [ADR-0013](../../docs/adr/0013-deck-page-collections.md) for content ownership.
 
 A live web dashboard of T3 Code threads: which ones wait on you, which have
@@ -117,6 +119,37 @@ roles retain configuration order, with duplicates removed, and must resolve
 to at least one usable no-tools entry of the shared LLM configuration.
 
 Thread links are `{webURL}/{environmentId}/{threadId}`.
+
+## Backlog view
+
+With a `[backlog]` table, deck also serves a live view of the backlog
+overview at `backlog.basePath` (default `/backlog/`), linked from the root
+index. See [ADR-0014](../../docs/adr/0014-deck-backlog-view.md). Without the
+table it registers nothing under that path, which then belongs to the page
+collections like any other.
+
+deck holds no forge credentials. It runs one adapter command, with no
+arguments, that prints the backlog inventory JSON (nix-config ADR-0093) for
+the consumer's chosen scope and credentials, every `intervalMinutes` under a
+`timeoutMinutes` deadline, and when **Refresh now** is pressed. A failed or
+slow run keeps the last good facts on the page with their time and the
+error.
+
+The page lists the overview skill's shortlist first: up to 24 issues that may
+be done (in the close lane, or flagged `untouched-since-merge` or
+`related-closed` and not in the `inflight` lane), then up to 12
+other stale issues, idlest first. Pull requests follow by lane, then every
+other issue, collapsed. Suggested actions are shown, never performed.
+
+```toml
+[backlog]
+basePath = "/backlog/"   # default; must not overlap basePath
+intervalMinutes = 15     # default
+timeoutMinutes = 5       # default
+
+[backlog.commands]       # required: deck has no default
+inventory = "deck-backlog-inventory"
+```
 
 ## Authentication
 

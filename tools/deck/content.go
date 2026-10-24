@@ -35,7 +35,9 @@ type CollectionView struct {
 }
 
 type LibraryView struct {
-	BasePath    string
+	BasePath string
+	// BacklogPath is the backlog view's path, empty when it is off.
+	BacklogPath string
 	Collections []CollectionView
 }
 
@@ -221,6 +223,9 @@ func (s *Server) contentCollectionAvailable(name string) bool {
 	if !contentSlugRE.MatchString(name) || name == "healthz" {
 		return false
 	}
+	if s.deck.cfg.Backlog != nil && strings.HasPrefix(s.deck.cfg.Backlog.BasePath, "/"+name+"/") {
+		return false
+	}
 	if base == "/" {
 		return name != "static" && name != "fragment" && name != "actions"
 	}
@@ -261,6 +266,9 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/" {
 		view := LibraryView{BasePath: s.deck.cfg.BasePath}
+		if s.deck.cfg.Backlog != nil {
+			view.BacklogPath = s.deck.cfg.Backlog.BasePath
+		}
 		if root != nil {
 			entries, err := osReadContentDir(root)
 			if err != nil {

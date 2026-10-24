@@ -80,6 +80,17 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	if base != "/" {
 		app.Handle("GET "+base[:len(base)-1], http.RedirectHandler(base, http.StatusMovedPermanently))
 	}
+	// The backlog view's routes exist only when it is configured, so a
+	// process without it leaves its path to the content library.
+	backlogBase := ""
+	if d.backlog != nil {
+		backlogBase = d.cfg.Backlog.BasePath
+		app.HandleFunc("GET "+backlogBase+"{$}", s.backlogPage)
+		app.HandleFunc("GET "+backlogBase+"fragment", s.backlogFragment)
+		app.Handle("GET "+backlogBase+"static/", http.StripPrefix(backlogBase+"static/", http.FileServerFS(static)))
+		app.HandleFunc("POST "+backlogBase+"actions/refresh-all", s.backlogRefresh)
+		app.Handle("GET "+backlogBase[:len(backlogBase)-1], http.RedirectHandler(backlogBase, http.StatusMovedPermanently))
+	}
 
 	// Reserve the dashboard namespace, including its method errors. Content
 	// dispatch avoids adding wildcard patterns that conflict with custom bases.
@@ -89,7 +100,7 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 			return
 		}
 		_, pattern := app.Handler(r)
-		reserved := base != "/" && (r.URL.Path == strings.TrimSuffix(base, "/") || strings.HasPrefix(r.URL.Path, base))
+		reserved := (base != "/" && inNamespace(r.URL.Path, base)) || (backlogBase != "" && inNamespace(r.URL.Path, backlogBase))
 		if pattern != "" || reserved || (base == "/" && strings.HasPrefix(r.URL.Path, "/actions/")) {
 			app.ServeHTTP(w, r)
 			return
@@ -108,6 +119,11 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	return securityHeaders(root), nil
 }
 
+// inNamespace reports whether path is base or below it.
+func inNamespace(path, base string) bool {
+	return path == strings.TrimSuffix(base, "/") || strings.HasPrefix(path, base)
+}
+
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -124,7 +140,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) render(w http.ResponseWriter, name string, v PageView) {
+func (s *Server) render(w http.ResponseWriter, name string, v any) {
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, name, v); err != nil {
 		s.log.Error("render failed", "template", name, "err", err.Error())
@@ -147,11 +163,30 @@ func (s *Server) fragment(w http.ResponseWriter, r *http.Request) {
 
 // done answers an action: a script gets 204, a plain form a redirect back.
 func (s *Server) done(w http.ResponseWriter, r *http.Request) {
+	s.doneAt(w, r, s.deck.cfg.BasePath)
+}
+
+func (s *Server) doneAt(w http.ResponseWriter, r *http.Request, page string) {
 	if r.Header.Get("X-Deck-Fetch") == "1" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, s.deck.cfg.BasePath, http.StatusSeeOther)
+	http.Redirect(w, r, page, http.StatusSeeOther)
+}
+
+func (s *Server) backlogPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "backlog.html", s.deck.backlog.view(s.deck.cfg.Backlog.BasePath))
+}
+
+func (s *Server) backlogFragment(w http.ResponseWriter, r *http.Request) {
+	s.render(w, "backlog-content", s.deck.backlog.view(s.deck.cfg.Backlog.BasePath))
+}
+
+// backlogRefresh asks for the inventory now; the page shows it once read.
+func (s *Server) backlogRefresh(w http.ResponseWriter, r *http.Request) {
+	s.deck.backlog.requestRefresh()
+	s.log.Info("backlog refresh requested")
+	s.doneAt(w, r, s.deck.cfg.Backlog.BasePath)
 }
 
 // formThread reads and checks the instance and thread of an action.

@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="{{.BasePath}}static/library.css">
 </head>
 <body class="lib">
-<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a></nav></header>
+<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a>{{if .BacklogPath}} <a href="{{.BacklogPath}}">Backlog</a>{{end}}</nav></header>
 <main class="lib-main">
 <header class="lib-head">
   <h1>Deck</h1>
@@ -18,6 +18,11 @@
   <li class="lib-card lib-dashboard">
     <a class="lib-cover" href="{{.BasePath}}"><span class="lib-kicker">Dashboard</span><h2>Threads</h2><p>Which threads wait on you, have stalled or are ready to settle.</p></a>
   </li>
+{{if .BacklogPath}}
+  <li class="lib-card lib-dashboard">
+    <a class="lib-cover" href="{{.BacklogPath}}"><span class="lib-kicker">Dashboard</span><h2>Backlog</h2><p>Which issues may be done or have gone stale, and which pull requests are ready.</p></a>
+  </li>
+{{end}}
 {{range .Collections}}
   <li class="lib-card">
     <a class="lib-cover" href="{{.URL}}"><span class="lib-kicker">Collection</span><h2>{{.Title}}</h2><p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}</p></a>

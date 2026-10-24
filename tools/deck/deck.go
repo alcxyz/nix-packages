@@ -108,6 +108,9 @@ type Deck struct {
 	refreshCh  map[string]chan struct{}
 	refreshAll map[string]bool
 	wake       chan struct{}
+
+	// backlog is the backlog view, nil unless configured.
+	backlog *Backlog
 }
 
 func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, roleErr error, log *slog.Logger) *Deck {
@@ -136,6 +139,9 @@ func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, r
 		d.refreshLock[in.Name] = make(chan struct{}, 1)
 		d.refreshCh[in.Name] = make(chan struct{}, 1)
 	}
+	if cfg.Backlog != nil {
+		d.backlog = newBacklog(*cfg.Backlog, log)
+	}
 	return d
 }
 
@@ -156,6 +162,13 @@ func (d *Deck) run(ctx context.Context) {
 		defer d.work.Done()
 		d.dispatch(ctx)
 	}()
+	if d.backlog != nil {
+		d.work.Add(1)
+		go func() {
+			defer d.work.Done()
+			d.backlog.loop(ctx)
+		}()
+	}
 }
 
 // wait waits up to timeout for the background work to end after its
