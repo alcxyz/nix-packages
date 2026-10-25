@@ -292,6 +292,7 @@ func runDeploy(args []string) int {
 		if d.jsonPath != "" {
 			writeFailedJSON(d.jsonPath)
 		}
+		removeReportTemps()
 		fmt.Fprintf(os.Stderr, "deploy: interrupted by %v\n", received)
 		status := 130
 		if received == syscall.SIGTERM {

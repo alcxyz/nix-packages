@@ -9,6 +9,16 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.18.3 (2026-10-25)
+
+- An interrupt removes the temporary files of reports still being written
+  before it exits, instead of leaving `.nixfleet-report-*` files beside the
+  report.
+- Note for 0.18.1 and later, not new here: atomic publication replaces the
+  report by rename, so it needs write access to the report's directory and
+  gives the report a new inode. Since 0.18.1, a writable report in a
+  directory the run cannot write is no longer updated.
+
 ## 0.18.2 (2026-10-22)
 
 - Atomic report publication refuses existing access ACLs and ACLs inherited

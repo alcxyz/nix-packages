@@ -419,3 +419,17 @@ func TestReportPublicationFailureKeepsDestination(t *testing.T) {
 		t.Fatalf("failed publication left temporary files: %v, %v", entries, err)
 	}
 }
+
+func TestInterruptRemovesReportTemps(t *testing.T) {
+	temp, err := os.CreateTemp(t.TempDir(), ".nixfleet-report-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp.Close()
+	reportTemps.Store(temp.Name(), struct{}{})
+	defer reportTemps.Delete(temp.Name())
+	removeReportTemps()
+	if _, err := os.Stat(temp.Name()); !os.IsNotExist(err) {
+		t.Fatalf("temporary report %s survived the interrupt cleanup: %v", temp.Name(), err)
+	}
+}
