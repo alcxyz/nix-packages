@@ -1,188 +1,143 @@
-/* Library and collection indexes (ADR-0013). The thread dashboard uses deck.css. */
-:root {
-  --bg: #f6f7f9;
-  --fg: #0f1729;
-  --fg-2: #3d4659;
-  --muted: #6b7385;
-  --card: #ffffff;
-  --line: #e4e7ec;
-  --line-strong: #c9ced8;
-  --accent: #2a78d6;
-  --accent-ink: #1c5cab;
-  --accent-soft: #eaf2fc;
-  --hero: #0f1729;
-  --hero-fg: #ffffff;
-  --hero-muted: #aab3c5;
-  --shadow: 0 1px 2px rgba(15, 23, 41, 0.05), 0 8px 24px -12px rgba(15, 23, 41, 0.18);
-}
+/* Library and collection indexes: the index purpose of deck's design
+   (ADR-0015). Colours, type and shared components come from base.css; this
+   sheet lays out the bar, the card grid and the dated page list. */
 
-/* Dark from theme.js (ADR-0013); print stays light. */
-@media screen {
-  :root[data-theme="dark"] {
-    --bg: #0d1017;
-    --fg: #eceef2;
-    --fg-2: #c3c8d2;
-    --muted: #8f97a8;
-    --card: #161a23;
-    --line: #262c38;
-    --line-strong: #39404e;
-    --accent: #3987e5;
-    --accent-ink: #86b6ef;
-    --accent-soft: #17243a;
-    --hero: #1b2232;
-    --hero-fg: #ffffff;
-    --hero-muted: #a3acbf;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  }
-}
-
-* { box-sizing: border-box; }
-body.lib {
-  margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
-}
 .lib a { color: inherit; }
 .lib h1, .lib h2, .lib p, .lib ul { margin: 0; }
 .lib ul { padding: 0; list-style: none; }
-.lib a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
 .lib-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  max-width: 64rem;
+  gap: 1rem;
+  max-width: var(--deck-width);
   margin: 0 auto;
   padding: 1rem 1.5rem;
 }
 .lib-brand { font-weight: 700; letter-spacing: 0.04em; text-decoration: none; }
+.lib-bar nav { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
 .lib-bar nav a {
-  font-size: 0.9rem;
+  font-size: var(--deck-text-sm);
   font-weight: 600;
   text-decoration: none;
-  color: var(--fg-2);
-  padding: 0.35rem 0.8rem;
-  border: 1px solid var(--line-strong);
+  color: var(--deck-text-2);
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--deck-line-strong);
   border-radius: 999px;
 }
-.lib-bar nav a:hover { color: var(--fg); border-color: var(--fg-2); }
+.lib-bar nav a:hover { color: var(--deck-text); border-color: var(--deck-text-2); }
 
-.lib-main { max-width: 64rem; margin: 0 auto; padding: 1rem 1.5rem 4rem; }
-.lib-head { margin: 1.5rem 0 2rem; }
-.lib-head h1 { font-size: 2.4rem; line-height: 1.1; letter-spacing: -0.03em; font-weight: 700; }
-.lib-head p { margin-top: 0.5rem; color: var(--muted); font-size: 1.05rem; }
-.lib-crumbs { display: flex; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.75rem; }
-.lib-crumbs a { color: var(--muted); text-decoration: none; }
-.lib-crumbs a:hover { color: var(--fg); }
-.lib-crumbs a::after { content: "/"; margin-left: 0.5rem; color: var(--line-strong); }
+.lib-main { max-width: var(--deck-width); margin: 0 auto; padding: 1rem 1.5rem 4rem; }
+.lib-head { margin: 1.25rem 0 1.75rem; }
+.lib-head h1 { font-size: var(--deck-text-3xl); line-height: 1.1; letter-spacing: -0.02em; font-weight: 700; }
+.lib-head p { margin-top: 0.5rem; color: var(--deck-muted); font-size: var(--deck-text-lg); }
+.lib-crumbs { display: flex; gap: 0.5rem; font-size: var(--deck-text-sm); color: var(--deck-muted); margin-bottom: 0.75rem; }
+.lib-crumbs a { color: var(--deck-muted); text-decoration: none; }
+.lib-crumbs a:hover { color: var(--deck-text); text-decoration: underline; }
+.lib-crumbs a::after { content: "/"; margin-left: 0.5rem; color: var(--deck-line-strong); }
 
-.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: 1rem; }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.75rem; }
 .lib-card {
   display: flex;
   flex-direction: column;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
-  overflow: hidden;
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
 }
-.lib-cover { display: block; padding: 1.25rem 1.4rem 1.1rem; text-decoration: none; }
-/* Cards clip their overflow, so links inside them draw the focus ring inset. */
-.lib-card a:focus-visible { outline-offset: -3px; border-radius: 12px; }
-.lib-cover:hover h2 { color: var(--accent-ink); }
+.lib-cover { display: block; padding: 1rem 1.1rem 0.9rem; text-decoration: none; border-radius: var(--deck-radius); }
+.lib-card a:focus-visible { outline-offset: -2px; }
+.lib-cover:hover h2 { color: var(--deck-accent-text); }
 .lib-kicker {
   display: block;
-  font-size: 0.72rem;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--accent-ink);
-  margin-bottom: 0.35rem;
+  color: var(--deck-muted);
+  margin-bottom: 0.3rem;
 }
-.lib-cover h2 { font-size: 1.35rem; letter-spacing: -0.015em; }
-.lib-cover p { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
-.lib-dashboard { background: var(--hero); border-color: var(--hero); }
-.lib-dashboard .lib-cover { color: var(--hero-fg); height: 100%; }
-.lib-dashboard .lib-kicker { color: var(--hero-muted); }
-.lib-dashboard .lib-cover p { color: var(--hero-muted); }
-.lib-dashboard .lib-cover:hover h2 { color: var(--hero-fg); text-decoration: underline; }
+.lib-cover h2 { font-size: var(--deck-text-xl); }
+.lib-cover p { color: var(--deck-muted); font-size: var(--deck-text-sm); margin-top: 0.2rem; }
+.lib-dashboard { background: var(--deck-hero); border-color: var(--deck-hero); }
+.lib-dashboard .lib-cover { color: var(--deck-hero-text); height: 100%; }
+.lib-dashboard .lib-cover h2 { color: var(--deck-hero-text); }
+.lib-dashboard .lib-kicker,
+.lib-dashboard .lib-cover p { color: var(--deck-hero-muted); }
+.lib-dashboard .lib-cover:hover h2 { color: var(--deck-hero-text); text-decoration: underline; }
+.lib-dashboard a:focus-visible { outline-color: var(--deck-hero-text); }
 
-.lib-recent { border-top: 1px solid var(--line); padding: 0.4rem 0.6rem 0.6rem; }
-.lib-recent li { display: flex; align-items: baseline; gap: 0.5rem; }
+.lib-recent { border-top: 1px solid var(--deck-line); padding: 0.3rem 0.4rem 0.5rem; }
+.lib-recent li { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.3rem 0; border-radius: var(--deck-radius-sm); }
+.lib-recent li:hover { background: var(--deck-surface-2); }
 .lib-recent a {
   flex: 1;
   min-width: 0;
-  padding: 0.4rem 0.8rem;
-  border-radius: 8px;
-  text-decoration: none;
-  font-size: 0.9rem;
-  font-weight: 500;
+  padding: 0 0.7rem;
+  font-size: var(--deck-text-sm);
   line-height: 1.35;
+  text-decoration: underline;
+  text-decoration-color: var(--deck-line-strong);
+  text-underline-offset: 2px;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
-.lib-recent a:hover { background: var(--accent-soft); color: var(--accent-ink); }
-.lib-recent time { flex: none; font-size: 0.8rem; color: var(--muted); padding-right: 0.8rem; font-variant-numeric: tabular-nums; }
+.lib-recent a:hover { text-decoration-color: currentColor; }
+.lib-recent time { flex: none; font: var(--deck-text-xs) var(--deck-mono); color: var(--deck-muted); padding-right: 0.7rem; font-variant-numeric: tabular-nums; }
 
-.lib-month + .lib-month { margin-top: 2rem; }
+.lib-month + .lib-month { margin-top: 1.75rem; }
 .lib-month h2 {
-  font-size: 0.78rem;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 0.75rem;
+  color: var(--deck-muted);
+  margin-bottom: 0.6rem;
 }
-.lib-list { display: grid; gap: 0.75rem; }
+.lib-list { display: grid; gap: 0.5rem; }
 .lib-entry {
   display: flex;
-  gap: 1.25rem;
+  gap: 1rem;
   align-items: flex-start;
-  padding: 1.1rem 1.3rem;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
+  padding: 0.85rem 1rem;
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
   text-decoration: none;
-  transition: border-color 0.15s;
 }
-.lib-entry:hover { border-color: var(--accent); }
-.lib-entry:hover .lib-entry-title { color: var(--accent-ink); }
+.lib-entry:hover { border-color: var(--deck-line-strong); }
+.lib-entry:hover .lib-entry-title { color: var(--deck-accent-text); text-decoration: underline; }
 .lib-entry time {
   flex: none;
-  width: 3.4rem;
+  width: 3.2rem;
   text-align: center;
-  padding: 0.45rem 0 0.4rem;
-  border-radius: 10px;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-size: 0.72rem;
-  font-weight: 700;
+  padding: 0.4rem 0 0.35rem;
+  border-radius: var(--deck-radius-sm);
+  background: var(--deck-surface-2);
+  color: var(--deck-text-2);
+  font: 700 11px/1.1 var(--deck-mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  line-height: 1.1;
 }
-.lib-entry time b { display: block; font-size: 1.35rem; letter-spacing: -0.02em; }
-.lib-entry-text { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
-.lib-entry-title { font-size: 1.1rem; font-weight: 650; letter-spacing: -0.01em; }
-.lib-entry-summary { color: var(--fg-2); font-size: 0.92rem; line-height: 1.55; }
+.lib-entry time b { display: block; font-size: var(--deck-text-xl); letter-spacing: 0; color: var(--deck-text); }
+.lib-entry-text { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.lib-entry-title { font-size: var(--deck-text-lg); font-weight: 650; }
+.lib-entry-summary { color: var(--deck-text-2); font-size: var(--deck-text-md); line-height: 1.5; }
 
 .lib-empty {
   padding: 2rem;
   text-align: center;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: 14px;
+  color: var(--deck-muted);
+  border: 1px dashed var(--deck-line-strong);
+  border-radius: var(--deck-radius);
 }
 .lib-grid + .lib-empty { margin-top: 1rem; }
 
 @media (max-width: 600px) {
   .lib-bar, .lib-main { padding-left: 1rem; padding-right: 1rem; }
-  .lib-head h1 { font-size: 1.9rem; }
-  .lib-entry { gap: 0.9rem; padding: 0.9rem 1rem; }
+  .lib-head h1 { font-size: var(--deck-text-2xl); }
+  .lib-entry { gap: 0.8rem; padding: 0.8rem 0.9rem; }
   .lib-entry time { width: 2.9rem; }
 }

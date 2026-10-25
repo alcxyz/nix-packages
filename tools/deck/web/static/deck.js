@@ -192,6 +192,22 @@
   [text, project, prefix, newOnly].forEach((el) => el.addEventListener("input", applyFilters));
   sortBy.addEventListener("change", sortRows);
 
+  // Print every row expanded, then close again the ones that were closed.
+  // They are found by key, since a reload during printing replaces the nodes.
+  let closedForPrint = new Set();
+  window.addEventListener("beforeprint", () => {
+    content.querySelectorAll("details[data-key]:not([open])").forEach((d) => {
+      closedForPrint.add(d.dataset.key);
+      d.open = true;
+    });
+  });
+  window.addEventListener("afterprint", () => {
+    content.querySelectorAll("details[data-key]").forEach((d) => {
+      if (closedForPrint.has(d.dataset.key)) d.open = false;
+    });
+    closedForPrint = new Set();
+  });
+
   refreshControls();
   setInterval(() => {
     if (document.visibilityState === "visible") reload();

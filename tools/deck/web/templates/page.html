@@ -6,11 +6,12 @@
 <meta name="color-scheme" content="light dark">
 <title>Threads</title>
 <link rel="stylesheet" href="{{.BasePath}}static/theme.css">
+<link rel="stylesheet" href="{{.BasePath}}static/base.css">
 <link rel="stylesheet" href="{{.BasePath}}static/deck.css">
 <script src="{{.BasePath}}static/theme.js"></script>
 <script src="{{.BasePath}}static/deck.js" defer></script>
 </head>
-<body data-base="{{.BasePath}}">
+<body data-deck="live" data-base="{{.BasePath}}">
 <header class="top">
   {{if ne .BasePath "/"}}<a href="/">Deck</a>{{end}}
   <h1>Threads</h1>

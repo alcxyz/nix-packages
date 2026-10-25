@@ -114,6 +114,8 @@ func TestBacklogPage(t *testing.T) {
 		`data-base="/backlog/"`,
 		`data-visit-key="deck.lastVisit.backlog"`,
 		`src="/backlog/static/deck.js"`,
+		`href="/backlog/static/base.css"`,
+		`data-deck="live"`,
 		`action="actions/refresh-all"`,
 		"Fix &lt;script&gt;alert(1)&lt;/script&gt; in titles",
 		`href="https://git.example.com/example/app/issues/1"`,

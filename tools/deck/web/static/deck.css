@@ -1,101 +1,68 @@
-:root {
-  --bg: #fafaf9;
-  --fg: #1c1917;
-  --muted: #6b6560;
-  --card: #ffffff;
-  --line: #e4e1dc;
-  --chip: #efece7;
-  --accent: #2563eb;
-  --you: #b45309;
-  --agent: #0f766e;
-  --warn: #b91c1c;
-  --new: #fef3c7;
-}
-
-/* Dark from theme.js (ADR-0013); print stays light. */
-@media screen {
-  :root[data-theme="dark"] {
-    --bg: #161514;
-    --fg: #ece9e4;
-    --muted: #a39e96;
-    --card: #1f1e1c;
-    --line: #34312e;
-    --chip: #2c2a27;
-    --accent: #7aa2ff;
-    --you: #f0a35a;
-    --agent: #4fd1c5;
-    --warn: #f87171;
-    --new: #3b3222;
-  }
-}
-
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
-a { color: var(--accent); }
+/* Thread dashboard and backlog view: the live overview purpose of deck's
+   design (ADR-0015). Colours, type and shared components come from base.css;
+   this sheet lays out the header, counts, groups and rows. */
 
 header.top {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--bg);
-  border-bottom: 1px solid var(--line);
-  padding: 0.6rem 1rem;
+  background: var(--deck-bg);
+  border-bottom: 1px solid var(--deck-line);
+  padding: 0.55rem 1rem;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1rem;
+  gap: 0.5rem 0.9rem;
   align-items: center;
 }
-
-header.top h1 { font-size: 1.15rem; margin: 0; }
+header.top > a { font-size: var(--deck-text-sm); color: var(--deck-muted); text-decoration: none; }
+header.top > a:hover { color: var(--deck-text); }
+header.top h1 { font-size: var(--deck-text-lg); margin: 0; }
 
 .filters { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; flex: 1; }
 .filters input[type="search"] { flex: 1 1 14rem; }
-.filters input, select, button {
-  font: inherit;
-  color: inherit;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.3rem 0.5rem;
+.check { white-space: nowrap; color: var(--deck-text-2); font-size: var(--deck-text-sm); display: inline-flex; gap: 0.3rem; align-items: center; }
+
+.notice { width: 100%; margin: 0; color: var(--deck-danger); }
+
+main { padding: 0.5rem 1rem 3rem; max-width: var(--deck-width); margin: 0 auto; }
+
+.overview { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.8rem; margin: 0.6rem 0 0; }
+.overview form { margin: 0; order: 2; }
+.counts { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; flex: 1; }
+.counts li {
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  padding: 0.2rem 0.6rem;
+  color: var(--deck-text-2);
+  font-size: var(--deck-text-sm);
 }
-.check { white-space: nowrap; color: var(--muted); }
-button { cursor: pointer; }
-button.primary { border-color: var(--accent); color: var(--accent); }
-button:disabled { opacity: 0.5; cursor: default; }
+.counts b { font-family: var(--deck-mono); font-variant-numeric: tabular-nums; color: var(--deck-text); margin-right: 0.2rem; }
+.counts li.you b { color: var(--deck-attn); }
+.counts li.stalled b, .counts li.maybe b { color: var(--deck-danger); }
+.counts li.settle b { color: var(--deck-ok); }
 
-.notice { width: 100%; margin: 0; color: var(--warn); }
-
-main { padding: 0.5rem 1rem 3rem; max-width: 72rem; margin: 0 auto; }
-
-.counts { list-style: none; padding: 0; margin: 0.5rem 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.counts li { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.3rem 0.6rem; }
-.counts li.you b { color: var(--you); }
-.counts li.stalled b, .counts li.maybe b { color: var(--warn); }
-
-.meta { color: var(--muted); font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.2rem 0.8rem; margin: 0.3rem 0; }
-.error { color: var(--warn); }
+.meta { color: var(--deck-muted); font-size: var(--deck-text-sm); display: flex; flex-wrap: wrap; gap: 0.2rem 0.8rem; margin: 0.3rem 0; }
+.overview .meta { flex-basis: 100%; order: 3; }
+.meta time { font-family: var(--deck-mono); font-variant-numeric: tabular-nums; }
+.error { color: var(--deck-danger); }
+.empty { color: var(--deck-muted); padding: 1.5rem 0; }
 
 section.group { margin-top: 1.4rem; }
-section.group h2 { font-size: 1.05rem; margin: 0 0 0.4rem; }
-section.group h3 { font-size: 0.9rem; margin: 0.8rem 0 0.3rem; color: var(--muted); display: inline; }
-.n { color: var(--muted); font-weight: normal; font-size: 0.85em; }
-details.sub > summary { cursor: pointer; margin: 0.8rem 0 0.3rem; }
+section.group h2 { font-size: var(--deck-text-base); margin: 0 0 0.4rem; }
+section.group h3 { font-size: var(--deck-text-sm); margin: 0.8rem 0 0.3rem; color: var(--deck-text-2); display: inline-block; }
+.n { color: var(--deck-muted); font-weight: 400; font-family: var(--deck-mono); font-size: 0.9em; }
+details.sub > summary { cursor: pointer; margin: 0.8rem 0 0.3rem; color: var(--deck-text-2); }
 
 ul.rows, .unblockers { list-style: none; padding: 0; margin: 0.3rem 0; }
 li.row {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  margin: 0.3rem 0;
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  margin: 0.25rem 0;
 }
-li.row.new { background: var(--new); }
+/* New since the last visit: an accent bar, not a tint, so status colours stay readable. */
+li.row.new { box-shadow: inset 3px 0 0 var(--deck-accent); }
 li.row > details > summary {
   cursor: pointer;
   padding: 0.45rem 0.7rem;
@@ -104,35 +71,37 @@ li.row > details > summary {
   gap: 0.25rem 0.5rem;
   align-items: baseline;
 }
-li.row .title { font-weight: 600; text-decoration: none; }
-li.row .title:hover { text-decoration: underline; }
-.next { color: var(--muted); flex-basis: 100%; font-size: 0.9rem; }
-.body { padding: 0 0.9rem 0.6rem; border-top: 1px solid var(--line); }
+li.row .title { font-weight: 600; color: var(--deck-text); text-decoration: none; }
+li.row .title:hover { color: var(--deck-accent-text); text-decoration: underline; }
+.next { color: var(--deck-muted); flex-basis: 100%; font-size: var(--deck-text-sm); }
+.body { padding: 0.1rem 0.9rem 0.6rem; border-top: 1px solid var(--deck-line); }
 .body p { margin: 0.4rem 0; }
 .body ul { margin: 0.2rem 0 0.4rem; padding-left: 1.2rem; }
-.warn { color: var(--warn); }
-.settle-line { font-family: ui-monospace, monospace; font-size: 0.85rem; overflow-wrap: anywhere; }
+.body a { overflow-wrap: anywhere; }
+.warn { color: var(--deck-danger); }
+.settle-line { font-family: var(--deck-mono); font-size: var(--deck-text-sm); overflow-wrap: anywhere; }
+.chips .deck-chip { margin: 0 0.3rem 0.2rem 0; white-space: normal; }
 
-.chip, .badge {
-  display: inline-block;
+.progress { font-size: var(--deck-text-xs); color: var(--deck-muted); white-space: nowrap; font-family: var(--deck-mono); font-variant-numeric: tabular-nums; }
+.progress meter {
+  width: 3.5rem;
+  height: 0.4rem;
+  vertical-align: middle;
+  border: 0;
   border-radius: 999px;
-  padding: 0 0.5rem;
-  font-size: 0.8rem;
-  background: var(--chip);
-  color: var(--muted);
+  background: var(--deck-surface-2);
+  box-shadow: inset 0 0 0 1px var(--deck-line);
+  -webkit-appearance: none;
+  appearance: none;
 }
-.chip.inst { border: 1px solid var(--line); }
-.chips .chip { margin: 0 0.3rem 0.2rem 0; }
-.badge.owner-user { color: var(--you); }
-.badge.owner-agent { color: var(--agent); }
-.badge.stale { color: var(--warn); }
-.progress { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
-.progress meter { width: 4rem; height: 0.6rem; vertical-align: middle; }
+.progress meter::-webkit-meter-bar { background: var(--deck-surface-2); border: 0; border-radius: 999px; height: 0.4rem; }
+.progress meter::-webkit-meter-optimum-value { background: var(--deck-accent); border-radius: 999px; }
+.progress meter::-moz-meter-bar { background: var(--deck-accent); border-radius: 999px; }
 
 .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.actions form { margin: 0; }
+.actions form { margin: 0; display: flex; gap: 0.4rem; }
 
-.unblockers > li { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem 0.7rem; margin: 0.3rem 0; overflow-wrap: anywhere; }
+.unblockers > li { background: var(--deck-surface); border: 1px solid var(--deck-line); border-radius: var(--deck-radius); padding: 0.4rem 0.7rem; margin: 0.25rem 0; overflow-wrap: anywhere; }
 .unblockers ul { margin: 0.2rem 0 0; padding-left: 1.2rem; }
 
 @media (max-width: 600px) {
@@ -140,4 +109,14 @@ li.row .title:hover { text-decoration: underline; }
   .filters > * { flex: 1 1 100%; }
   main { padding: 0.4rem 0.5rem 2rem; }
   li.row > details > summary { padding: 0.5rem; }
+}
+
+/* deck.js opens every shown row before printing. The filter bar stays on
+   paper, so a filtered printout says what it leaves out; actions do not. */
+@media print {
+  header.top { position: static; border: 0; padding: 0 0 0.5rem; }
+  .notice, .overview form, .actions, [data-deck-theme] { display: none; }
+  main { padding: 0; max-width: none; }
+  li.row, .unblockers > li { break-inside: avoid; }
+  li.row.new { box-shadow: none; }
 }

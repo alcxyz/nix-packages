@@ -3,11 +3,11 @@
 <details data-key="{{.Key}}">
   <summary>
     {{if .URL}}<a class="title" href="{{.URL}}" rel="noreferrer" target="_blank">{{.Title}}</a>{{else}}<span class="title">{{.Title}}</span>{{end}}
-    <span class="chip">{{.Ref}}</span>
-    <span class="chip">{{.LaneLabel}}</span>
-    {{range .Flags}}<span class="badge stale">{{.}}</span>{{end}}
-    {{if .Suggestion}}<span class="badge owner-user">{{.Suggestion}}</span>{{end}}
-    {{if .VerdictOutdated}}<span class="badge stale" title="the issue or its merged pull requests changed since the verdict">older verdict</span>{{end}}
+    <span class="deck-chip">{{.Ref}}</span>
+    <span class="deck-chip">{{.LaneLabel}}</span>
+    {{range .Flags}}<span class="deck-badge">{{.}}</span>{{end}}
+    {{if .Suggestion}}<span class="deck-badge attn">{{.Suggestion}}</span>{{end}}
+    {{if .VerdictOutdated}}<span class="deck-badge quiet" title="the issue or its merged pull requests changed since the verdict">older verdict</span>{{end}}
     {{if .Next}}<span class="next">Next: {{.Next}}</span>{{end}}
   </summary>
   <div class="body">

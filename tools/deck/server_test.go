@@ -74,6 +74,8 @@ func TestPageEscapesThreadText(t *testing.T) {
 		"<b>27%</b> average progress",
 		`src="/threads/static/deck.js"`,
 		`src="/threads/static/theme.js"`,
+		`href="/threads/static/base.css"`,
+		`data-deck="live"`,
 		"data-deck-theme",
 	} {
 		if !strings.Contains(body, want) {

@@ -1,6 +1,6 @@
 # ADR-0013: Operator-authored page collections in Deck
 
-**Status:** Accepted; content source and pages-only mode amended 2026-10-24; shared colour scheme assets amended 2026-10-25
+**Status:** Accepted; content source and pages-only mode amended 2026-10-24; shared colour scheme assets amended 2026-10-25; shared design stylesheet amended 2026-10-25
 **Date:** 2026-10-22
 **Applies to:** `tools/deck/`
 
@@ -180,3 +180,37 @@ every page, and offers printed to PDF must stay light.
 - A bundle opened outside Deck, or saved without the shared assets, shows its
   light scheme without a toggle.
 - Changing the toggle is a Deck release; bundles need no edit.
+
+## Amendment (2026-10-25): the shared design stylesheet
+
+Tracked in [#661](https://git.alc.xyz/alcxyz/nix-packages/issues/661).
+
+### Context
+
+[ADR-0015](0015-deck-design-system.md) gives deck's views and the bundles one
+design, served as `base.css` beside the theme assets. The previous amendment
+let bundles load only `theme.css` and `theme.js` from outside their own
+directory.
+
+### Decision
+
+- **Bundles may also reference `/static/base.css`**, which carries the design's
+  tokens and shared components. These three files are the only assets a bundle
+  takes from outside its own directory. The content security policy is
+  unchanged: the stylesheet comes from the same origin and has no inline code.
+- **Load order:** `theme.css`, then `base.css`, then the bundle's own
+  stylesheets. `base.css` applies its element rules only to a page that names
+  its purpose with `data-deck` on `<body>`.
+
+### Alternatives considered
+
+- **Copy the tokens into each bundle.** Rejected, as for the theme assets: the
+  copies drift, and the bundle palettes already had.
+
+### Consequences
+
+- A bundle that uses `base.css` needs a deck release that serves it, and
+  shows unstyled tokens on an older deck. Publish such bundles after that
+  release is deployed.
+- Standalone exports and PDF builds of a bundle ship their own copy of
+  `base.css`, since `/static/` exists only on deck.

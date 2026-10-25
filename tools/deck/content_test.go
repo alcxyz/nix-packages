@@ -63,7 +63,7 @@ func TestContentIndexes(t *testing.T) {
 		t.Fatalf("library: %d %s", library.Code, library.Body.String())
 	}
 	body := library.Body.String()
-	for _, want := range []string{`href="/threads/"`, `href="/examples/"`, `href="/notes/"`} {
+	for _, want := range []string{`href="/threads/"`, `href="/examples/"`, `href="/notes/"`, `href="/static/base.css"`, `data-deck="index"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("library missing %s: %s", want, body)
 		}
@@ -305,7 +305,7 @@ func TestContentWithDashboardBases(t *testing.T) {
 			d.cfg.ContentDir = t.TempDir()
 			writeContentPage(t, d.cfg.ContentDir, "notes/example", "Example", "2026-10-01", "")
 			h := contentTestHandler(t, d, nil)
-			for _, p := range []string{base, base + "fragment", base + "static/deck.css", base + "static/deck.js", base + "static/theme.js", "/static/theme.js", "/static/theme.css", "/static/library.css", "/notes/", "/notes/example/", "/healthz"} {
+			for _, p := range []string{base, base + "fragment", base + "static/deck.css", base + "static/deck.js", base + "static/theme.js", "/static/theme.js", "/static/theme.css", "/static/base.css", "/static/library.css", "/notes/", "/notes/example/", "/healthz"} {
 				if rec := get(t, h, p); rec.Code != http.StatusOK {
 					t.Errorf("existing or content route %s: %d", p, rec.Code)
 				}

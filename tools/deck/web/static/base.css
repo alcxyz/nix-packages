@@ -1,0 +1,239 @@
+/* deck's shared design (ADR-0015): tokens, base elements and components for
+   deck's views, its library and page bundles. Load it after theme.css and
+   before the page's own stylesheet. Element rules apply only under
+   <body data-deck="live|index|sheet|slides|tool"> and carry no specificity,
+   so a page's own rules always win. Dark values follow theme.js under
+   @media screen { :root[data-theme="dark"] ... }; print stays light. */
+
+:root {
+  /* Surfaces and text */
+  --deck-bg: #ffffff;
+  --deck-surface: #ffffff;
+  --deck-surface-2: #f4f4f5;
+  --deck-text: #18181b;
+  --deck-text-2: #3f3f46;
+  --deck-muted: #62626b;
+  --deck-line: #e4e4e7;
+  --deck-line-strong: #8b8b94;
+
+  /* One accent for links, actions and selection */
+  --deck-accent: #4f46e5;
+  --deck-on-accent: #ffffff;
+  --deck-accent-text: #4338ca;
+  --deck-accent-soft: #eef0ff;
+
+  /* Status: attention (waits on you), ok (done, accepted), danger (stalled, failed) */
+  --deck-attn: #9a4a00;
+  --deck-attn-soft: #fff3e6;
+  --deck-ok: #0f6b5c;
+  --deck-ok-soft: #e3f5f1;
+  --deck-danger: #b91c1c;
+  --deck-danger-soft: #fdecec;
+
+  /* Dark panels that stay dark in both schemes: dashboard cards, covers */
+  --deck-hero: #18181b;
+  --deck-hero-text: #ffffff;
+  --deck-hero-muted: #b4b4bc;
+
+  /* Chart series, in order */
+  --deck-c1: #4f46e5;
+  --deck-c2: #e0702e;
+  --deck-c3: #159a7a;
+  --deck-c4: #8b8b94;
+
+  /* Type: system fonts only; the content security policy has no font-src */
+  --deck-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --deck-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --deck-text-xs: 12px;
+  --deck-text-sm: 13px;
+  --deck-text-md: 14px;
+  --deck-text-base: 15px;
+  --deck-text-lg: 17px;
+  --deck-text-xl: 20px;
+  --deck-text-2xl: 26px;
+  --deck-text-3xl: 34px;
+
+  /* Space, corners */
+  --deck-space-1: 4px;
+  --deck-space-2: 8px;
+  --deck-space-3: 12px;
+  --deck-space-4: 16px;
+  --deck-space-5: 24px;
+  --deck-space-6: 32px;
+  --deck-radius: 4px;
+  --deck-radius-sm: 3px;
+
+  /* Set per purpose below */
+  --deck-size: var(--deck-text-base);
+  --deck-leading: 1.5;
+  --deck-width: 64rem;
+  --deck-measure: 68ch;
+}
+
+@media screen {
+  :root[data-theme="dark"] {
+    --deck-bg: #0e0e10;
+    --deck-surface: #16161a;
+    --deck-surface-2: #1f1f23;
+    --deck-text: #f4f4f5;
+    --deck-text-2: #d4d4d8;
+    --deck-muted: #9f9fa8;
+    --deck-line: #2c2c31;
+    --deck-line-strong: #6a6a73;
+    --deck-accent: #8b93fb;
+    --deck-on-accent: #0e0e10;
+    --deck-accent-text: #a5b4fc;
+    --deck-accent-soft: #1f2040;
+    --deck-attn: #fdba74;
+    --deck-attn-soft: #33230f;
+    --deck-ok: #5eead4;
+    --deck-ok-soft: #0f2d29;
+    --deck-danger: #fca5a5;
+    --deck-danger-soft: #361717;
+    --deck-hero: #1f1f23;
+    --deck-hero-text: #ffffff;
+    --deck-hero-muted: #b4b4bc;
+    --deck-c1: #8b93fb;
+    --deck-c2: #f59e5b;
+    --deck-c3: #34d3a8;
+    --deck-c4: #6a6a73;
+  }
+}
+
+/* Purposes: how dense the page is and how wide it runs. */
+body[data-deck="live"] { --deck-size: var(--deck-text-md); --deck-leading: 1.45; --deck-width: 72rem; }
+body[data-deck="index"] { --deck-width: 64rem; }
+body[data-deck="sheet"] { --deck-width: 78rem; }
+body[data-deck="slides"] { --deck-size: 16px; --deck-leading: 1.45; --deck-width: none; }
+body[data-deck="tool"] { --deck-width: 54rem; }
+
+/* Base elements */
+:where(body[data-deck]) {
+  margin: 0;
+  background: var(--deck-bg);
+  color: var(--deck-text);
+  font: var(--deck-size)/var(--deck-leading) var(--deck-sans);
+  -webkit-text-size-adjust: 100%;
+}
+:where(body[data-deck]) *,
+:where(body[data-deck]) *::before,
+:where(body[data-deck]) *::after { box-sizing: border-box; }
+:where(body[data-deck]) :where(h1, h2, h3, h4) { color: var(--deck-text); font-weight: 650; line-height: 1.2; letter-spacing: -0.01em; }
+:where(body[data-deck]) :where(a) { color: var(--deck-accent-text); text-underline-offset: 2px; }
+:where(body[data-deck]) :where(code, kbd, samp, pre) { font-family: var(--deck-mono); font-size: 0.92em; }
+:where(body[data-deck]) :where(:focus-visible) { outline: 2px solid var(--deck-accent); outline-offset: 2px; }
+:where(body[data-deck]) :where(button, input, select, textarea) {
+  font: inherit;
+  font-size: var(--deck-text-sm);
+  color: var(--deck-text);
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius);
+  padding: 0.3rem 0.55rem;
+}
+:where(body[data-deck]) :where(button) { cursor: pointer; font-weight: 600; }
+:where(body[data-deck]) :where(button:hover) { background: var(--deck-surface-2); }
+:where(body[data-deck]) :where(button:disabled) { opacity: 0.55; cursor: default; }
+:where(body[data-deck]) :where(input[type="checkbox"], input[type="radio"], input[type="range"]) { accent-color: var(--deck-accent); padding: 0; }
+:where(body[data-deck]) :where(::placeholder) { color: var(--deck-muted); opacity: 1; }
+
+/* Components */
+.deck-wrap { max-width: var(--deck-width); margin: 0 auto; padding: 0 var(--deck-space-4); }
+.deck-muted { color: var(--deck-muted); }
+.deck-num { font-family: var(--deck-mono); font-variant-numeric: tabular-nums; }
+.deck-kicker {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--deck-muted);
+}
+
+.deck-card {
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  padding: var(--deck-space-3) var(--deck-space-4);
+}
+.deck-card.hero { background: var(--deck-hero); border-color: var(--deck-hero); color: var(--deck-hero-text); }
+:where(.deck-card.hero) :where(h1, h2, h3, h4, a) { color: var(--deck-hero-text); }
+.deck-card.hero .deck-kicker,
+.deck-card.hero .deck-muted { color: var(--deck-hero-muted); }
+
+.deck-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--deck-space-1);
+  font: 600 var(--deck-text-sm)/1.2 var(--deck-sans);
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius);
+  background: var(--deck-surface);
+  color: var(--deck-text);
+  text-decoration: none;
+  cursor: pointer;
+}
+.deck-btn:hover { background: var(--deck-surface-2); }
+.deck-btn.primary,
+:where(body[data-deck]) :where(button.primary) { background: var(--deck-accent); border-color: var(--deck-accent); color: var(--deck-on-accent); }
+
+.deck-chip,
+.deck-badge {
+  display: inline-block;
+  padding: 0 0.5rem;
+  border-radius: 999px;
+  font-size: var(--deck-text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
+  background: var(--deck-surface-2);
+  color: var(--deck-text-2);
+}
+.deck-chip.outline { background: transparent; box-shadow: inset 0 0 0 1px var(--deck-line); }
+.deck-badge { font-weight: 600; }
+.deck-badge.attn { background: var(--deck-attn-soft); color: var(--deck-attn); }
+.deck-badge.ok { background: var(--deck-ok-soft); color: var(--deck-ok); }
+.deck-badge.danger { background: var(--deck-danger-soft); color: var(--deck-danger); }
+.deck-badge.accent { background: var(--deck-accent-soft); color: var(--deck-accent-text); }
+.deck-badge.solid { background: var(--deck-accent); color: var(--deck-on-accent); }
+.deck-badge.quiet { background: transparent; color: var(--deck-muted); box-shadow: inset 0 0 0 1px var(--deck-line); font-weight: 500; }
+/* Transparent variants take the hero's colours on a dark panel. */
+.deck-card.hero :is(.deck-chip.outline, .deck-badge.quiet) { color: var(--deck-hero-muted); box-shadow: inset 0 0 0 1px var(--deck-hero-muted); }
+
+.deck-kpi {
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  padding: var(--deck-space-3) var(--deck-space-4);
+}
+.deck-kpi.accent { background: var(--deck-accent-soft); border-color: transparent; }
+.deck-kpi .deck-kicker { margin-bottom: 2px; }
+.deck-kpi-value { font: 700 var(--deck-text-2xl)/1.15 var(--deck-mono); font-variant-numeric: tabular-nums; }
+
+.deck-table { width: 100%; border-collapse: collapse; font-size: var(--deck-text-md); background: var(--deck-surface); }
+.deck-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--deck-muted);
+  background: var(--deck-surface-2);
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--deck-line);
+}
+.deck-table td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--deck-line); vertical-align: top; }
+.deck-table .num { text-align: right; font-family: var(--deck-mono); font-variant-numeric: tabular-nums; }
+
+/* The colour scheme toggle from theme.js, in the page's own colours. */
+body[data-deck] .deck-theme { border-color: var(--deck-line-strong); background: var(--deck-surface); color: var(--deck-text-2); font-family: var(--deck-sans); }
+body[data-deck] .deck-theme button { font-weight: 400; }
+body[data-deck] .deck-theme button[aria-pressed="true"] { background: var(--deck-text); color: var(--deck-bg); }
+body[data-deck] .deck-theme button:focus-visible { outline-color: var(--deck-accent); }
+
+@media print {
+  :where(body[data-deck]) { background: #ffffff; }
+  .deck-noprint { display: none !important; }
+  /* Keep status and accent fills, which carry meaning, on paper. */
+  .deck-badge, .deck-chip, .deck-kpi, .deck-card.hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}

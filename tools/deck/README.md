@@ -229,35 +229,83 @@ HTML uses local stylesheet and script files, for example
 `<link rel="stylesheet" href="style.css">` and
 `<script src="app.js" defer></script>`. The existing content security policy
 does not permit inline script, inline style attributes or external assets.
-Bundles may also use Deck's shared colour scheme toggle, its only assets a
-bundle takes from outside its own directory. Load both in `<head>`, the
-stylesheet before the bundle's own and the script without `defer`, so the
-choice applies before the first paint:
+Bundles may also use Deck's shared colour scheme toggle and design
+stylesheet, the only assets a bundle takes from outside its own directory.
+Load them in `<head>`: the stylesheets in this order before the bundle's own,
+and the script without `defer`, so the choice applies before the first paint.
+Name the page's purpose on `<body>`:
 
 ```html
 <link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/base.css">
 <link rel="stylesheet" href="style.css">
 <script src="/static/theme.js"></script>
+...
+<body data-deck="sheet">
 ```
 
 The script draws a light, dark and system toggle in the bottom right corner,
-or inside an element marked `data-deck-theme` if the page has one. It keeps
-the choice per browser, shared by Deck's views, its library and every bundle,
-and without a choice follows the system. It sets `data-theme="light"` or
-`"dark"` on `<html>`; style the light scheme as the default and put dark rules
-under the attribute in screen media only, so printing and PDF export stay
-light:
+or inside an element marked `data-deck-theme` if the page has one; give it a
+slot where it does not cover content. It keeps the choice per browser, shared
+by Deck's views, its library and every bundle, and without a choice follows
+the system. It sets `data-theme="light"` or `"dark"` on `<html>`.
+
+`base.css` is deck's design ([ADR-0015](../../docs/adr/0015-deck-design-system.md)):
+
+- **Purpose.** `data-deck` is one of the following. It sets the page's text
+  size, line height and width (`--deck-size`, `--deck-width`):
+  - `live`: a dense overview;
+  - `index`: a list to find and open;
+  - `sheet`: a worksheet to read and decide;
+  - `slides`: presentation frames;
+  - `tool`: an interactive page.
+- **Tokens.** `--deck-bg`, `--deck-surface`, `--deck-surface-2`, `--deck-text`,
+  `--deck-text-2`, `--deck-muted`, `--deck-line` and `--deck-line-strong`
+  (control borders).
+  - The accent: `--deck-accent`, `--deck-on-accent`, `--deck-accent-text` and
+    `--deck-accent-soft`.
+  - Status, each with a `-soft` background: `--deck-attn` (waits on the
+    owner), `--deck-ok` (done) and `--deck-danger` (stalled or failed).
+  - `--deck-hero`, `--deck-hero-text` and `--deck-hero-muted` for panels that
+    stay dark, such as a cover.
+  - Chart series `--deck-c1` to `--deck-c4`, the fonts `--deck-sans` and
+    `--deck-mono`, type sizes `--deck-text-xs` to `--deck-text-3xl`, spacing
+    `--deck-space-1` to `--deck-space-6`, and `--deck-radius`.
+  - Each token has a light and a dark value, so a bundle built on them needs
+    no dark rules of its own.
+- **Base elements.** Under `data-deck`: body, headings, links, code, form
+  controls, `button.primary` and focus rings. They carry no specificity, so
+  any rule in the bundle's own stylesheet wins.
+- **Components:**
+  - `deck-card` (`hero` for a dark panel);
+  - `deck-chip` (`outline`);
+  - `deck-badge` (`attn`, `ok`, `danger`, `accent`, `solid`, `quiet`);
+  - `deck-btn` (`primary`);
+  - `deck-kpi` with `deck-kpi-value`;
+  - `deck-table` (`num` cells);
+  - `deck-kicker`, `deck-muted`, `deck-num` and `deck-wrap`;
+  - `deck-noprint` hides an element on paper.
+
+Use the tokens rather than fixed colours, and colour only what carries
+meaning. Keep text at 4.5:1 or more against its background. Where a bundle
+needs its own colour in dark mode, put the rule under the attribute in screen
+media only, so printing and PDF export stay light:
 
 ```css
 @media screen {
-  :root[data-theme="dark"] { --bg: #0b1020; --ink: #e6e9ef; }
-  :root[data-theme="dark"] .callout { background: #2a1c16; }
+  :root[data-theme="dark"] .callout { background: var(--deck-attn-soft); }
 }
 ```
 
 Do not use `prefers-color-scheme` in a bundle: the toggle decides. Without
-the script a page shows its light scheme. `/static/` is reserved: no
-collection can use that name.
+the script a page shows its light scheme. Print rules stay in the bundle:
+worksheets on A4 with navigation hidden, presentations one frame per page at
+their frame size, tools as a list without controls.
+
+`/static/` exists only on Deck. A standalone export or PDF build of a bundle
+ships its own copy of `base.css`. A bundle that uses `base.css` needs a Deck
+release that serves it, so publish it after that release is deployed.
+`/static/` is reserved: no collection can use that name.
 
 Bundles are trusted application content; Deck supplies authentication, not an
 untrusted-content execution sandbox. All pages and assets require the same
