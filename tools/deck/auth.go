@@ -13,15 +13,16 @@ import (
 )
 
 // Authenticator checks the OIDC ID token the proxy forwards in the
-// Authorization header: issuer, audience, expiry and the required group.
+// Authorization header: issuer, audience, expiry and group membership.
 // Discovery runs on first use and is retried, so an unreachable issuer at
 // start does not stop the service.
 type Authenticator struct {
-	issuer   string
-	clientID string
-	group    string
-	client   *http.Client
-	log      *slog.Logger
+	issuer         string
+	clientID       string
+	groups         []string
+	readOnlyGroups []string
+	client         *http.Client
+	log            *slog.Logger
 
 	mu       sync.Mutex
 	verifier *oidc.IDTokenVerifier
@@ -31,7 +32,14 @@ type Authenticator struct {
 var errNoProvider = errors.New("identity provider unavailable")
 
 func newAuthenticator(cfg AuthConfig, client *http.Client, log *slog.Logger) *Authenticator {
-	return &Authenticator{issuer: cfg.Issuer, clientID: cfg.ClientID, group: cfg.Group, client: client, log: log}
+	return &Authenticator{
+		issuer:         cfg.Issuer,
+		clientID:       cfg.ClientID,
+		groups:         cfg.fullAccessGroups(),
+		readOnlyGroups: cfg.ReadOnlyGroups,
+		client:         client,
+		log:            log,
+	}
 }
 
 func (a *Authenticator) getVerifier() (*oidc.IDTokenVerifier, error) {
@@ -62,13 +70,15 @@ type authResult int
 
 const (
 	authOK authResult = iota
+	authReadOnly
 	authMissing
 	authInvalid
 	authForbidden
 	authUnavailable
 )
 
-// check verifies a request's bearer token.
+// check verifies a request's bearer token. A token with a full-access group
+// gives authOK; one with only a read-only group gives authReadOnly.
 func (a *Authenticator) check(r *http.Request) (authResult, string) {
 	h := r.Header.Get("Authorization")
 	token, ok := strings.CutPrefix(h, "Bearer ")
@@ -98,10 +108,11 @@ func (a *Authenticator) check(r *http.Request) (authResult, string) {
 	if err := idToken.Claims(&claims); err != nil {
 		return authInvalid, ""
 	}
-	for _, g := range claims.Groups {
-		if g == a.group {
-			return authOK, idToken.Subject
-		}
+	if hasAnyGroup(claims.Groups, a.groups) {
+		return authOK, idToken.Subject
+	}
+	if hasAnyGroup(claims.Groups, a.readOnlyGroups) {
+		return authReadOnly, idToken.Subject
 	}
 	return authForbidden, idToken.Subject
 }
@@ -117,6 +128,13 @@ func requireAuth(a *Authenticator, log *slog.Logger, next http.Handler) http.Han
 		switch res {
 		case authOK:
 			next.ServeHTTP(w, r)
+		case authReadOnly:
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				log.Info("request refused: read-only access", "path", r.URL.Path, "method", r.Method)
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
 		case authForbidden:
 			log.Info("request refused: missing group", "path", r.URL.Path)
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -127,6 +145,17 @@ func requireAuth(a *Authenticator, log *slog.Logger, next http.Handler) http.Han
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 		}
 	})
+}
+
+func hasAnyGroup(have, want []string) bool {
+	for _, h := range have {
+		for _, w := range want {
+			if h == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // sameOrigin requires state-changing requests to come from the public

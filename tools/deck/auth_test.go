@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -123,6 +126,97 @@ func TestAuth(t *testing.T) {
 		if rec.Code != c.want {
 			t.Errorf("%s: got %d, want %d", c.name, rec.Code, c.want)
 		}
+	}
+}
+
+func TestAuthGroups(t *testing.T) {
+	ti := newTestIssuer(t)
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	token := func(groups ...string) string {
+		return ti.sign(t, ti.key, ti.claims(func(c map[string]any) { c["groups"] = groups }))
+	}
+	cases := []struct {
+		name   string
+		cfg    AuthConfig
+		method string
+		groups []string
+		want   int
+	}{
+		{"group only, member GET", AuthConfig{Group: "admins"}, "GET", []string{"admins"}, http.StatusTeapot},
+		{"group only, member POST", AuthConfig{Group: "admins"}, "POST", []string{"admins"}, http.StatusTeapot},
+		{"group only, non-member", AuthConfig{Group: "admins"}, "GET", []string{"other"}, http.StatusForbidden},
+		{"groups list, second group POST", AuthConfig{Groups: []string{"admins", "ops"}}, "POST", []string{"ops"}, http.StatusTeapot},
+		{"group and groups both count", AuthConfig{Group: "admins", Groups: []string{"ops"}}, "POST", []string{"admins"}, http.StatusTeapot},
+		{"read-only GET", AuthConfig{Groups: []string{"admins"}, ReadOnlyGroups: []string{"viewers"}}, "GET", []string{"viewers"}, http.StatusTeapot},
+		{"read-only HEAD", AuthConfig{Groups: []string{"admins"}, ReadOnlyGroups: []string{"viewers"}}, "HEAD", []string{"viewers"}, http.StatusTeapot},
+		{"read-only POST", AuthConfig{Groups: []string{"admins"}, ReadOnlyGroups: []string{"viewers"}}, "POST", []string{"viewers"}, http.StatusForbidden},
+		{"read-only PUT", AuthConfig{Groups: []string{"admins"}, ReadOnlyGroups: []string{"viewers"}}, "PUT", []string{"viewers"}, http.StatusForbidden},
+		{"read-only groups alone", AuthConfig{ReadOnlyGroups: []string{"viewers"}}, "GET", []string{"viewers"}, http.StatusTeapot},
+		{"full and read-only POST", AuthConfig{Groups: []string{"admins"}, ReadOnlyGroups: []string{"viewers"}}, "POST", []string{"viewers", "admins"}, http.StatusTeapot},
+		{"no matching group", AuthConfig{Groups: []string{"admins"}, ReadOnlyGroups: []string{"viewers"}}, "GET", []string{"other"}, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		c.cfg.Issuer, c.cfg.ClientID = ti.srv.URL, "deck-client"
+		h := requireAuth(newAuthenticator(c.cfg, ti.srv.Client(), quietLog()), quietLog(), ok)
+		req := httptest.NewRequest(c.method, "/threads/actions/ack", nil)
+		req.Header.Set("Authorization", "Bearer "+token(c.groups...))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("%s: got %d, want %d", c.name, rec.Code, c.want)
+		}
+	}
+}
+
+func TestValidateAuthGroups(t *testing.T) {
+	cases := []struct {
+		name string
+		auth AuthConfig
+		ok   bool
+	}{
+		{"group", AuthConfig{Group: "admins"}, true},
+		{"groups", AuthConfig{Groups: []string{"admins", "ops"}}, true},
+		{"read-only groups", AuthConfig{ReadOnlyGroups: []string{"viewers"}}, true},
+		{"all", AuthConfig{Group: "admins", Groups: []string{"ops"}, ReadOnlyGroups: []string{"viewers"}}, true},
+		{"none", AuthConfig{}, false},
+		{"empty lists", AuthConfig{Groups: []string{}, ReadOnlyGroups: []string{}}, false},
+		{"empty name", AuthConfig{Groups: []string{""}}, false},
+		{"empty read-only name", AuthConfig{Group: "admins", ReadOnlyGroups: []string{""}}, false},
+	}
+	for _, c := range cases {
+		c.auth.Issuer, c.auth.ClientID = "https://id.example.com", "deck"
+		cfg := Config{Listen: "127.0.0.1:3775", Auth: c.auth}
+		if err := cfg.validateAuth(false); (err == nil) != c.ok {
+			t.Errorf("%s: err %v", c.name, err)
+		}
+	}
+}
+
+func TestLoadConfigGroups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `publicOrigin = "https://deck.example.com/"
+[auth]
+issuer = "https://id.example.com"
+clientID = "deck"
+groups = ["admins", "ops"]
+readOnlyGroups = ["viewers"]
+[[threads.instance]]
+name = "main"
+db = "/var/lib/example/state.sqlite"
+webURL = "https://t3.example.com"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.Auth.Groups, []string{"admins", "ops"}) || !reflect.DeepEqual(cfg.Auth.ReadOnlyGroups, []string{"viewers"}) {
+		t.Fatalf("auth: %+v", cfg.Auth)
+	}
+	if err := cfg.validateAuth(false); err != nil {
+		t.Fatal(err)
 	}
 }
 

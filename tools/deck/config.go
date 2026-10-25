@@ -55,7 +55,20 @@ type BacklogCommandsConfig struct {
 type AuthConfig struct {
 	Issuer   string `toml:"issuer"`
 	ClientID string `toml:"clientID"`
-	Group    string `toml:"group"`
+	// Group is a single full-access group, kept for older configs; it adds
+	// to Groups.
+	Group          string   `toml:"group"`
+	Groups         []string `toml:"groups"`
+	ReadOnlyGroups []string `toml:"readOnlyGroups"`
+}
+
+// fullAccessGroups returns Groups plus Group when set.
+func (a AuthConfig) fullAccessGroups() []string {
+	groups := append([]string(nil), a.Groups...)
+	if a.Group != "" {
+		groups = append(groups, a.Group)
+	}
+	return groups
 }
 
 type ThreadsConfig struct {
@@ -336,8 +349,17 @@ func (c *Config) validateAuth(devNoAuth bool) error {
 		}
 		return nil
 	}
-	if c.Auth.Issuer == "" || c.Auth.ClientID == "" || c.Auth.Group == "" {
-		return errors.New("auth.issuer, auth.clientID and auth.group are required")
+	if c.Auth.Issuer == "" || c.Auth.ClientID == "" {
+		return errors.New("auth.issuer and auth.clientID are required")
+	}
+	groups := append(c.Auth.fullAccessGroups(), c.Auth.ReadOnlyGroups...)
+	for _, g := range groups {
+		if g == "" {
+			return errors.New("auth group names must not be empty")
+		}
+	}
+	if len(groups) == 0 {
+		return errors.New("auth.group, auth.groups or auth.readOnlyGroups must name at least one group")
 	}
 	u, err := url.Parse(c.Auth.Issuer)
 	if err != nil || u.Scheme != "https" || u.Host == "" {

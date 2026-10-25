@@ -88,7 +88,8 @@ contentDir = "/home/user/.local/share/deck/pages" # optional; default described 
 [auth]
 issuer = "https://id.example.com"
 clientID = "deck"
-group = "deck-users"
+groups = ["admins"]           # full access; the older group = "admins" still works
+readOnlyGroups = ["viewers"]  # optional; GET and HEAD only
 
 [threads]
 windowDays = 3           # default
@@ -177,9 +178,12 @@ item = "deck-backlog-item"           # optional; without it the view shows facts
 Every route except `/healthz` needs `Authorization: Bearer <ID token>`, as an
 oauth2-proxy sends it with `pass_authorization_header = true`. deck checks
 the token itself against the issuer's discovery document and keys: issuer,
-audience (`clientID`), expiry, and `group` in the `groups` claim. It answers
-401 without a valid token and 403 without the group. POST requests also need
-an `Origin` header equal to `publicOrigin`.
+audience (`clientID`), expiry, and the `groups` claim. It answers 401 without
+a valid token and 403 without a configured group. Members of `groups` (or the
+single `group`) get full access. Members of only `readOnlyGroups` may make GET
+and HEAD requests; their other requests get 403. At least one group must be
+configured. POST requests also need an `Origin` header equal to
+`publicOrigin`.
 
 ## Page collections
 
