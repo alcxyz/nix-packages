@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Deck</title>
-<link rel="stylesheet" href="{{.BasePath}}static/library.css">
+<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/library.css">
+<script src="/static/theme.js"></script>
 </head>
 <body class="lib">
-<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a>{{if .BacklogPath}} <a href="{{.BacklogPath}}">Backlog</a>{{end}}</nav></header>
+<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a>{{if .BacklogPath}} <a href="{{.BacklogPath}}">Backlog</a>{{end}}<span data-deck-theme></span></nav></header>
 <main class="lib-main">
 <header class="lib-head">
   <h1>Deck</h1>

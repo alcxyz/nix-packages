@@ -79,6 +79,10 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	app.HandleFunc("POST "+base+"actions/forget", s.forget)
 	if base != "/" {
 		app.Handle("GET "+base[:len(base)-1], http.RedirectHandler(base, http.StatusMovedPermanently))
+		// The library and page bundles take the shared theme assets and the
+		// library stylesheet from /static/, outside the dashboard's namespace
+		// (ADR-0013).
+		app.Handle("GET "+sharedStaticPath, http.StripPrefix(sharedStaticPath, http.FileServerFS(static)))
 	}
 	// The backlog view's routes exist only when it is configured, so a
 	// process without it leaves its path to the content library.
@@ -119,6 +123,10 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	})
 	return securityHeaders(root), nil
 }
+
+// sharedStaticPath serves deck's static assets to the library and page
+// bundles, whatever the dashboard's base path.
+const sharedStaticPath = "/static/"
 
 // inNamespace reports whether path is base or below it.
 func inNamespace(path, base string) bool {

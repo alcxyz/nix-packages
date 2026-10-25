@@ -73,6 +73,8 @@ func TestPageEscapesThreadText(t *testing.T) {
 		// or 0 without one, over unsettled threads; the page must agree.
 		"<b>27%</b> average progress",
 		`src="/threads/static/deck.js"`,
+		`src="/threads/static/theme.js"`,
+		"data-deck-theme",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
@@ -135,7 +137,7 @@ func TestAuthAppliesToEveryRouteButHealthz(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"/threads/", "/threads/fragment", "/threads/static/deck.js", "/elsewhere"} {
+	for _, p := range []string{"/threads/", "/threads/fragment", "/threads/static/deck.js", "/static/theme.js", "/elsewhere"} {
 		if rec := get(t, h, p); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s without a token: %d", p, rec.Code)
 		}

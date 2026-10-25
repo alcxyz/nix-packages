@@ -16,8 +16,9 @@
   --shadow: 0 1px 2px rgba(15, 23, 41, 0.05), 0 8px 24px -12px rgba(15, 23, 41, 0.18);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+/* Dark from theme.js (ADR-0013); print stays light. */
+@media screen {
+  :root[data-theme="dark"] {
     --bg: #0d1017;
     --fg: #eceef2;
     --fg-2: #c3c8d2;

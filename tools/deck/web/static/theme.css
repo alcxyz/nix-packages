@@ -1,0 +1,38 @@
+/* Colour scheme toggle from theme.js, shared by deck's views, its library and
+   page bundles (ADR-0013). Pages style dark under
+   @media screen { :root[data-theme="dark"] ... }; print stays light. */
+:root { color-scheme: light; }
+@media screen {
+  :root[data-theme="dark"] { color-scheme: dark; }
+}
+
+/* System colours follow color-scheme, so the toggle reads on any page. */
+.deck-theme {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid GrayText;
+  border-radius: 999px;
+  background: Canvas;
+  color: CanvasText;
+  font: 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  vertical-align: middle;
+}
+.deck-theme button {
+  margin: 0;
+  padding: 0.25rem 0.45rem;
+  min-width: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  box-shadow: none;
+  cursor: pointer;
+}
+.deck-theme button[aria-pressed="true"] { background: CanvasText; color: Canvas; }
+.deck-theme button:focus-visible { outline: 2px solid Highlight; outline-offset: 1px; }
+.deck-theme-float { position: fixed; right: 0.75rem; bottom: 0.75rem; z-index: 2147483647; }
+@media print {
+  .deck-theme { display: none; }
+}

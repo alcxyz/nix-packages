@@ -220,6 +220,36 @@ HTML uses local stylesheet and script files, for example
 `<link rel="stylesheet" href="style.css">` and
 `<script src="app.js" defer></script>`. The existing content security policy
 does not permit inline script, inline style attributes or external assets.
+Bundles may also use Deck's shared colour scheme toggle, its only assets a
+bundle takes from outside its own directory. Load both in `<head>`, the
+stylesheet before the bundle's own and the script without `defer`, so the
+choice applies before the first paint:
+
+```html
+<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="style.css">
+<script src="/static/theme.js"></script>
+```
+
+The script draws a light, dark and system toggle in the bottom right corner,
+or inside an element marked `data-deck-theme` if the page has one. It keeps
+the choice per browser, shared by Deck's views, its library and every bundle,
+and without a choice follows the system. It sets `data-theme="light"` or
+`"dark"` on `<html>`; style the light scheme as the default and put dark rules
+under the attribute in screen media only, so printing and PDF export stay
+light:
+
+```css
+@media screen {
+  :root[data-theme="dark"] { --bg: #0b1020; --ink: #e6e9ef; }
+  :root[data-theme="dark"] .callout { background: #2a1c16; }
+}
+```
+
+Do not use `prefers-color-scheme` in a bundle: the toggle decides. Without
+the script a page shows its light scheme. `/static/` is reserved: no
+collection can use that name.
+
 Bundles are trusted application content; Deck supplies authentication, not an
 untrusted-content execution sandbox. All pages and assets require the same
 operator token as the thread dashboard.

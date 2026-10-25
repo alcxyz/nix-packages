@@ -282,6 +282,9 @@ func normalizeBasePath(name, p, def string) (string, error) {
 	if p == "/healthz/" {
 		return "", fmt.Errorf("%s must not be /healthz/", name)
 	}
+	if strings.HasPrefix(p, sharedStaticPath) {
+		return "", fmt.Errorf("%s must not be %s or below it, the shared asset path", name, sharedStaticPath)
+	}
 	return p, nil
 }
 

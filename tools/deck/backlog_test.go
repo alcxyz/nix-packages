@@ -57,6 +57,7 @@ func TestBacklogConfig(t *testing.T) {
 		{"[backlog]\n", "backlog.commands.inventory is required"},
 		{"[backlog]\nbasePath = \"/threads/backlog/\"\n[backlog.commands]\ninventory = \"x\"\n", "must not overlap"},
 		{"basePath = \"/\"\n[backlog.commands]\ninventory = \"x\"\n", "must not overlap"},
+		{"[backlog]\nbasePath = \"/static/backlog/\"\n[backlog.commands]\ninventory = \"x\"\n", "shared asset path"},
 		{"[backlog]\nbasePath = \"/{x}/\"\n[backlog.commands]\ninventory = \"x\"\n", "backlog.basePath"},
 		{"[backlog]\nintervalMinutes = -1\n[backlog.commands]\ninventory = \"x\"\n", "at least 1"},
 		{"[backlog]\nshortlist = 3\n[backlog.commands]\ninventory = \"x\"\n", "unknown keys"},

@@ -1,6 +1,6 @@
 # ADR-0013: Operator-authored page collections in Deck
 
-**Status:** Accepted; content source and pages-only mode amended 2026-10-24
+**Status:** Accepted; content source and pages-only mode amended 2026-10-24; shared colour scheme assets amended 2026-10-25
 **Date:** 2026-10-22
 **Applies to:** `tools/deck/`
 
@@ -126,3 +126,56 @@ and proposals that outlive a work session, and nothing in them depends on T3.
   repository, its read-only sync credential and the sync process's schedule.
 - A content directory on the T3 host stops being a source once the pages
   process serves the same bundles.
+
+## Amendment (2026-10-25): one colour scheme toggle for views and bundles
+
+Tracked in [#652](https://git.alc.xyz/alcxyz/nix-packages/issues/652).
+
+### Context
+
+Deck's views and the library followed the system colour scheme with no
+toggle, while each bundle styled itself: some followed the system scheme,
+others were light only. The same Deck should look and switch the same way on
+every page, and offers printed to PDF must stay light.
+
+### Decision
+
+- **Deck serves shared theme assets at `/static/`.** `theme.js` resolves a
+  light, dark or system choice, kept per browser in local storage, to
+  `data-theme="light"` or `"dark"` on `<html>` before the first paint, and
+  draws the toggle; `theme.css` sets the matching `color-scheme`, styles the
+  toggle and hides it in print. Deck's views load them from their own
+  `static/` path and the library and bundles from `/static/`, the same files;
+  one origin gives every page the same choice.
+- **Bundles may reference these two assets** besides their own local files.
+  This is the only exception to bundles being self-contained; everything else
+  stays local, and the content security policy is unchanged, since the assets
+  come from the same origin and contain no inline code.
+- **Dark styles key on the attribute in screen media**
+  (`@media screen { :root[data-theme="dark"] ... }`), not on
+  `prefers-color-scheme`, so the toggle decides and print stays light.
+- **`/static/` is reserved** from collection names and from the views' base
+  paths in every configuration, so the pages-only mode from the previous
+  amendment, not yet implemented
+  ([#643](https://git.alc.xyz/alcxyz/nix-packages/issues/643)), can serve the
+  same theme assets and the library stylesheet there without the dashboard.
+
+### Alternatives considered
+
+- **A copy of the script and rules in each bundle.** Keeps bundles
+  self-contained, but the copies drift and a change to the toggle means
+  editing every bundle and Deck separately.
+- **Deck injecting the assets when it serves a bundle.** Needs no bundle
+  markup, but Deck would rewrite trusted HTML, and a bundle would behave
+  differently when opened any other way.
+- **`light-dark()` colour tokens driven by `color-scheme`.** Would let pages
+  without the script follow the system, but every existing dark override would
+  have to be folded into its light rule instead of keeping its dark block.
+
+### Consequences
+
+- One toggle and one stored choice cover Deck's views, the library and every
+  bundle that loads the shared assets.
+- A bundle opened outside Deck, or saved without the shared assets, shows its
+  light scheme without a toggle.
+- Changing the toggle is a Deck release; bundles need no edit.

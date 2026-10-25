@@ -216,18 +216,19 @@ func osReadContentDir(root *os.Root) ([]os.DirEntry, error) {
 	return f.ReadDir(-1)
 }
 
-// contentCollectionAvailable keeps the existing dashboard namespace and the
-// health endpoint out of the library even when matching directories exist.
+// contentCollectionAvailable keeps the existing dashboard namespace, the
+// shared asset path and the health endpoint out of the library even when
+// matching directories exist.
 func (s *Server) contentCollectionAvailable(name string) bool {
 	base := s.deck.cfg.BasePath
-	if !contentSlugRE.MatchString(name) || name == "healthz" {
+	if !contentSlugRE.MatchString(name) || name == "healthz" || name == "static" {
 		return false
 	}
 	if s.deck.cfg.Backlog != nil && strings.HasPrefix(s.deck.cfg.Backlog.BasePath, "/"+name+"/") {
 		return false
 	}
 	if base == "/" {
-		return name != "static" && name != "fragment" && name != "actions"
+		return name != "fragment" && name != "actions"
 	}
 	return !strings.HasPrefix(base, "/"+name+"/")
 }

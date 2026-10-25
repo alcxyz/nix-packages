@@ -56,6 +56,7 @@ func TestContentIndexes(t *testing.T) {
 	writeContentPage(t, d.cfg.ContentDir, "examples/start", "Start", "2026-02-01", "Example")
 	writeContentPage(t, d.cfg.ContentDir, "Invalid/start", "Invalid collection", "2026-02-01", "")
 	writeContentPage(t, d.cfg.ContentDir, "threads/hidden", "Reserved collection", "2026-02-01", "")
+	writeContentPage(t, d.cfg.ContentDir, "static/hidden", "Reserved collection", "2026-02-01", "")
 	h := contentTestHandler(t, d, nil)
 	library := get(t, h, "/")
 	if library.Code != http.StatusOK {
@@ -304,7 +305,7 @@ func TestContentWithDashboardBases(t *testing.T) {
 			d.cfg.ContentDir = t.TempDir()
 			writeContentPage(t, d.cfg.ContentDir, "notes/example", "Example", "2026-10-01", "")
 			h := contentTestHandler(t, d, nil)
-			for _, p := range []string{base, base + "fragment", base + "static/deck.css", base + "static/deck.js", "/notes/", "/notes/example/", "/healthz"} {
+			for _, p := range []string{base, base + "fragment", base + "static/deck.css", base + "static/deck.js", base + "static/theme.js", "/static/theme.js", "/static/theme.css", "/static/library.css", "/notes/", "/notes/example/", "/healthz"} {
 				if rec := get(t, h, p); rec.Code != http.StatusOK {
 					t.Errorf("existing or content route %s: %d", p, rec.Code)
 				}

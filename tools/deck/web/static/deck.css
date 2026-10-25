@@ -12,8 +12,9 @@
   --new: #fef3c7;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+/* Dark from theme.js (ADR-0013); print stays light. */
+@media screen {
+  :root[data-theme="dark"] {
     --bg: #161514;
     --fg: #ece9e4;
     --muted: #a39e96;
