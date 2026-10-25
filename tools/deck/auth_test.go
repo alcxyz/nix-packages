@@ -20,9 +20,12 @@ import (
 // testIssuer is an OIDC provider with discovery and a key set, signing
 // tokens with its own key.
 type testIssuer struct {
-	srv      *httptest.Server
-	key      *rsa.PrivateKey
-	keysDown atomic.Bool
+	srv         *httptest.Server
+	key         *rsa.PrivateKey
+	down        atomic.Bool // discovery fails
+	keysDown    atomic.Bool
+	delay       time.Duration // before each discovery answer
+	discoveries atomic.Int32
 }
 
 func newTestIssuer(t *testing.T) *testIssuer {
@@ -34,6 +37,12 @@ func newTestIssuer(t *testing.T) *testIssuer {
 	ti := &testIssuer{key: key}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		ti.discoveries.Add(1)
+		time.Sleep(ti.delay)
+		if ti.down.Load() {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"issuer":                                ti.srv.URL,
 			"jwks_uri":                              ti.srv.URL + "/jwks",
@@ -232,6 +241,142 @@ func TestAuthIssuerUnavailable(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+// Discovery recovers once the issuer is back, but not within the cooldown
+// that its failure started.
+func TestAuthIssuerRecovers(t *testing.T) {
+	ti := newTestIssuer(t)
+	valid := ti.sign(t, ti.key, ti.claims(nil))
+	auth := newAuthenticator(AuthConfig{Issuer: ti.srv.URL, ClientID: "deck-client", Group: "deck-users"}, ti.srv.Client(), quietLog())
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := requireAuth(auth, quietLog(), ok)
+	get := func(header string) int {
+		req := httptest.NewRequest("GET", "/threads/", nil)
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	ti.down.Store(true)
+	if code := get("Bearer " + valid); code != http.StatusServiceUnavailable {
+		t.Fatalf("discovery down: got %d, want 503", code)
+	}
+	// A missing token is still a 401 without asking the issuer.
+	if code := get(""); code != http.StatusUnauthorized {
+		t.Errorf("discovery down, no token: got %d, want 401", code)
+	}
+	ti.down.Store(false)
+	if code := get("Bearer " + valid); code != http.StatusServiceUnavailable {
+		t.Fatalf("within cooldown: got %d, want 503", code)
+	}
+	auth.mu.Lock()
+	auth.failedAt = time.Time{} // skip the retry delay
+	auth.mu.Unlock()
+	if code := get("Bearer " + valid); code != http.StatusTeapot {
+		t.Fatalf("discovery back: got %d, want 418", code)
+	}
+}
+
+// While one discovery hangs, other requests wait for it rather than starting
+// their own, get a 503 when it times out, and the failed attempt starts the
+// cooldown.
+func TestAuthHangingIssuer(t *testing.T) {
+	entered := make(chan struct{}, 16)
+	release := make(chan struct{})
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		entered <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	// Cleanups run last in, first out: release the handler before Close
+	// waits for it.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	const timeout = 300 * time.Millisecond
+	auth := newAuthenticator(AuthConfig{Issuer: srv.URL, ClientID: "deck-client", Group: "deck-users"}, srv.Client(), quietLog())
+	auth.discoveryTimeout = timeout
+	h := requireAuth(auth, quietLog(), http.NotFoundHandler())
+	get := func() int {
+		req := httptest.NewRequest("GET", "/threads/", nil)
+		req.Header.Set("Authorization", "Bearer header.payload.signature")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	start := time.Now()
+	first := make(chan int, 1)
+	go func() { first <- get() }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("discovery never reached the issuer")
+	}
+
+	const n = 8
+	codes := make(chan int, n)
+	for range n {
+		go func() { codes <- get() }()
+	}
+	for range n {
+		if code := <-codes; code != http.StatusServiceUnavailable {
+			t.Errorf("concurrent request: got %d, want 503", code)
+		}
+	}
+	if code := <-first; code != http.StatusServiceUnavailable {
+		t.Errorf("hung discovery: got %d, want 503", code)
+	}
+	if d := time.Since(start); d > timeout+time.Second {
+		t.Errorf("requests took %v while discovery hung, want about %v", d, timeout)
+	}
+	// The failure starts the cooldown, so the next request does not try again.
+	if code := get(); code != http.StatusServiceUnavailable {
+		t.Errorf("after failure: got %d, want 503", code)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("issuer asked %d times, want 1", got)
+	}
+}
+
+// Concurrent first requests against a healthy but slow issuer all wait for
+// the one discovery and succeed.
+func TestAuthSlowIssuer(t *testing.T) {
+	ti := newTestIssuer(t)
+	ti.delay = 200 * time.Millisecond
+	valid := "Bearer " + ti.sign(t, ti.key, ti.claims(nil))
+	auth := newAuthenticator(AuthConfig{Issuer: ti.srv.URL, ClientID: "deck-client", Group: "deck-users"}, ti.srv.Client(), quietLog())
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	h := requireAuth(auth, quietLog(), ok)
+
+	const n = 8
+	codes := make(chan int, n)
+	for range n {
+		go func() {
+			req := httptest.NewRequest("GET", "/threads/", nil)
+			req.Header.Set("Authorization", valid)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			codes <- rec.Code
+		}()
+	}
+	for range n {
+		if code := <-codes; code != http.StatusTeapot {
+			t.Errorf("concurrent first request: got %d, want 418", code)
+		}
+	}
+	if got := ti.discoveries.Load(); got != 1 {
+		t.Errorf("discovery ran %d times, want 1", got)
 	}
 }
 

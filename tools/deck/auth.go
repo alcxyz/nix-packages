@@ -14,55 +14,111 @@ import (
 
 // Authenticator checks the OIDC ID token the proxy forwards in the
 // Authorization header: issuer, audience, expiry and group membership.
-// Discovery runs on first use and is retried, so an unreachable issuer at
-// start does not stop the service.
+// Discovery runs on first use, one attempt at a time; requests that arrive
+// while it runs wait for it, and requests within five seconds after it failed
+// get a 503 at once. An unreachable issuer at start therefore does not stop
+// the service, and holds a request for at most one discovery timeout.
 type Authenticator struct {
-	issuer         string
-	clientID       string
-	groups         []string
-	readOnlyGroups []string
-	client         *http.Client
-	log            *slog.Logger
+	issuer           string
+	clientID         string
+	groups           []string
+	readOnlyGroups   []string
+	client           *http.Client
+	log              *slog.Logger
+	discoveryTimeout time.Duration
 
-	mu       sync.Mutex
-	verifier *oidc.IDTokenVerifier
-	lastTry  time.Time
+	mu          sync.Mutex
+	verifier    *oidc.IDTokenVerifier
+	discovering chan struct{} // closed when the running attempt ends
+	failedAt    time.Time
 }
+
+const retryAfter = 5 * time.Second
 
 var errNoProvider = errors.New("identity provider unavailable")
 
 func newAuthenticator(cfg AuthConfig, client *http.Client, log *slog.Logger) *Authenticator {
 	return &Authenticator{
-		issuer:         cfg.Issuer,
-		clientID:       cfg.ClientID,
-		groups:         cfg.fullAccessGroups(),
-		readOnlyGroups: cfg.ReadOnlyGroups,
-		client:         client,
-		log:            log,
+		issuer:           cfg.Issuer,
+		clientID:         cfg.ClientID,
+		groups:           cfg.fullAccessGroups(),
+		readOnlyGroups:   cfg.ReadOnlyGroups,
+		client:           client,
+		log:              log,
+		discoveryTimeout: 10 * time.Second,
 	}
 }
 
-func (a *Authenticator) getVerifier() (*oidc.IDTokenVerifier, error) {
+// getVerifier returns the verifier, running discovery if there is none yet.
+// Only one attempt runs at a time, without holding the lock: callers that
+// arrive while it runs wait for it, bounded by their own context and the
+// discovery timeout, and use its result. For retryAfter after an attempt
+// fails, callers get errNoProvider at once.
+func (a *Authenticator) getVerifier(ctx context.Context) (*oidc.IDTokenVerifier, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.verifier != nil {
-		return a.verifier, nil
+		v := a.verifier
+		a.mu.Unlock()
+		return v, nil
 	}
-	if time.Since(a.lastTry) < 5*time.Second {
+	if done := a.discovering; done != nil {
+		a.mu.Unlock()
+		return a.waitForDiscovery(ctx, done)
+	}
+	if !a.failedAt.IsZero() && time.Since(a.failedAt) < retryAfter {
+		a.mu.Unlock()
 		return nil, errNoProvider
 	}
-	a.lastTry = time.Now()
+	done := make(chan struct{})
+	a.discovering = done
+	a.mu.Unlock()
+
+	// The deferred reset also runs on a panic, so discovery cannot stay
+	// marked as running.
+	var verifier *oidc.IDTokenVerifier
+	defer func() {
+		a.mu.Lock()
+		a.discovering = nil
+		if verifier != nil {
+			a.verifier = verifier
+		} else {
+			a.failedAt = time.Now()
+		}
+		a.mu.Unlock()
+		close(done)
+	}()
+
 	// The key set keeps this context for its fetches, so it must outlive the
 	// request.
 	pctx := oidc.ClientContext(context.Background(), a.client)
-	dctx, cancel := context.WithTimeout(pctx, 10*time.Second)
+	dctx, cancel := context.WithTimeout(pctx, a.discoveryTimeout)
 	defer cancel()
 	provider, err := oidc.NewProvider(dctx, a.issuer)
 	if err != nil {
 		a.log.Warn("oidc discovery failed", "err", err.Error())
 		return nil, errNoProvider
 	}
-	a.verifier = provider.VerifierContext(pctx, &oidc.Config{ClientID: a.clientID})
+	verifier = provider.VerifierContext(pctx, &oidc.Config{ClientID: a.clientID})
+	return verifier, nil
+}
+
+// waitForDiscovery waits for the attempt that closes done and returns its
+// verifier, or errNoProvider if it failed or the wait ran out first.
+func (a *Authenticator) waitForDiscovery(ctx context.Context, done <-chan struct{}) (*oidc.IDTokenVerifier, error) {
+	timer := time.NewTimer(a.discoveryTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return nil, errNoProvider
+	case <-timer.C:
+		return nil, errNoProvider
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.verifier == nil {
+		return nil, errNoProvider
+	}
 	return a.verifier, nil
 }
 
@@ -85,7 +141,7 @@ func (a *Authenticator) check(r *http.Request) (authResult, string) {
 	if !ok || strings.TrimSpace(token) == "" {
 		return authMissing, ""
 	}
-	v, err := a.getVerifier()
+	v, err := a.getVerifier(r.Context())
 	if err != nil {
 		return authUnavailable, ""
 	}
