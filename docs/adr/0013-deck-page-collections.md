@@ -21,7 +21,8 @@ can preserve individual proposals or assessments without replacing older ones.
 Content lives in `contentDir`, defaulting to `$XDG_DATA_HOME/deck/pages` or
 `~/.local/share/deck/pages`. It is runtime data, separate from Deck's source,
 Nix package and synthetic fixtures. A bundle has `metadata.json`, `index.html`
-and local assets. Metadata supplies its title, date and summary. The operator
+and local assets: top-level files with lowercase names and a short list of web
+extensions (the README lists them). Metadata supplies its title, date and summary. The operator
 publishes bundles through the filesystem; there is no upload or editing API.
 
 All collection routes and assets use the existing token verification and

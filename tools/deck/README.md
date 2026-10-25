@@ -213,7 +213,12 @@ The metadata is deliberately small:
 The page appears at `/briefings/2026-01-15-example/`, with an index at
 `/briefings/`. Indexes escape metadata and list newer dates first. Collection
 and page names use lowercase slug segments. The metadata and dotfiles are not
-download routes, and there are no directory listings. Publish complete bundles
+download routes, and there are no directory listings. Assets sit beside
+`index.html`, not in subdirectories. Their names are lowercase letters and
+digits, with single `-` or `_` separators between them (not leading, trailing
+or doubled), and one of the extensions `html`, `css`, `js`, `png`, `jpg`,
+`jpeg`, `gif`, `webp`, `avif`, `svg` or `ico`; any other file returns 404.
+Publish complete bundles
 before moving them into place; no service restart is needed to add a page.
 
 HTML uses local stylesheet and script files, for example
