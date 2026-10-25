@@ -139,7 +139,9 @@ func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, r
 		d.refreshLock[in.Name] = make(chan struct{}, 1)
 		d.refreshCh[in.Name] = make(chan struct{}, 1)
 	}
-	if cfg.Backlog != nil {
+	// In the pages-only mode the backlog section only names the view's path
+	// in the dashboard process; nothing runs here.
+	if cfg.Backlog != nil && !cfg.pagesOnly() {
 		d.backlog = newBacklog(*cfg.Backlog, log)
 		d.backlog.deck = d
 	}
@@ -148,9 +150,12 @@ func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, r
 
 // run starts the facts loop of every instance and the summary dispatcher.
 // Cancelling ctx stops them, their commands and any action still running;
-// wait then waits for them.
+// wait then waits for them. The pages-only mode starts nothing.
 func (d *Deck) run(ctx context.Context) {
 	d.base = ctx
+	if d.cfg.pagesOnly() {
+		return
+	}
 	for _, in := range d.cfg.Threads.Instances {
 		d.work.Add(1)
 		go func(in InstanceConfig) {

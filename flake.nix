@@ -127,6 +127,8 @@
           stash = pkgs.callPackage ./pkgs/stash { };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           devlog = pkgs.callPackage ./tools/devlog { };
+          # The pages-only mode of deck as a Docker-format image archive (ADR-0013).
+          deck-image = pkgs.callPackage ./tools/deck/image.nix { inherit (allPackages) deck; };
         };
       in
       {

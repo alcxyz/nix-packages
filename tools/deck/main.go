@@ -66,23 +66,30 @@ func serve(args []string) error {
 		return err
 	}
 
-	cachePath, err := defaultCachePath()
-	if err != nil {
-		return err
-	}
-	cache, err := openSummaryCache(cachePath)
-	if err != nil {
-		return err
-	}
-
-	// A missing or broken default role leaves facts and other roles working.
-	llmPath, roleErr := sharedConfigPath()
+	// The pages-only mode runs no summaries, so it needs no state directory
+	// or model roles, and runs on a read-only filesystem.
+	var cache *SummaryCache
 	var models map[string][]ModelConfig
-	if roleErr == nil {
-		models, roleErr = loadSummaryRoles(llmPath, cfg.Threads, log)
-	}
-	if roleErr != nil {
-		log.Warn("automatic summaries disabled", "err", roleErr.Error())
+	var roleErr error
+	if cfg.pagesOnly() {
+		log.Info("pages-only mode: serving the collections without thread instances", "contentDir", cfg.ContentDir)
+	} else {
+		cachePath, err := defaultCachePath()
+		if err != nil {
+			return err
+		}
+		if cache, err = openSummaryCache(cachePath); err != nil {
+			return err
+		}
+		// A missing or broken default role leaves facts and other roles working.
+		var llmPath string
+		llmPath, roleErr = sharedConfigPath()
+		if roleErr == nil {
+			models, roleErr = loadSummaryRoles(llmPath, cfg.Threads, log)
+		}
+		if roleErr != nil {
+			log.Warn("automatic summaries disabled", "err", roleErr.Error())
+		}
 	}
 
 	var auth *Authenticator

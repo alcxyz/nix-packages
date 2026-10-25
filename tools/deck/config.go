@@ -15,13 +15,17 @@ import (
 
 // Config is deck's own configuration file.
 type Config struct {
-	Listen       string         `toml:"listen"`
-	BasePath     string         `toml:"basePath"`
-	ContentDir   string         `toml:"contentDir"`
-	PublicOrigin string         `toml:"publicOrigin"`
-	Auth         AuthConfig     `toml:"auth"`
-	Threads      ThreadsConfig  `toml:"threads"`
-	Commands     CommandsConfig `toml:"commands"`
+	Listen       string `toml:"listen"`
+	BasePath     string `toml:"basePath"`
+	ContentDir   string `toml:"contentDir"`
+	PublicOrigin string `toml:"publicOrigin"`
+	// Collections serves the page collections from ContentDir; nil is on.
+	// A dashboard process whose collections another process serves turns
+	// them off (ADR-0013).
+	Collections *bool          `toml:"collections"`
+	Auth        AuthConfig     `toml:"auth"`
+	Threads     ThreadsConfig  `toml:"threads"`
+	Commands    CommandsConfig `toml:"commands"`
 	// Backlog is the optional backlog view (ADR-0014); nil leaves it off,
 	// with no route under its path.
 	Backlog *BacklogConfig `toml:"backlog"`
@@ -132,6 +136,16 @@ func loadConfig(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("config %s: unknown keys: %s", path, strings.Join(keys, ", "))
 	}
+	// normalize sees values, so a backlog key set to its zero value would
+	// pass there; refuse any key present in the file instead. The decoder
+	// matches names case-insensitively, so this check does too.
+	if cfg.pagesOnly() {
+		for _, k := range md.Keys() {
+			if len(k) >= 2 && strings.EqualFold(k[0], "backlog") && !strings.EqualFold(k[1], "basePath") {
+				return Config{}, fmt.Errorf("config %s: %s: [backlog] takes only basePath without thread instances", path, k.String())
+			}
+		}
+	}
 	if err := cfg.normalize(); err != nil {
 		return Config{}, fmt.Errorf("config %s: %w", path, err)
 	}
@@ -239,8 +253,25 @@ func (c *Config) normalize() error {
 		c.Commands.Ack = "t3-thread-overview-ack"
 	}
 
+	if c.Collections == nil {
+		on := true
+		c.Collections = &on
+	}
+	pagesOnly := c.pagesOnly()
+	if pagesOnly {
+		// Without thread instances deck serves only the collections; the
+		// dashboard views run in another process, and basePath and
+		// backlog.basePath name their paths, to link and reserve them.
+		if !*c.Collections {
+			return errors.New("collections = false needs at least one [[threads.instance]]: with neither, deck has nothing to serve")
+		}
+		if c.BasePath == "/" {
+			return errors.New(`basePath must not be "/" without thread instances: the pages-only mode serves the root index`)
+		}
+	}
+
 	if c.Backlog != nil {
-		if err := c.Backlog.normalize(c.BasePath); err != nil {
+		if err := c.Backlog.normalize(c.BasePath, pagesOnly); err != nil {
 			return err
 		}
 		// Verdicts use the roles loaded for summaries; without an item
@@ -250,9 +281,6 @@ func (c *Config) normalize() error {
 		}
 	}
 
-	if len(c.Threads.Instances) == 0 {
-		return errors.New("at least one [[threads.instance]] is required")
-	}
 	seen := map[string]bool{}
 	for i := range c.Threads.Instances {
 		in := &c.Threads.Instances[i]
@@ -301,15 +329,30 @@ func normalizeBasePath(name, p, def string) (string, error) {
 	return p, nil
 }
 
+// pagesOnly reports whether deck runs without thread instances, serving
+// only the root index and the collections (ADR-0013).
+func (c *Config) pagesOnly() bool {
+	return len(c.Threads.Instances) == 0
+}
+
 // normalize fills the backlog view's defaults. Its path must not overlap
-// the thread dashboard's, so each view keeps its own namespace.
-func (b *BacklogConfig) normalize(threadsBase string) error {
+// the thread dashboard's, so each view keeps its own namespace. In the
+// pages-only mode the view runs in the dashboard process, and only its
+// path is configured here.
+func (b *BacklogConfig) normalize(threadsBase string, pagesOnly bool) error {
 	var err error
 	if b.BasePath, err = normalizeBasePath("backlog.basePath", b.BasePath, "/backlog/"); err != nil {
 		return err
 	}
 	if strings.HasPrefix(b.BasePath, threadsBase) || strings.HasPrefix(threadsBase, b.BasePath) {
 		return fmt.Errorf("backlog.basePath %q must not overlap basePath %q", b.BasePath, threadsBase)
+	}
+	if pagesOnly {
+		if b.IntervalMinutes != 0 || b.TimeoutMinutes != 0 || b.VerdictRole != "" || b.VerdictEffort != nil ||
+			b.VerdictIntervalMinutes != nil || b.Commands.Inventory != "" || b.Commands.Item != "" {
+			return errors.New("[backlog] takes only basePath without thread instances: the dashboard process runs the backlog view, and this one only reserves and links its path")
+		}
+		return nil
 	}
 	if b.IntervalMinutes == 0 {
 		b.IntervalMinutes = 15

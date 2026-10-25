@@ -292,17 +292,17 @@ webURL = "https://t3.example.com"
 	}
 
 	bad := map[string]string{
-		"unknown key":     good + "\nbogus = 1\n",
-		"no instance":     strings.Split(good, "[[threads.instance]]")[0],
-		"bad origin":      strings.Replace(good, "https://deck.example.com/", "https://deck.example.com/threads", 1),
-		"bad web url":     strings.Replace(good, "https://t3.example.com", "javascript:alert(1)", 1),
-		"duplicate":       good + "[[threads.instance]]\nname = \"main\"\ndb = \"x\"\nwebURL = \"https://t3.example.com\"\n",
-		"bad name":        strings.Replace(good, `name = "main"`, `name = "Main/1"`, 1),
-		"negative budget": strings.Replace(good, "[[threads.instance]]", "[threads]\ncallsPerHour = -1\n[[threads.instance]]", 1),
-		"no db":           strings.Replace(good, `db = "/var/lib/example/state.sqlite"`, ``, 1),
-		"wildcard base":   `basePath = "/t{3}/"` + "\n" + good,
-		"malformed base":  `basePath = "/a{b/"` + "\n" + good,
-		"dot-dot base":    `basePath = "/a/../b/"` + "\n" + good,
+		"unknown key":                       good + "\nbogus = 1\n",
+		"collections off without instances": "collections = false\n" + strings.Split(good, "[[threads.instance]]")[0],
+		"bad origin":                        strings.Replace(good, "https://deck.example.com/", "https://deck.example.com/threads", 1),
+		"bad web url":                       strings.Replace(good, "https://t3.example.com", "javascript:alert(1)", 1),
+		"duplicate":                         good + "[[threads.instance]]\nname = \"main\"\ndb = \"x\"\nwebURL = \"https://t3.example.com\"\n",
+		"bad name":                          strings.Replace(good, `name = "main"`, `name = "Main/1"`, 1),
+		"negative budget":                   strings.Replace(good, "[[threads.instance]]", "[threads]\ncallsPerHour = -1\n[[threads.instance]]", 1),
+		"no db":                             strings.Replace(good, `db = "/var/lib/example/state.sqlite"`, ``, 1),
+		"wildcard base":                     `basePath = "/t{3}/"` + "\n" + good,
+		"malformed base":                    `basePath = "/a{b/"` + "\n" + good,
+		"dot-dot base":                      `basePath = "/a/../b/"` + "\n" + good,
 	}
 	for name, content := range bad {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

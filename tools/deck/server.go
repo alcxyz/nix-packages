@@ -70,35 +70,33 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	base := d.cfg.BasePath
 
 	app := http.NewServeMux()
-	app.HandleFunc("GET "+base+"{$}", s.page)
-	app.HandleFunc("GET "+base+"fragment", s.fragment)
-	app.Handle("GET "+base+"static/", http.StripPrefix(base+"static/", http.FileServerFS(static)))
-	app.HandleFunc("POST "+base+"actions/refresh", s.refresh)
-	app.HandleFunc("POST "+base+"actions/refresh-all", s.refreshAll)
-	app.HandleFunc("POST "+base+"actions/ack", s.ack)
-	app.HandleFunc("POST "+base+"actions/forget", s.forget)
+	// The pages-only mode registers no dashboard routes; the proxy sends
+	// their paths to the dashboard process (ADR-0013).
+	if !d.cfg.pagesOnly() {
+		s.dashboardRoutes(app, static)
+	}
 	if base != "/" {
+		// The bare path redirects in both modes, so the proxy sees the
+		// dashboard's own path.
 		app.Handle("GET "+base[:len(base)-1], http.RedirectHandler(base, http.StatusMovedPermanently))
 		// The library and page bundles take the shared theme assets and the
 		// library stylesheet from /static/, outside the dashboard's namespace
 		// (ADR-0013).
 		app.Handle("GET "+sharedStaticPath, http.StripPrefix(sharedStaticPath, http.FileServerFS(static)))
 	}
-	// The backlog view's routes exist only when it is configured, so a
-	// process without it leaves its path to the content library.
+	// The backlog view's path is reserved only when it is configured, so a
+	// process without it leaves the path to the content library. The
+	// pages-only mode reserves a configured path without serving it.
 	backlogBase := ""
-	if d.backlog != nil {
+	if d.cfg.Backlog != nil {
 		backlogBase = d.cfg.Backlog.BasePath
-		app.HandleFunc("GET "+backlogBase+"{$}", s.backlogPage)
-		app.HandleFunc("GET "+backlogBase+"fragment", s.backlogFragment)
-		app.Handle("GET "+backlogBase+"static/", http.StripPrefix(backlogBase+"static/", http.FileServerFS(static)))
-		app.HandleFunc("POST "+backlogBase+"actions/refresh-all", s.backlogRefresh)
-		app.HandleFunc("POST "+backlogBase+"actions/verdict", s.backlogVerdict)
 		app.Handle("GET "+backlogBase[:len(backlogBase)-1], http.RedirectHandler(backlogBase, http.StatusMovedPermanently))
 	}
+	collections := *d.cfg.Collections
 
 	// Reserve the dashboard namespace, including its method errors. Content
 	// dispatch avoids adding wildcard patterns that conflict with custom bases.
+	// With the collections off, every other path is not found.
 	dispatch := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !validContentRequestPath(r) {
 			http.NotFound(w, r)
@@ -106,7 +104,7 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 		}
 		_, pattern := app.Handler(r)
 		reserved := (base != "/" && inNamespace(r.URL.Path, base)) || (backlogBase != "" && inNamespace(r.URL.Path, backlogBase))
-		if pattern != "" || reserved || (base == "/" && strings.HasPrefix(r.URL.Path, "/actions/")) {
+		if !collections || pattern != "" || reserved || (base == "/" && strings.HasPrefix(r.URL.Path, "/actions/")) {
 			app.ServeHTTP(w, r)
 			return
 		}
@@ -122,6 +120,27 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 		protected.ServeHTTP(w, r)
 	})
 	return securityHeaders(root), nil
+}
+
+// dashboardRoutes registers the thread dashboard and, when configured, the
+// backlog view.
+func (s *Server) dashboardRoutes(app *http.ServeMux, static fs.FS) {
+	base := s.deck.cfg.BasePath
+	app.HandleFunc("GET "+base+"{$}", s.page)
+	app.HandleFunc("GET "+base+"fragment", s.fragment)
+	app.Handle("GET "+base+"static/", http.StripPrefix(base+"static/", http.FileServerFS(static)))
+	app.HandleFunc("POST "+base+"actions/refresh", s.refresh)
+	app.HandleFunc("POST "+base+"actions/refresh-all", s.refreshAll)
+	app.HandleFunc("POST "+base+"actions/ack", s.ack)
+	app.HandleFunc("POST "+base+"actions/forget", s.forget)
+	if s.deck.backlog != nil {
+		backlogBase := s.deck.cfg.Backlog.BasePath
+		app.HandleFunc("GET "+backlogBase+"{$}", s.backlogPage)
+		app.HandleFunc("GET "+backlogBase+"fragment", s.backlogFragment)
+		app.Handle("GET "+backlogBase+"static/", http.StripPrefix(backlogBase+"static/", http.FileServerFS(static)))
+		app.HandleFunc("POST "+backlogBase+"actions/refresh-all", s.backlogRefresh)
+		app.HandleFunc("POST "+backlogBase+"actions/verdict", s.backlogVerdict)
+	}
 }
 
 // sharedStaticPath serves deck's static assets to the library and page

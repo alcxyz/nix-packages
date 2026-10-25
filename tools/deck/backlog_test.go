@@ -17,7 +17,7 @@ func newBacklogDeck(t *testing.T) (*Deck, http.Handler) {
 	t.Helper()
 	d, _ := newTestDeck(t)
 	d.cfg.Backlog = &BacklogConfig{Commands: BacklogCommandsConfig{Inventory: fakeBin(t, "backlog-inventory")}}
-	if err := d.cfg.Backlog.normalize(d.cfg.BasePath); err != nil {
+	if err := d.cfg.Backlog.normalize(d.cfg.BasePath, false); err != nil {
 		t.Fatal(err)
 	}
 	d.backlog = newBacklog(*d.cfg.Backlog, quietLog())

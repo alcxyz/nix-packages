@@ -3,7 +3,9 @@
 Deck also serves operator-authored interactive briefings in read-only page
 collections, and optionally a live backlog view (below). The root index links
 to the thread dashboard, the backlog view when configured, and each
-collection.
+collection. A second deck process without thread instances can serve the
+collections alone, from a Git checkout, on a host that stays up (see
+[Dashboard and pages-only modes](#dashboard-and-pages-only-modes)).
 See [ADR-0013](../../docs/adr/0013-deck-page-collections.md) for content ownership.
 
 A live web dashboard of T3 Code threads: which ones wait on you, which have
@@ -84,6 +86,7 @@ listen = "127.0.0.1:3775"            # default
 basePath = "/threads/"               # default
 publicOrigin = "https://deck.example.com"
 contentDir = "/home/user/.local/share/deck/pages" # optional; default described below
+collections = true                   # default; false leaves the collections to a pages-only process
 
 [auth]
 issuer = "https://id.example.com"
@@ -315,6 +318,76 @@ The operator owns persistence and backup of the content directory. Keep private
 briefings outside public repositories, images and example fixtures. An upstream
 proxy that routes only `/threads/` also needs explicit routes for the root index
 and the collections it should expose. Its existing audience remains unchanged.
+
+## Dashboard and pages-only modes
+
+Deck runs in one of two modes, chosen by its configuration
+([ADR-0013](../../docs/adr/0013-deck-page-collections.md), amendment of
+2026-10-24):
+
+- **Dashboard mode**, with at least one `[[threads.instance]]`, runs beside T3:
+  the thread dashboard at `basePath`, the backlog view when `[backlog]` is set,
+  and, unless `collections = false`, the root index and the collections. Its
+  content directory is a local directory the operator fills.
+- **Pages-only mode**, with no `[[threads.instance]]`, runs on a host that
+  stays up and serves only the root index, the collections, `/static/` and
+  `/healthz`. It runs no adapter commands, summaries or backlog, and writes no
+  state, cache or model configuration. `basePath` and `[backlog] basePath`
+  then name the dashboard views' paths in the dashboard process: the root
+  index links to them and they stay reserved (not found here, the bare path
+  redirected to its slash form), so no collection can claim a path the proxy
+  routes to the dashboard. `basePath` must not be `/`, and `[backlog]` takes
+  only `basePath` and refuses any other key in it, even one set to its
+  default; the backlog path is reserved only when it is set.
+
+Both modes verify the forwarded ID token against the same issuer, client ID
+and groups, with the same content security policy. One authenticating proxy
+in front of both, on one origin, routes the dashboard views' paths (such as
+`/threads/` and `/backlog/`) to the dashboard process and every other path to
+the pages process; the dashboard process can then set `collections = false`.
+
+A pages-only configuration:
+
+```toml
+listen = "0.0.0.0:3775"
+publicOrigin = "https://deck.example.com"
+contentDir = "/content/current"   # the sync process's checkout link
+basePath = "/threads/"            # the dashboard's path, linked and reserved
+
+[auth]
+issuer = "https://id.example.com"
+clientID = "deck"
+groups = ["admins"]
+
+[backlog]                         # only when the dashboard serves the backlog view
+basePath = "/backlog/"
+```
+
+In the pages-only mode the content comes from a Git repository the operator
+owns, through its served branch and reviewed pull requests. Deck has no Git
+client and holds no repository credential: a sync process beside it, such as a
+Git sync sidecar with a read-only credential, keeps a checkout of the branch
+and replaces it atomically, for example by swapping a symlink to the new
+revision. Point `contentDir` at that link. Deck opens the content root afresh
+for each request, so a new revision shows without a restart and a request
+never mixes two revisions. Files at the top of the checkout, such as a
+README, and dotfiles are ignored, and the root index lists only directories
+holding at least one valid bundle, so a `docs/` directory without bundles
+does not show as an empty collection.
+
+### Image
+
+`nix build .#deck-image` builds a Docker-format image archive (a gzipped
+tar) of the pages-only mode (Linux only), loadable with `podman load` or
+`docker load`, or pushed with
+`skopeo copy docker-archive:result docker://REGISTRY/deck:TAG`. Its
+entrypoint is `deck serve -config /etc/deck/config.toml`; mount the
+configuration there and the content volume at the configured `contentDir`.
+The image runs as user and group 65532, needs no writable path, so it works
+with a read-only root filesystem and all capabilities dropped, carries a CA
+bundle for the issuer's OIDC discovery, and listens on port 3775 once
+`listen` names a non-loopback address. Use the unauthenticated `/healthz` for
+liveness and readiness probes.
 
 ## Development
 

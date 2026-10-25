@@ -284,6 +284,12 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 					s.log.Warn("content collection skipped", "collection", entry.Name(), "err", err)
 					continue
 				}
+				// Only valid bundles appear in the indexes (ADR-0013), so a
+				// directory without one, such as a checkout's docs/, is no
+				// collection on the root index.
+				if len(collection.Pages) == 0 {
+					continue
+				}
 				view.Collections = append(view.Collections, collection)
 			}
 			sort.Slice(view.Collections, func(i, j int) bool { return view.Collections[i].Name < view.Collections[j].Name })
