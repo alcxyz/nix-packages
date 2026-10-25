@@ -565,7 +565,9 @@ func TestAgentStopsOnInterrupt(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		// The interrupt can reach ssh-add while it still runs, which reports
+		// "ssh-add was stopped by an interrupt" rather than "interrupted".
+		if err == nil || !strings.Contains(err.Error(), "interrupt") {
 			t.Errorf("error = %v", err)
 		}
 	case <-time.After(10 * time.Second):
