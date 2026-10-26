@@ -134,6 +134,7 @@ func TestContentPageAssetsAndRedirects(t *testing.T) {
 	d.cfg.ContentDir = t.TempDir()
 	writeContentPage(t, d.cfg.ContentDir, "notes/example", "Example", "2026-10-01", "")
 	writeContentFile(t, d.cfg.ContentDir, "notes/example/figure.png", "\x89PNG\r\n\x1a\n")
+	writeContentFile(t, d.cfg.ContentDir, "notes/example/data.json", `{"shares":[]}`)
 	h := contentTestHandler(t, d, nil)
 	for _, tc := range []struct{ path, kind, body string }{
 		{"/notes/example/", "text/html", "Example page"},
@@ -141,6 +142,7 @@ func TestContentPageAssetsAndRedirects(t *testing.T) {
 		{"/notes/example/style.css", "text/css", "color: navy"},
 		{"/notes/example/app.js", "javascript", "document.title"},
 		{"/notes/example/figure.png", "image/png", "PNG"},
+		{"/notes/example/data.json", "application/json", `"shares"`},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			rec := get(t, h, tc.path)
@@ -223,7 +225,7 @@ func TestContentRefusesPrivatePathsAndSpecialFiles(t *testing.T) {
 	d, _ := newTestDeck(t)
 	d.cfg.ContentDir = t.TempDir()
 	writeContentPage(t, d.cfg.ContentDir, "notes/example", "Example", "2026-10-01", "")
-	for _, name := range []string{".hidden", ".hidden.css", "private.json", "archive.zip", "UPPER.css", "nested/file.css"} {
+	for _, name := range []string{".hidden", ".hidden.css", "private.txt", "archive.zip", "UPPER.css", "nested/file.css"} {
 		writeContentFile(t, d.cfg.ContentDir, "notes/example/"+name, "not public")
 	}
 	outside := t.TempDir()
@@ -248,7 +250,7 @@ func TestContentRefusesPrivatePathsAndSpecialFiles(t *testing.T) {
 	}
 	h := contentTestHandler(t, d, nil)
 	for _, p := range []string{
-		"/notes/example/metadata.json", "/notes/example/.hidden", "/notes/example/.hidden.css", "/notes/example/private.json", "/notes/example/archive.zip", "/notes/example/UPPER.css", "/notes/example/nested/file.css", "/notes/example/escape.css", "/notes/example/metadata.css", "/notes/example/hidden.css", "/escape/", "/escape/example/", "/notes/escape/", "/notes/example/pipe.css", "/notes/example/directory.css", "/notes/example/directory.css/", "/notes/example/../example/style.css", "/notes/example/%2e%2e/example/style.css", "/notes/example/%2fstyle.css", "/notes/example/%5cstyle.css", "/notes/example/%00.css", "/notes//example/style.css", "/notes/example/style.css/extra", "/notes/example/%252e%252e", "/notes/example/../../outside.css", "/notes/../threads/", "/notes/../threads/static/deck.css",
+		"/notes/example/metadata.json", "/notes/example/.hidden", "/notes/example/.hidden.css", "/notes/example/private.txt", "/notes/example/archive.zip", "/notes/example/UPPER.css", "/notes/example/nested/file.css", "/notes/example/escape.css", "/notes/example/metadata.css", "/notes/example/hidden.css", "/escape/", "/escape/example/", "/notes/escape/", "/notes/example/pipe.css", "/notes/example/directory.css", "/notes/example/directory.css/", "/notes/example/../example/style.css", "/notes/example/%2e%2e/example/style.css", "/notes/example/%2fstyle.css", "/notes/example/%5cstyle.css", "/notes/example/%00.css", "/notes//example/style.css", "/notes/example/style.css/extra", "/notes/example/%252e%252e", "/notes/example/../../outside.css", "/notes/../threads/", "/notes/../threads/static/deck.css",
 	} {
 		if rec := get(t, h, p); rec.Code != http.StatusNotFound {
 			t.Errorf("refused path %s: %d (%s)", p, rec.Code, rec.Header().Get("Location"))

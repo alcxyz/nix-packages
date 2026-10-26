@@ -224,7 +224,9 @@ download routes, and there are no directory listings. Assets sit beside
 `index.html`, not in subdirectories. Their names are lowercase letters and
 digits, with single `-` or `_` separators between them (not leading, trailing
 or doubled), and one of the extensions `html`, `css`, `js`, `png`, `jpg`,
-`jpeg`, `gif`, `webp`, `avif`, `svg` or `ico`; any other file returns 404.
+`jpeg`, `gif`, `webp`, `avif`, `svg`, `ico` or `json`; any other file returns 404.
+A `json` asset lets a page load data that a process outside Deck refreshes;
+`metadata.json` is still not served.
 Publish complete bundles
 before moving them into place; no service restart is needed to add a page.
 

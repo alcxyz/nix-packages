@@ -1,6 +1,6 @@
 # ADR-0013: Operator-authored page collections in Deck
 
-**Status:** Accepted; content source and pages-only mode amended 2026-10-24; shared colour scheme assets amended 2026-10-25; shared design stylesheet amended 2026-10-25
+**Status:** Accepted; content source and pages-only mode amended 2026-10-24; shared colour scheme assets amended 2026-10-25; shared design stylesheet amended 2026-10-25; JSON data assets amended 2026-10-26
 **Date:** 2026-10-22
 **Applies to:** `tools/deck/`
 
@@ -214,3 +214,38 @@ directory.
   release is deployed.
 - Standalone exports and PDF builds of a bundle ship their own copy of
   `base.css`, since `/static/` exists only on deck.
+
+## Amendment (2026-10-26): JSON data assets
+
+### Context
+
+A bundle can be a live report: its script loads a data file that a process
+outside Deck rewrites on a schedule, such as a timer that fetches activity
+from another service's read-only API. Deck refused every `.json` file, so the
+data file returned 404 and the page could not load it.
+
+### Decision
+
+- **Bundles may serve top-level `json` assets** under the same naming rules,
+  token check and headers as their other assets. The writer replaces the file
+  atomically, so Deck never serves a partial file. A request that races the
+  rename gets 404 (Deck refuses a file that changed while opening), so a live
+  page should retry on its next refresh rather than treat 404 as final.
+- **`metadata.json` stays unserved.** It is index input, not a page asset.
+
+### Alternatives considered
+
+- **Write the data under an allowed extension, such as `data.js`.** Rejected:
+  it mislabels data as script and hides the bundle's real contract.
+- **A Deck API that proxies the other service.** Rejected: Deck would hold
+  that service's credentials, against its filesystem-only design.
+
+### Consequences
+
+- Bundle authors must not leave private JSON in a bundle they would not serve,
+  as with any other asset.
+- A data file written on one host is served only by the Deck process that
+  reads that host's content directory. A Git-synced checkout (the 2026-10-24
+  amendment) does not support writer-refreshed files yet: each sync swaps in a
+  fresh revision without them. Such a setup needs its own decision, for
+  example a data directory outside the checkout.

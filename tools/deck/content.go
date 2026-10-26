@@ -19,7 +19,7 @@ import (
 const metadataLimit = 16 * 1024
 
 var contentSlugRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-var contentAssetRE = regexp.MustCompile(`^[a-z0-9]+([_-][a-z0-9]+)*\.(html|css|js|png|jpg|jpeg|gif|webp|avif|svg|ico)$`)
+var contentAssetRE = regexp.MustCompile(`^[a-z0-9]+([_-][a-z0-9]+)*\.(html|css|js|png|jpg|jpeg|gif|webp|avif|svg|ico|json)$`)
 
 type ContentPage struct {
 	Title   string `json:"title"`
@@ -347,7 +347,8 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		name = parts[2]
-		if !contentAssetRE.MatchString(name) || strings.HasSuffix(r.URL.Path, "/") {
+		// metadata.json matches the asset pattern but stays private to the indexes.
+		if !contentAssetRE.MatchString(name) || name == "metadata.json" || strings.HasSuffix(r.URL.Path, "/") {
 			http.NotFound(w, r)
 			return
 		}
