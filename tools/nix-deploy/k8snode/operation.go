@@ -398,6 +398,9 @@ func (o *Operation) preflightHealth() error {
 	if err := o.waitForLonghornHealth(); err != nil {
 		return err
 	}
+	if err := o.checkLonghornReplicaSpread(); err != nil {
+		return err
+	}
 	if err := o.waitForCNPGHealth(); err != nil {
 		return err
 	}

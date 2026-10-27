@@ -9,6 +9,16 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.20.0 (2026-10-27)
+
+- A node reboot, power-off and `--check-only` stop before the database
+  switchover and the cordon when an attached Longhorn volume keeps running,
+  unfailed replicas on fewer than two nodes besides the target, listing
+  those volumes (ADR-0010 amendment
+  "replica spread before the drain"). Longhorn can report such a volume
+  healthy, and the one-node-down gate after the drain then waited its whole
+  settle timeout with the node cordoned and drained.
+
 ## 0.19.0 (2026-10-27)
 
 - Every deploy run, dry runs included, keeps a record under

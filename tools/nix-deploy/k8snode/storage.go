@@ -285,10 +285,9 @@ func (o *Operation) warnForLonghornHealth() error {
 	return nil
 }
 
-// survivabilityFailures lists attached volumes that would not stay
-// available with the node down: attached to it, faulted, below the replica
-// floor, or without healthy replicas on enough other nodes.
-func survivabilityFailures(target string, volumes []longhornVolume, replicas []longhornReplica) []string {
+// survivingReplicaNodes maps each volume to the other nodes that keep a
+// running, unfailed replica of it with the target down.
+func survivingReplicaNodes(target string, replicas []longhornReplica) map[string][]string {
 	surviving := map[string][]string{}
 	for _, r := range replicas {
 		if r.Spec.NodeID != target && r.Status.CurrentState == "running" && r.Spec.FailedAt == "" &&
@@ -296,24 +295,89 @@ func survivabilityFailures(target string, volumes []longhornVolume, replicas []l
 			surviving[r.Spec.VolumeName] = append(surviving[r.Spec.VolumeName], r.Spec.NodeID)
 		}
 	}
+	for _, nodes := range surviving {
+		slices.Sort(nodes)
+	}
+	return surviving
+}
+
+// survivabilityFailures lists attached volumes that would not stay
+// available with the node down: attached to it, faulted, below the replica
+// floor, or without healthy replicas on enough other nodes.
+func survivabilityFailures(target string, volumes []longhornVolume, replicas []longhornReplica) []string {
+	surviving := survivingReplicaNodes(target, replicas)
 	var lines []string
 	for _, v := range volumes {
 		if !v.attachedOrAttaching() {
 			continue
 		}
 		nodes := surviving[v.Metadata.Name]
-		slices.Sort(nodes)
 		if v.Spec.NumberOfReplicas < minLonghornReplicas ||
 			v.Status.State != "attached" ||
 			v.Status.Robustness == "faulted" ||
 			v.Status.CurrentNodeID == target ||
 			v.Spec.NodeID == target ||
 			len(nodes) < minSurvivingLonghornReplicas {
-			lines = append(lines, fmt.Sprintf("%s\t%s\tstate=%s\trobustness=%s\tattachment=%s\tsurvivingNodes=%s",
-				v.Metadata.Name, v.claim(), v.Status.State, v.Status.Robustness, v.Status.CurrentNodeID, strings.Join(nodes, ",")))
+			lines = append(lines, survivabilityLine(v, nodes))
 		}
 	}
 	return lines
+}
+
+// spreadFailures lists attached volumes whose healthy replicas sit on too
+// few nodes besides the target. Unlike survivabilityFailures it ignores the
+// attachment, which the drain moves, so it can run before the cordon. A
+// volume still attaching may not run its replicas yet, so it is left to the
+// gate after the drain, which waits.
+func spreadFailures(target string, volumes []longhornVolume, replicas []longhornReplica) []string {
+	surviving := survivingReplicaNodes(target, replicas)
+	var lines []string
+	for _, v := range volumes {
+		if v.Status.State == "attached" && len(surviving[v.Metadata.Name]) < minSurvivingLonghornReplicas {
+			lines = append(lines, survivabilityLine(v, surviving[v.Metadata.Name]))
+		}
+	}
+	return lines
+}
+
+func survivabilityLine(v longhornVolume, nodes []string) string {
+	return fmt.Sprintf("%s\t%s\tstate=%s\trobustness=%s\tattachment=%s\tsurvivingNodes=%s",
+		v.Metadata.Name, v.claim(), v.Status.State, v.Status.Robustness, v.Status.CurrentNodeID, strings.Join(nodes, ","))
+}
+
+func (o *Operation) listLonghornReplicas() ([]longhornReplica, error) {
+	var replicas struct {
+		Items []longhornReplica `json:"items"`
+	}
+	err := o.getJSON(&replicas, "-n", "longhorn-system", "get", "replicas.longhorn.io", "-o", "json")
+	return replicas.Items, err
+}
+
+// checkLonghornReplicaSpread fails before the database switchover and the
+// cordon when an attached volume keeps healthy replicas on too few nodes
+// besides the target. Longhorn
+// can report such a volume healthy, say with several replicas on one node
+// after another node's outage, and the one-node-down gate after the drain
+// would then wait out its whole timeout with the node cordoned and drained.
+func (o *Operation) checkLonghornReplicaSpread() error {
+	if !o.longhornVolumesServed() {
+		return nil
+	}
+	o.log("checking Longhorn replica spread without %s (%d other nodes)", o.opts.Node, minSurvivingLonghornReplicas)
+	volumes, err := o.listLonghornVolumes()
+	if err != nil {
+		return err
+	}
+	replicas, err := o.listLonghornReplicas()
+	if err != nil {
+		return err
+	}
+	if bad := spreadFailures(o.opts.Node, volumes, replicas); len(bad) > 0 {
+		o.report(bad)
+		return fmt.Errorf("attached Longhorn volumes keep healthy replicas on fewer than %d nodes besides %s; restore the replica spread before maintenance",
+			minSurvivingLonghornReplicas, o.opts.Node)
+	}
+	return nil
 }
 
 func (o *Operation) waitForLonghornSurvivability() error {
@@ -327,13 +391,11 @@ func (o *Operation) waitForLonghornSurvivability() error {
 		if err != nil {
 			return err
 		}
-		var replicas struct {
-			Items []longhornReplica `json:"items"`
-		}
-		if err := o.getJSON(&replicas, "-n", "longhorn-system", "get", "replicas.longhorn.io", "-o", "json"); err != nil {
+		replicas, err := o.listLonghornReplicas()
+		if err != nil {
 			return err
 		}
-		bad := survivabilityFailures(o.opts.Node, volumes, replicas.Items)
+		bad := survivabilityFailures(o.opts.Node, volumes, replicas)
 		if len(bad) == 0 {
 			return nil
 		}

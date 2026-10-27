@@ -943,6 +943,55 @@ func TestLonghornSurvivabilityFailures(t *testing.T) {
 	}
 }
 
+func TestLonghornSpreadFailures(t *testing.T) {
+	f := newHealthyCluster(t)
+	var volumes []longhornVolume
+	var replicas []longhornReplica
+	if err := jsonUnmarshal(serve(f.volumes).Stdout, &volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := jsonUnmarshal(serve(f.replicas).Stdout, &replicas); err != nil {
+		t.Fatal(err)
+	}
+	// The drain moves the attachment, so a volume attached to the target
+	// passes before it.
+	volumes[0].Status.CurrentNodeID = "server-a"
+	volumes[0].Spec.NodeID = "server-a"
+	if bad := spreadFailures("server-a", volumes, replicas); len(bad) != 0 {
+		t.Fatalf("got %q", bad)
+	}
+	// Two healthy replicas on server-b are one surviving node.
+	replicas[2].Spec.NodeID = "server-b"
+	bad := spreadFailures("server-a", volumes, replicas)
+	if len(bad) != 1 || bad[0] != "pvc-1\tdefault/data\tstate=attached\trobustness=healthy\tattachment=server-a\tsurvivingNodes=server-b" {
+		t.Fatalf("got %q", bad)
+	}
+	// A detached or attaching volume is not checked.
+	for _, state := range []string{"detached", "attaching"} {
+		volumes[0].Status.State = state
+		if bad := spreadFailures("server-a", volumes, replicas); len(bad) != 0 {
+			t.Fatalf("%s: got %q", state, bad)
+		}
+	}
+}
+
+// A healthy volume whose replicas sit on the target and one other node
+// fails the run before the cordon, not after the drain at the one-node-down
+// gate's timeout; check-only reports it too.
+func TestReplicaSpreadFailsBeforeCordon(t *testing.T) {
+	for _, args := range [][]string{nil, {"--check-only"}} {
+		t.Run(strings.Join(append([]string{"reboot"}, args...), " "), func(t *testing.T) {
+			f := newHealthyCluster(t)
+			set(f.replicas[2], "server-b", "spec", "nodeID")
+			output := runFailure(t, f, "reboot", args, "attached Longhorn volumes keep healthy replicas on fewer than 2 nodes besides server-a")
+			mustContain(t, output, "pvc-1\tdefault/data\tstate=attached")
+			if mutations := f.mutations(); len(mutations) > 0 {
+				t.Fatalf("mutations: %v", mutations)
+			}
+		})
+	}
+}
+
 // requireContext checks that every kubectl call carried the context.
 func requireContext(t *testing.T, f *fakeCluster, want string) {
 	t.Helper()

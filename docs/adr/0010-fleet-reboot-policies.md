@@ -373,3 +373,23 @@ operator's setup, not this tool's.
 Silencing monitoring from nixfleet itself was considered: it would tie a
 public tool to one monitoring stack and its credentials, which belong to
 the operator's private configuration.
+
+## Amendment (2026-10-27): replica spread before the drain
+
+A node's turn drained it and then waited at the one-node-down gate for the
+whole settle timeout: after another node's outage, Longhorn had rebuilt the
+lost replicas on the two remaining nodes, several of a volume on one node,
+and reported the volumes healthy. With the target down, only one node kept
+each of those volumes, and nothing in the run's power could change that.
+
+- **The spread is checked before the cordon.** After the preflight health
+  wait (which may have raised rebuild admission for degraded volumes), a run
+  lists the attached volumes whose running, unfailed replicas sit on fewer
+  than two nodes besides the target, and stops before the database
+  switchover and the cordon; `--check-only` reports the same. The
+  attachment is not checked here, since the drain moves it, nor a volume
+  still attaching, whose replicas may not run yet; the gate after the drain
+  still checks everything and waits.
+- **Repairing the spread stays with the operator.** Moving replicas is
+  storage policy, outside a reboot's scope, and the cause (here a Longhorn
+  reconcile error) needs diagnosis rather than a retry.
