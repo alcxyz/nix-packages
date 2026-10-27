@@ -1127,7 +1127,13 @@ func lastCompleteDevlogDate() time.Time {
 }
 
 func lastCompleteDevlogDateAt(now time.Time) time.Time {
-	return dateOnly(now.Add(-5*time.Hour)).AddDate(0, 0, -1)
+	// Compare the local clock with 05:00 rather than subtracting five hours,
+	// so the boundary stays at 05:00 on days with a DST change.
+	day := dateOnly(now)
+	if now.In(time.Local).Hour() < 5 {
+		day = day.AddDate(0, 0, -1)
+	}
+	return day.AddDate(0, 0, -1)
 }
 
 func weekIsComplete(monday, completeThrough time.Time) bool {
@@ -1136,9 +1142,12 @@ func weekIsComplete(monday, completeThrough time.Time) bool {
 	return monday.AddDate(0, 0, 6).Format("2006-01-02") <= completeThrough.Format("2006-01-02")
 }
 
+// devlogWindow runs from 05:00 local time to 05:00 the next day, so a day
+// with a DST change lasts 23 or 25 hours instead of leaving a gap or overlap.
 func devlogWindow(date time.Time) (time.Time, time.Time) {
 	start := time.Date(date.Year(), date.Month(), date.Day(), 5, 0, 0, 0, time.Local)
-	return start, start.Add(24 * time.Hour)
+	end := time.Date(date.Year(), date.Month(), date.Day()+1, 5, 0, 0, 0, time.Local)
+	return start, end
 }
 
 func inDevlogWindow(t, start, end time.Time) bool {

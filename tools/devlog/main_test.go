@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "time/tzdata" // DST tests load Europe/Oslo without system zoneinfo.
 )
 
 func TestWeekday(t *testing.T) {
@@ -223,6 +224,61 @@ func TestDevlogWindow(t *testing.T) {
 				t.Errorf("inDevlogWindow(%s) = %v, want %v", tt.ts, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDevlogWindowAcrossDST(t *testing.T) {
+	oslo, err := time.LoadLocation("Europe/Oslo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalLocal := time.Local
+	time.Local = oslo
+	t.Cleanup(func() { time.Local = originalLocal })
+
+	tests := []struct {
+		date   string
+		window string
+		hours  float64
+	}{
+		{"2026-03-28", "2026-03-28 05:00 CET to 2026-03-29 04:59 CEST", 23},
+		{"2026-10-24", "2026-10-24 05:00 CEST to 2026-10-25 04:59 CET", 25},
+		{"2026-10-25", "2026-10-25 05:00 CET to 2026-10-26 04:59 CET", 24},
+	}
+	for _, tt := range tests {
+		t.Run(tt.date, func(t *testing.T) {
+			date, _ := time.Parse("2006-01-02", tt.date)
+			start, end := devlogWindow(date)
+			if got := formatWindow(start, end); got != tt.window {
+				t.Errorf("formatWindow() = %q, want %q", got, tt.window)
+			}
+			if got := end.Sub(start).Hours(); got != tt.hours {
+				t.Errorf("window lasts %v hours, want %v", got, tt.hours)
+			}
+			next, _ := devlogWindow(date.AddDate(0, 0, 1))
+			if !next.Equal(end) {
+				t.Errorf("next window starts at %s, want %s", next, end)
+			}
+		})
+	}
+
+	// 04:30 CET on the day summer time ends is still inside 2026-10-24's window.
+	for _, tt := range []struct {
+		now  string
+		want string
+	}{
+		{"2026-10-25 04:30", "2026-10-23"},
+		{"2026-10-25 05:00", "2026-10-24"},
+		{"2026-03-29 04:30", "2026-03-27"},
+		{"2026-03-29 05:00", "2026-03-28"},
+	} {
+		now, err := time.ParseInLocation("2006-01-02 15:04", tt.now, oslo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := lastCompleteDevlogDateAt(now).Format("2006-01-02"); got != tt.want {
+			t.Errorf("at %s: last complete date = %s, want %s", tt.now, got, tt.want)
+		}
 	}
 }
 
