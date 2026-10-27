@@ -20,6 +20,7 @@ func (d *deployer) deployHost(name, mode string) int {
 	if !d.saveReport([]string{host}, r) && status == 0 {
 		status = 1
 	}
+	d.finishRecord([]string{host}, r, status != 0)
 	return status
 }
 
@@ -139,7 +140,9 @@ func (d *deployer) switchHost(t target, path, mode string, r *report) int {
 		r.record(t.phase, t.host, "failed")
 		return 1
 	}
-	status := d.activateSystem(t.host, path, attached, false)
+	streams, log := d.switchLogged(t)
+	status := d.activateSystem(t.host, path, streams, false)
+	log.Close()
 	r.addTime(t, "activate", time.Since(started))
 	if status != 0 || group == nil {
 		d.recordActivation(r, t, status)

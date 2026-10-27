@@ -66,25 +66,31 @@ func (d *deployer) buildTargets(targets []target, evaluated map[string]evaluatio
 	started := time.Now()
 	// A failed derivation fails only the targets that need it; the
 	// per-target lookup below tells them apart.
-	command{argv: argv, stdin: bytes.NewReader(nil)}.run()
+	// The build keeps the terminal, so Nix draws its progress bar; the run
+	// record takes a failed build's logs from Nix afterwards.
+	buildStatus := command{argv: argv, stdin: bytes.NewReader(nil)}.run()
 	r.build += time.Since(started)
 
+	var failed []target
 	for _, t := range targets {
 		drv := evaluated[t.key()].Drv
 		output, status := capture(0, "nix", "path-info", drv+"^out")
 		if status != 0 {
 			fmt.Fprintf(os.Stderr, "%s build failed\n", d.label(t))
 			r.record(t.phase, t.host, "failed")
+			failed = append(failed, t)
 			continue
 		}
 		path := strings.TrimSpace(lastLine(output))
 		if !d.addRoot(t, drv, options) {
 			fmt.Fprintf(os.Stderr, "%s cannot protect the build from garbage collection\n", d.label(t))
 			r.record(t.phase, t.host, "failed")
+			failed = append(failed, t)
 			continue
 		}
 		built[t.key()] = path
 	}
+	d.recordBuild(argv, buildStatus, failed, evaluated)
 	return built
 }
 
@@ -163,24 +169,28 @@ func (d *deployer) evaluate(targets []target, r *report) map[string]evaluation {
 
 			var out bytes.Buffer
 			errOut := &prefixWriter{lock: &lock, dst: os.Stderr, prefix: d.label(t), skip: fetchLockWait}
+			// The log keeps the raw output, without the tag.
+			log := d.record.log(t.phase + "-" + t.host + "-evaluate.log")
+			errStream := tee(errOut, log)
 			started := time.Now()
 			statuses[i] = command{
 				// The evaluation cache does not keep derivation paths, and
 				// parallel evaluations would only contend for it.
 				argv:   []string{"nix", "eval", "--no-eval-cache", "--json", d.attribute(t), "--apply", evaluateOutputs},
 				stdin:  bytes.NewReader(nil),
-				stdout: &out,
-				stderr: errOut,
+				stdout: tee(&out, log),
+				stderr: errStream,
 			}.run()
 			elapsed[i] = time.Since(started)
 			var e evaluation
 			if statuses[i] == 0 {
 				if err := json.Unmarshal(out.Bytes(), &e); err != nil || e.Drv == "" || e.Out == "" {
-					fmt.Fprintf(errOut, "deploy: unexpected evaluation result: %s\n", strings.TrimSpace(out.String()))
+					fmt.Fprintf(errStream, "deploy: unexpected evaluation result: %s\n", strings.TrimSpace(out.String()))
 					statuses[i] = 1
 				}
 			}
 			errOut.flush()
+			log.Close()
 			if statuses[i] == 0 {
 				lock.Lock()
 				evaluated[t.key()] = e
@@ -189,6 +199,7 @@ func (d *deployer) evaluate(targets []target, r *report) map[string]evaluation {
 		}()
 	}
 	wait.Wait()
+	d.record.noteEvaluatedLock()
 
 	for i, t := range targets {
 		r.addTime(t, "evaluate", elapsed[i])
@@ -215,11 +226,7 @@ const (
 func (d *deployer) generation(t target) (running, profile string) {
 	if t.host == d.self {
 		if t.phase == "hm" {
-			state := os.Getenv("XDG_STATE_HOME")
-			if state == "" {
-				home, _ := os.UserHomeDir()
-				state = filepath.Join(home, ".local/state")
-			}
+			state := stateHome()
 			profile = resolve(filepath.Join(state, "nix/profiles/home-manager"))
 			if profile == "" {
 				profile = resolve(filepath.Join("/nix/var/nix/profiles/per-user", os.Getenv("USER"), "home-manager"))

@@ -12,11 +12,14 @@ import (
 // cannot be replaced while running.
 const switchInhibited = "Pre-switch check 'switchInhibitors' failed"
 
-// stdio is where an activation's input and output go.
+// stdio is where an activation's input and output go. log, when set, also
+// gets the output of a system switch, which is read through a buffer anyway;
+// other commands keep out and err as they are.
 type stdio struct {
 	in  io.Reader
 	out io.Writer
 	err io.Writer
+	log io.Writer
 }
 
 var attached = stdio{in: os.Stdin, out: os.Stdout, err: os.Stderr}
@@ -57,22 +60,32 @@ func (d *deployer) systemCommand(host, action, path string, nonInteractive bool)
 // the inventory says so. A switch refused by a switch inhibitor is retried
 // with 'boot', so the change takes effect after the next reboot.
 func (d *deployer) activateSystem(host, path string, streams stdio, nonInteractive bool) int {
-	action := d.systemAction(host)
-	if action == "boot" || (host == d.self && d.darwin) {
-		return streams.command(d.systemCommand(host, action, path, nonInteractive)).run()
+	if !d.readsSwitchOutput(host) {
+		return streams.command(d.systemCommand(host, d.systemAction(host), path, nonInteractive)).run()
 	}
 
 	// The capture sees both streams, so it must accept concurrent writes.
 	var output lockedBuffer
+	captures := []io.Writer{&output}
+	if streams.log != nil {
+		captures = append(captures, streams.log)
+	}
 	switchRun := streams.command(d.systemCommand(host, "switch", path, nonInteractive))
-	switchRun.stdout = io.MultiWriter(streams.out, &output)
-	switchRun.stderr = io.MultiWriter(streams.err, &output)
+	switchRun.stdout = io.MultiWriter(append([]io.Writer{streams.out}, captures...)...)
+	switchRun.stderr = io.MultiWriter(append([]io.Writer{streams.err}, captures...)...)
 	status := switchRun.run()
 	if status == 0 || !strings.Contains(output.String(), switchInhibited) {
 		return status
 	}
 	fmt.Fprintf(streams.out, "deploy(%s): switch inhibited, retrying with 'boot' so the change can take effect after reboot\n", host)
 	return streams.command(d.systemCommand(host, "boot", path, nonInteractive)).run()
+}
+
+// readsSwitchOutput reports whether activating host's system is a switch
+// whose output deploy reads for a switch inhibitor. The others, staged for
+// boot or nix-darwin's switch, write straight to their streams.
+func (d *deployer) readsSwitchOutput(host string) bool {
+	return d.systemAction(host) != "boot" && !(host == d.self && d.darwin)
 }
 
 // systemAction is "boot" for remote hosts the inventory stages for the next

@@ -19,3 +19,4 @@ Non-obvious decisions in this repo are documented here. Before changing tool des
 | [ADR-0013](0013-deck-page-collections.md) | Operator-authored page collections in Deck, served from Git apart from the dashboard, with one shared colour scheme toggle and design stylesheet | `tools/deck/` |
 | [ADR-0014](0014-deck-backlog-view.md) | deck's backlog view, a live backlog overview | `tools/deck/`, `tools/gh-app/` |
 | [ADR-0015](0015-deck-design-system.md) | One design for deck's views and page bundles, chosen by purpose | `tools/deck/web/`, page bundles |
+| [ADR-0016](0016-nixfleet-triage.md) | nixfleet triage: run records and an agent playbook for failed deploys | `tools/nix-deploy/` |

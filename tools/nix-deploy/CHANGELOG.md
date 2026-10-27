@@ -9,6 +9,29 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.19.0 (2026-10-27)
+
+- Every deploy run, dry runs included, keeps a record under
+  `$XDG_STATE_HOME/nix-deploy/runs/<id>/` (#673, ADR-0016): `run.json` (the
+  deploy arguments, the flake directory Nix resolves `.` to and its Git
+  state, the lock hashes and the result), the
+  `flake.lock` it deployed (read again after evaluation, which may rewrite
+  it; the one it started with is then kept as `flake.start.lock`), the
+  `--json` report as `report.json`, and under `logs/` the raw output of each
+  evaluation, each parallel fleet job and each system switch staged with
+  `switch`, which deploy already read through a pipe or buffer. Every other
+  command keeps the terminal as before and is not logged: single-host Home
+  Manager, boot-mode and nix-darwin activations, ready gates and pre-checks.
+  The shared build keeps its terminal too:
+  `build.log` summarises it, and after a failure the logs this machine's Nix
+  kept of the derivations the build attempted for the failed targets (none
+  of whose inputs is left to build or to fetch) are written as
+  `build-<derivation>.log` (up to 20 logs and 200 lookups, without asking
+  substituters, and 60 seconds for the listing and lookups together). A
+  failed run prints the record's directory.
+- The newest `DEPLOY_RUN_KEEP` (default 30) records are kept, and records of
+  runs still going on. A record that cannot be written only prints a warning.
+
 ## 0.18.3 (2026-10-25)
 
 - An interrupt removes the temporary files of reports still being written

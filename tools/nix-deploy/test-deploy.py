@@ -140,6 +140,9 @@ elif name == "nix":
         if listed("MOCK_EVAL_FAIL", derivation):
             print(f"error: fixture evaluation failure in {derivation}", file=sys.stderr)
             sys.exit(1)
+        if os.environ.get("MOCK_EVAL_LOCK"):
+            # Nix rewrites a lock that no longer matches flake.nix.
+            pathlib.Path("flake.lock").write_text(os.environ["MOCK_EVAL_LOCK"])
         # MOCK_VARIANT builds another generation of the same configuration.
         output = f"{store}/fixture{os.environ.get('MOCK_VARIANT', '')}-{derivation}"
         print(json.dumps({"drv": output + ".drv", "out": output}))
@@ -150,7 +153,15 @@ elif name == "nix":
             print("error: fixture dry-run failure", file=sys.stderr)
             sys.exit(1)
         count = int(os.environ.get("MOCK_LOCAL_BUILDS", "0"))
-        if os.environ.get("MOCK_DRY_RUN_RENAMED"):
+        # After the shared build, a derivation in MOCK_BUILD_FAIL is still to
+        # be built, as Nix lists a failed one.
+        logged = [json.loads(line) for line in open(os.environ["MOCK_LOG"])]
+        failing = [a[: -len("^out")] for a in args if a.endswith(".drv^out") and listed("MOCK_BUILD_FAIL", re.sub(r"^fixture\d*-", "", pathlib.Path(a[: -len(".drv^out")]).name))]
+        if failing and any(c[:2] == ["nix", "build"] and "--keep-going" in c for c in logged):
+            print(f"these {len(failing)} derivations will be built:", file=sys.stderr)
+            for drv in failing:
+                print(f"  {drv}", file=sys.stderr)
+        elif os.environ.get("MOCK_DRY_RUN_RENAMED"):
             print(f"these {count} derivations are queued:", file=sys.stderr)
             print(f"  {store}/queued.drv", file=sys.stderr)
         elif count:
@@ -181,6 +192,16 @@ elif name == "nix":
                 activate.write_text(pathlib.Path(sys.argv[0]).read_text())
                 activate.chmod(0o755)
         sys.exit(1 if failed else 0)
+    elif args[:2] == ["derivation", "show"]:
+        # The fixture's derivations have no input derivations.
+        print(json.dumps({"derivations": {pathlib.Path(a).name: {"inputs": {"drvs": {}, "srcs": []}} for a in args[2:]}, "version": 4}))
+    elif args[0] == "log":
+        # Nix keeps the log of a failed build only.
+        name = re.sub(r"^fixture\d*-", "", pathlib.Path(args[-1]).name[: -len(".drv")])
+        if not listed("MOCK_BUILD_FAIL", name):
+            print(f"error: build log of '{args[-1]}' is not available", file=sys.stderr)
+            sys.exit(1)
+        print(f"fixture full build log of {name}")
     elif args[0] == "path-info":
         output = pathlib.Path(args[1][: -len(".drv^out")])
         if not output.is_dir():
@@ -291,6 +312,10 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
         (commands / name).symlink_to(target)
     config = root / "inventory with spaces.json"
     config.write_text(json.dumps(HOST_DATA))
+    # The flake deployed is the working directory's; its lock goes into
+    # every run record.
+    (root / "flake.lock").write_text('{"nodes": {"root": {}}, "root": "root", "version": 7}\n')
+    (root / "flake.nix").write_text("{ outputs = _: { }; }\n")
     for name in ["hostname", "uname", "sudo", "ssh", "nix", "nix-env", "nixos-rebuild", "home-manager", "ready-check"]:
         command = commands / name
         command.write_text("#!" + sys.executable + "\n" + MOCK)
@@ -620,9 +645,43 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     rows = summary_rows(result)
     assert ["node", "failed", "ok"] in rows and ["solo", "ok", "-"] in rows
     assert "[system] [node] build failed" in result.stderr
+    # The build keeps the terminal; the record takes the failed build's log
+    # from Nix instead, and only for derivations that have one.
+    [record] = list((root / ".local/state/nix-deploy/runs").iterdir())
+    assert (record / "logs/build-fixture-node-system.log").read_text() == "fixture full build log of node-system\n"
+    summary = (record / "logs/build.log").read_text()
+    assert summary.startswith("command: nix build --keep-going ") and "exit status: 1\n" in summary
+    assert "failed targets: system:node\n" in summary and "attempted, with no pending input: 1\n" in summary and "log of " + system_path("node") + ".drv: build-fixture-node-system.log" in summary
+    assert [c for c in calls if c[:2] == ["nix", "log"]] == [["nix", "log", "--option", "substituters", "", system_path("node") + ".drv"]]
     calls, result = run("--all", "--no-preflight", status=1, MOCK_EVAL_FAIL="node-system")
     assert rebuilt(calls) == ["solo"] and ["node", "failed", "ok"] in summary_rows(result)
     assert "[system] [node]\terror: fixture evaluation failure in node-system" in result.stderr.splitlines()
+    # The run leaves its evidence: the raw output of each step, the report
+    # and the lock.
+    state = root / ".local/state/nix-deploy"
+    [record] = list((state / "runs").iterdir())
+    assert f"deploy: run record: {record}" == result.stderr.splitlines()[-1]
+    assert (record / "logs/system-node-evaluate.log").read_text() == "error: fixture evaluation failure in node-system\n"
+    # Parallel fleet jobs are logged; solo, staged for boot and switched with
+    # this terminal for its sudo prompt, keeps the terminal and has no log.
+    assert (record / "logs/system-xyz-activate.log").exists() and (record / "logs/hm-xyz-activate.log").exists()
+    assert not (record / "logs/system-solo-activate.log").exists() and (record / "logs/build.log").exists()
+    info = json.loads((record / "run.json").read_text())
+    assert info["failed"] and info["ended"] and info["args"] == ["--config", str(config), "--all", "--no-preflight"], info
+    assert json.loads((record / "report.json").read_text())["failed"]
+    assert (record / "flake.lock").read_text() == (root / "flake.lock").read_text()
+    assert not (state / "last-good.json").exists()
+    # A lock the evaluation rewrote is the one deployed; the one the run
+    # started with is kept beside it.
+    started_lock = (root / "flake.lock").read_text()
+    calls, result = run("--no-preflight", "--nixos", "node", MOCK_EVAL_LOCK='{"rewritten": true}\n')
+    [record] = list((state / "runs").iterdir())
+    info = json.loads((record / "run.json").read_text())
+    assert (record / "flake.lock").read_text() == '{"rewritten": true}\n' and (record / "flake.start.lock").read_text() == started_lock
+    assert info["startLockSha256"] != info["lockSha256"]
+    # A single-host switch is logged through the buffer that already reads it.
+    assert (record / "logs/system-node-activate.log").exists()
+    (root / "flake.lock").write_text(started_lock)
     calls, result = run("--no-preflight", "node", status=1, MOCK_BUILD_FAIL="node-home")
     assert not activations(calls)
     assert "node did not build; nothing was activated" in result.stderr

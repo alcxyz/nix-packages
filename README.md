@@ -98,7 +98,9 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
 
 - `nixfleet deploy`: the deploy command. It is also installed as `deploy`,
   which takes the same options without the subcommand, and `nix run
-  .#nix-deploy` still runs it.
+  .#nix-deploy` still runs it. Every run leaves a record (its report, lock
+  and per-step logs) under `$XDG_STATE_HOME/nix-deploy/runs`
+  ([ADR-0016](docs/adr/0016-nixfleet-triage.md)).
 - `nixfleet reboot [--all | <host>...]`: reboots hosts of the fleet, each
   under the policies the inventory gives it ([ADR-0010](docs/adr/0010-fleet-reboot-policies.md)):
   Kubernetes nodes (`kubernetesNodes`, in the cluster of `kubernetesContext`)

@@ -147,6 +147,15 @@ func writeFailedJSON(path string) {
 // writeJSON writes the results and timings in machine-readable form, so
 // runs can be compared over time.
 func (d *deployer) writeJSON(path string, selected []string, r *report) error {
+	data, err := d.reportData(selected, r)
+	if err != nil {
+		return err
+	}
+	return writeReportFile(path, data)
+}
+
+// reportData is the --json document, which the run record keeps too.
+func (d *deployer) reportData(selected []string, r *report) ([]byte, error) {
 	out := runReport{
 		Version:       version,
 		BuildProfile:  r.profile,
@@ -169,9 +178,9 @@ func (d *deployer) writeJSON(path string, selected []string, r *report) error {
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return writeReportFile(path, append(data, '\n'))
+	return append(data, '\n'), nil
 }
 
 // The package pins GNU ls so ACL checks do not depend on an ambient ls variant.

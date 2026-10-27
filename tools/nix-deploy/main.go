@@ -40,6 +40,8 @@ type settings struct {
 	heavyBuilds   int
 	heavyMaxJobs  int
 	heavyCores    int
+	// runKeep is how many run records a run leaves behind.
+	runKeep int
 }
 
 type deployer struct {
@@ -68,6 +70,8 @@ type deployer struct {
 	// hostLimits caches this machine's Nix max-jobs and cores, which cap the
 	// heavy build profile.
 	hostLimits *hostLimits
+	// record keeps this run's evidence on disk (ADR-0016).
+	record *runRecord
 }
 
 const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
@@ -280,6 +284,10 @@ func runDeploy(args []string) int {
 		}
 	}
 
+	// The flake is the one Nix finds for "." from the working directory; an
+	// unknown working directory is left empty rather than stopping the run.
+	cwd, _ := os.Getwd()
+	d.record = startRunRecord(args, findFlakeDir(cwd), d.dryRun, d.force, d.settings.runKeep)
 	defer d.releaseRoots()
 	// Ctrl-C reaches the running commands too; release the roots before
 	// exiting so an interrupted run does not pin its closures.
@@ -293,6 +301,8 @@ func runDeploy(args []string) int {
 			writeFailedJSON(d.jsonPath)
 		}
 		removeReportTemps()
+		// The run record stays as it is: without an end in run.json, it shows
+		// the run did not finish.
 		fmt.Fprintf(os.Stderr, "deploy: interrupted by %v\n", received)
 		status := 130
 		if received == syscall.SIGTERM {
@@ -381,6 +391,9 @@ func loadSettings() (settings, error) {
 	if values.heavyCores, err = positiveSetting("DEPLOY_HEAVY_CORES", "8"); err != nil {
 		return values, err
 	}
+	if values.runKeep, err = positiveSetting("DEPLOY_RUN_KEEP", "30"); err != nil {
+		return values, err
+	}
 	return values, nil
 }
 
@@ -445,6 +458,14 @@ activated nor gated. --dry-run stops after the plan, before building, and
 never starts a host's garbage collection, --force builds and activates
 unchanged targets too, and --json FILE writes the results and per-host
 timings.
+
+Every run leaves a record in $XDG_STATE_HOME/nix-deploy/runs (by default
+~/.local/state): run.json, the flake.lock it deployed, the --json report
+as report.json, under logs/ the output of each evaluation, fleet job and
+system switch that deploy already reads (commands on the terminal keep it and
+are not logged), and for a failed build the build logs Nix kept. The newest DEPLOY_RUN_KEEP
+(default 30) records are kept, and those of runs still going on. A failed run
+prints the directory of its record.
 
 Before the build, the run counts the derivations it would build (nix build
 --dry-run; downloads do not count) and picks a build profile. Light keeps this

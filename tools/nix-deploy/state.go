@@ -32,14 +32,20 @@ type failedActivations struct {
 	holders map[string]*os.File
 }
 
-func loadFailedActivations() *failedActivations {
+// stateHome is this machine's XDG state directory; deploy keeps its records
+// under nix-deploy there.
+func stateHome() string {
 	state := os.Getenv("XDG_STATE_HOME")
 	if state == "" {
 		home, _ := os.UserHomeDir()
 		state = filepath.Join(home, ".local/state")
 	}
+	return state
+}
+
+func loadFailedActivations() *failedActivations {
 	return &failedActivations{
-		path:    filepath.Join(state, "nix-deploy", "failed-activations.json"),
+		path:    filepath.Join(stateHome(), "nix-deploy", "failed-activations.json"),
 		holders: map[string]*os.File{},
 	}
 }
@@ -182,27 +188,34 @@ func (f *failedActivations) save(entries map[string][]string) error {
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(f.path), ".failed-activations-*")
+	return replaceFile(f.path, append(data, '\n'))
+}
+
+// replaceFile writes data to path through a temporary file (mode 0600) in the
+// same directory and a rename, so readers and a crash see either the old or
+// the new content.
+func replaceFile(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return err
 	}
-	_, err = temp.Write(append(data, '\n'))
+	_, err = temp.Write(data)
 	if err == nil {
-		// The record must survive a crash right after the rename.
+		// The file must survive a crash right after the rename.
 		err = temp.Sync()
 	}
 	if closeErr := temp.Close(); err == nil {
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(temp.Name(), f.path)
+		err = os.Rename(temp.Name(), path)
 	}
 	if err != nil {
 		os.Remove(temp.Name())
 		return err
 	}
 	// The rename itself must also survive a crash.
-	dir, err := os.Open(filepath.Dir(f.path))
+	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
 	}

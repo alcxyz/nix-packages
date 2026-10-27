@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Build profiles bound how hard the shared build loads this machine. Light
@@ -22,17 +23,18 @@ const (
 )
 
 // pendingBuilds returns the derivations Nix would build to realise the given
-// installables, as listed by `nix build --dry-run`. Paths fetched from a
-// substituter are not counted; derivations a remote builder would take are.
-func pendingBuilds(installables []string) ([]string, error) {
+// installables, as listed by `nix build --dry-run`, and the paths it would
+// fetch from a substituter, which are not builds; derivations a remote
+// builder would take are. A timeout above zero bounds the listing.
+func pendingBuilds(installables []string, timeout time.Duration) ([]string, []string, error) {
 	// The listing is parsed, so it must be plain text whatever the caller's
 	// log format.
 	argv := append([]string{"nix", "build", "--dry-run", "--log-format", "raw"}, installables...)
-	output, status := capture(0, argv...)
+	output, status := capture(timeout, argv...)
 	if status != 0 {
-		return nil, fmt.Errorf("nix build --dry-run failed: %s", oneLine(lastLine(output)))
+		return nil, nil, fmt.Errorf("nix build --dry-run failed: %s", oneLine(lastLine(output)))
 	}
-	return parsePendingBuilds(output)
+	return parsePending(output)
 }
 
 // parsePendingBuilds reads the derivations listed under Nix's "will be built"
@@ -43,7 +45,12 @@ func pendingBuilds(installables []string) ([]string, error) {
 // output cannot pass as a light run. Under systemd (IN_SYSTEMD) Nix starts
 // each line with a log level such as "<3>", which is dropped.
 func parsePendingBuilds(output string) ([]string, error) {
-	var drvs []string
+	drvs, _, err := parsePending(output)
+	return drvs, err
+}
+
+// parsePending reads the derivations to build and, apart, the paths to fetch.
+func parsePending(output string) (drvs, fetches []string, err error) {
 	heading := ""
 	announced := false
 	for _, line := range strings.Split(output, "\n") {
@@ -63,14 +70,15 @@ func parsePendingBuilds(output string) ([]string, error) {
 		case strings.HasSuffix(heading, "will be built:"):
 			drvs = append(drvs, path)
 		case strings.Contains(heading, "will be fetched"):
+			fetches = append(fetches, path)
 		default:
-			return nil, fmt.Errorf("unexpected listing under %q", heading)
+			return nil, nil, fmt.Errorf("unexpected listing under %q", heading)
 		}
 	}
 	if announced && len(drvs) == 0 {
-		return nil, fmt.Errorf("derivations to build announced but none listed")
+		return nil, nil, fmt.Errorf("derivations to build announced but none listed")
 	}
-	return drvs, nil
+	return drvs, fetches, nil
 }
 
 // logLevel is the prefix Nix's raw log format adds to each line under
@@ -93,7 +101,7 @@ func (d *deployer) chooseProfile(targets []target, evaluated map[string]evaluati
 	for _, t := range targets {
 		installables = append(installables, evaluated[t.key()].Drv+"^out")
 	}
-	drvs, err := pendingBuilds(installables)
+	drvs, _, err := pendingBuilds(installables, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "deploy: cannot count pending builds (%v); heavy build profile%s\n", err, d.profileDetails(profileHeavy))
 		r.profile = profileHeavy

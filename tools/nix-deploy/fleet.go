@@ -38,7 +38,9 @@ func (d *deployer) runJobs(jobs []job, r *report) {
 			// Recorded inside the job, so an interrupted run keeps the
 			// results of jobs that already ended.
 			if d.failed.begin(j.target, j.path) {
-				statuses[i] = j.run(stdio{in: bytes.NewReader(nil), out: out, err: errOut})
+				streams, log := d.logged(stdio{in: bytes.NewReader(nil), out: out, err: errOut}, j.target, "activate")
+				statuses[i] = j.run(streams)
+				log.Close()
 				d.failed.finish(j.target, statuses[i] == 0)
 			} else {
 				// Without the record a failure could later pass as unchanged.
@@ -92,6 +94,7 @@ func (d *deployer) deployAll(mode string) int {
 	if !d.saveReport(selected, r) && status == 0 {
 		status = 1
 	}
+	d.finishRecord(selected, r, status != 0)
 	return status
 }
 
@@ -234,7 +237,9 @@ func (d *deployer) activateSystems(changed []target, built map[string]string, bl
 			continue
 		}
 		started := time.Now()
-		status := d.activateSystem(t.host, path, attached, true)
+		streams, log := d.switchLogged(t)
+		status := d.activateSystem(t.host, path, streams, true)
+		log.Close()
 		r.addTime(t, "activate", time.Since(started))
 		d.recordActivation(r, t, status)
 	}
@@ -294,7 +299,9 @@ func (d *deployer) switchGroup(group *serialGroup, changed map[string]bool, buil
 			continue
 		}
 		started := time.Now()
-		status := d.activateSystem(host, path, attached, true)
+		streams, log := d.switchLogged(t)
+		status := d.activateSystem(host, path, streams, true)
+		log.Close()
 		r.addTime(t, "activate", time.Since(started))
 		if status != 0 {
 			d.failed.finish(t, false)
