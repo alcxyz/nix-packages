@@ -59,8 +59,8 @@ in
             'const host = explicitHost || "127.0.0.1";'
         substituteInPlace package.json \
           --replace-fail \
-            ' && vp config --no-agent' \
-            ""
+            '"prepare": "vp config --no-agent"' \
+            '"prepare": "true"'
         printf '\nverifyDepsBeforeRun: false\n' >> pnpm-workspace.yaml
 
         # Strict release builds generate third-party notices from this pinned
