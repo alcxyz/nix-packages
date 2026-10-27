@@ -87,6 +87,46 @@ func TestPageEscapesThreadText(t *testing.T) {
 	}
 }
 
+func TestUnwatchedChecks(t *testing.T) {
+	d, h, _ := newTestServer(t)
+	body := get(t, h, "/threads/").Body.String()
+	if strings.Contains(body, "<b>x</b>") {
+		t.Error("unescaped PR URL in the page")
+	}
+	for _, want := range []string{
+		`<span class="deck-badge attn" title="Stopped while PR checks run, with no watch armed">checks unwatched</span>`,
+		`<a class="deck-badge attn" href="https://git.example.com/acme/gadgets/pulls/9?from=%3cb%3ex%3c/b%3e&amp;y=1" rel="noreferrer" target="_blank" title="https://git.example.com/acme/gadgets/pulls/9?from=&lt;b&gt;x&lt;/b&gt;&amp;y=1">PR 9: checks pending, unwatched</a>`,
+		`<li class="unwatched"><b>1</b> stopped, PR checks unwatched</li>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	// Only the flagged thread carries the chips.
+	if n := strings.Count(body, ">checks unwatched<"); n != 1 {
+		t.Errorf("%d title chips, want 1", n)
+	}
+	if n := strings.Count(body, "checks pending, unwatched"); n != 1 {
+		t.Errorf("%d PR chips, want 1", n)
+	}
+	for _, sec := range d.view().Sections {
+		for _, sub := range sec.Subs {
+			for _, r := range sub.Rows {
+				if (len(r.UnwatchedChecks) > 0) != (r.ThreadID == "thread-f6") {
+					t.Errorf("%s: unwatched checks %v", r.ThreadID, r.UnwatchedChecks)
+				}
+			}
+		}
+	}
+
+	d.mu.Lock()
+	d.facts["main"].grouped.Summary.UnwatchedChecks = 0
+	d.mu.Unlock()
+	if body := get(t, h, "/threads/").Body.String(); strings.Contains(body, "PR checks unwatched") {
+		t.Error("the KPI shows with a count of 0")
+	}
+}
+
 func TestSecurityHeadersAndRoutes(t *testing.T) {
 	_, h, _ := newTestServer(t)
 	rec := get(t, h, "/threads/")

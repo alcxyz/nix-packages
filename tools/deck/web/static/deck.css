@@ -38,7 +38,7 @@ main { padding: 0.5rem 1rem 3rem; max-width: var(--deck-width); margin: 0 auto; 
   font-size: var(--deck-text-sm);
 }
 .counts b { font-family: var(--deck-mono); font-variant-numeric: tabular-nums; color: var(--deck-text); margin-right: 0.2rem; }
-.counts li.you b { color: var(--deck-attn); }
+.counts li.you b, .counts li.unwatched b { color: var(--deck-attn); }
 .counts li.stalled b, .counts li.maybe b { color: var(--deck-danger); }
 .counts li.settle b { color: var(--deck-ok); }
 
@@ -80,7 +80,7 @@ li.row .title:hover { color: var(--deck-accent-text); text-decoration: underline
 .body a { overflow-wrap: anywhere; }
 .warn { color: var(--deck-danger); }
 .settle-line { font-family: var(--deck-mono); font-size: var(--deck-text-sm); overflow-wrap: anywhere; }
-.chips .deck-chip { margin: 0 0.3rem 0.2rem 0; white-space: normal; }
+.chips :is(.deck-chip, .deck-badge) { margin: 0 0.3rem 0.2rem 0; white-space: normal; }
 
 .progress { font-size: var(--deck-text-xs); color: var(--deck-muted); white-space: nowrap; font-family: var(--deck-mono); font-variant-numeric: tabular-nums; }
 .progress meter {

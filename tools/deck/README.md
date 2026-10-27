@@ -11,6 +11,11 @@ See [ADR-0013](../../docs/adr/0013-deck-page-collections.md) for content ownersh
 A live web dashboard of T3 Code threads: which ones wait on you, which have
 stalled, which are ready to settle, and which settled threads may not be
 done. See [ADR-0012](../../docs/adr/0012-deck-t3-thread-dashboard.md).
+A thread the grouping lists in `unwatchedChecks` (stopped while a linked open
+PR's checks run, with no PR watch armed) gets a `checks unwatched` badge by
+its title and a `PR N: checks pending, unwatched` link per PR, and a
+`stopped, PR checks unwatched` count appears while any thread has one; the
+flag is informational and does not change the grouping.
 
 deck holds no queries against T3's database. It runs five adapter commands,
 which the consumer installs, and parses their JSON:

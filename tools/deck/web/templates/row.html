@@ -8,6 +8,7 @@
     {{if .HasProgress}}<span class="progress" title="{{.Progress}}% done"><meter min="0" max="100" value="{{.Progress}}">{{.Progress}}%</meter> {{.Progress}}%</span>{{end}}
     {{if .Owner}}<span class="deck-badge{{if eq .Owner "user"}} attn{{end}}">{{ownerLabel .Owner}}</span>{{end}}
     {{if .Acknowledged}}<span class="deck-badge ok">accepted</span>{{end}}
+    {{if .UnwatchedChecks}}<span class="deck-badge attn" title="Stopped while PR checks run, with no watch armed">checks unwatched</span>{{end}}
     {{if .SummaryStale}}<span class="deck-badge quiet" title="summary from before the latest activity">older summary</span>{{end}}
     {{if .SummaryUnchecked}}<span class="deck-badge quiet" title="the thread changed after its messages were last checked">maybe out of date</span>{{end}}
     {{if .NextAction}}<span class="next">{{.NextAction}}</span>{{end}}
@@ -25,6 +26,7 @@
     {{if .LeftForYou}}<p><b>Left for you</b></p><ul>{{range .LeftForYou}}<li>{{.}}</li>{{end}}</ul>{{end}}
     {{if .StallReasons}}<p><b>Stalled:</b> {{range $i, $r := .StallReasons}}{{if $i}}; {{end}}{{$r}}{{end}}</p>{{end}}
     {{if .WaitingOn}}<p class="chips">{{range .WaitingOn}}<span class="deck-chip" title="{{.Kind}}">{{.Description}}</span>{{end}}</p>{{end}}
+    {{if .UnwatchedChecks}}<p class="chips">{{range .UnwatchedChecks}}<a class="deck-badge attn" href="{{.URL}}" rel="noreferrer" target="_blank" title="{{.URL}}">PR {{if .Number}}{{.Number}}: {{end}}checks pending, unwatched</a>{{end}}</p>{{end}}
     {{if .PRs}}<p><b>Open PRs:</b> {{range .PRs}}<a href="{{.URL}}" rel="noreferrer" target="_blank">{{.URL}}</a> {{end}}</p>{{end}}
     <p class="meta">
       {{if .HasIdle}}idle {{.IdleText}}{{end}}

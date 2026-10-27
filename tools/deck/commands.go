@@ -128,14 +128,17 @@ type Messages struct {
 }
 
 type GroupSummary struct {
-	Unsettled   int            `json:"unsettled"`
-	User        int            `json:"user"`
-	Agent       int            `json:"agent"`
-	Stalled     int            `json:"stalled"`
-	Settle      int            `json:"settle"`
-	SettledOpen int            `json:"settledOpen"`
-	AvgPct      *float64       `json:"avgPct"`
-	Phases      map[string]int `json:"phases"`
+	Unsettled   int `json:"unsettled"`
+	User        int `json:"user"`
+	Agent       int `json:"agent"`
+	Stalled     int `json:"stalled"`
+	Settle      int `json:"settle"`
+	SettledOpen int `json:"settledOpen"`
+	// UnwatchedChecks counts unsettled threads that stopped while a linked
+	// open PR's checks run with no PR watch armed; absent means 0.
+	UnwatchedChecks int            `json:"unwatchedChecks"`
+	AvgPct          *float64       `json:"avgPct"`
+	Phases          map[string]int `json:"phases"`
 }
 
 type GroupFacts struct {
@@ -152,6 +155,10 @@ type GroupRow struct {
 	Group string     `json:"group"`
 	Owner string     `json:"owner"`
 	Facts GroupFacts `json:"facts"`
+	// UnwatchedChecks lists the URLs of open PRs whose checks are pending
+	// while the thread has stopped with no PR watch armed. It is
+	// informational and absent or null in older output.
+	UnwatchedChecks []string `json:"unwatchedChecks"`
 }
 
 type GroupSection struct {
@@ -190,14 +197,16 @@ func (r *GroupRow) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	var rest struct {
-		Group string     `json:"group"`
-		Owner string     `json:"owner"`
-		Facts GroupFacts `json:"facts"`
+		Group           string     `json:"group"`
+		Owner           string     `json:"owner"`
+		Facts           GroupFacts `json:"facts"`
+		UnwatchedChecks []string   `json:"unwatchedChecks"`
 	}
 	if err := json.Unmarshal(data, &rest); err != nil {
 		return err
 	}
 	r.Group, r.Owner, r.Facts = rest.Group, rest.Owner, rest.Facts
+	r.UnwatchedChecks = rest.UnwatchedChecks
 	return nil
 }
 

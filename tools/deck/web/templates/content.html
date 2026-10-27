@@ -10,6 +10,7 @@
     <li class="settle"><b>{{.Counts.Settle}}</b> ready to settle</li>
     <li class="maybe"><b>{{.Counts.SettledOpen}}</b> settled, maybe not done</li>
     <li><b>{{.Counts.Agent}}</b> agent side</li>
+    {{if gt .Counts.UnwatchedChecks 0}}<li class="unwatched"><b>{{.Counts.UnwatchedChecks}}</b> stopped, PR checks unwatched</li>{{end}}
     {{if .HasAvg}}<li><b>{{.AvgPct}}%</b> average progress</li>{{end}}
   </ul>
   <p class="meta">

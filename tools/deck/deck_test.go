@@ -402,7 +402,7 @@ func TestGroupingsPublishInOrder(t *testing.T) {
 n=$((n + 1))
 echo "$n" > "`+counter+`"
 [ "$n" = 1 ] && sleep 1
-exec sed "s/\"unsettled\": 3/\"unsettled\": $n/" "`+fixture+`"
+exec sed "s/\"unsettled\": 4/\"unsettled\": $n/" "`+fixture+`"
 `)
 	d.now = func() time.Time { return testClock.Add(time.Minute) }
 	done := make(chan error, 1)

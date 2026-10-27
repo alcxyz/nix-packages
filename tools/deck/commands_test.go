@@ -118,8 +118,19 @@ func TestParseGrouped(t *testing.T) {
 	if row.ProgressPct == nil || *row.ProgressPct != 60 || row.Facts.Verdict != "waiting" {
 		t.Fatalf("row summary or facts: %+v", row)
 	}
-	if g.Summary.Unsettled != 3 || g.Summary.AvgPct == nil || *g.Summary.AvgPct != 27 {
+	if g.Summary.Unsettled != 4 || g.Summary.UnwatchedChecks != 1 || g.Summary.AvgPct == nil || *g.Summary.AvgPct != 27 {
 		t.Fatalf("summary: %+v", g.Summary)
+	}
+	if row.UnwatchedChecks != nil {
+		t.Fatalf("a row without the field has unwatched checks: %v", row.UnwatchedChecks)
+	}
+	agent := g.Sections[3].Threads
+	if len(agent) != 2 || agent[1].ThreadID != "thread-f6" || len(agent[1].UnwatchedChecks) != 1 {
+		t.Fatalf("flagged row: %+v", agent)
+	}
+	var nullRow GroupRow
+	if err := json.Unmarshal([]byte(`{"threadId":"x","unwatchedChecks":null}`), &nullRow); err != nil || nullRow.UnwatchedChecks != nil {
+		t.Fatalf("a null field: %v %v", nullRow.UnwatchedChecks, err)
 	}
 	if _, err := parseGrouped([]byte(`{"sections":[{"title":"x"}]}`)); err == nil {
 		t.Fatal("a section without a key was accepted")

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -83,16 +85,19 @@ type RowView struct {
 	StallReasons  []string
 	WaitingOn     []WaitingOn
 	PRs           []PR
-	HasIdle       bool
-	IdleMinutes   int
-	IdleText      string
-	UpdatedAt     string
-	SettledAt     string
-	Acknowledged  bool
-	CanAccept     bool
-	CanRefresh    bool
-	HasSummary    bool
-	SummaryStale  bool
+	// UnwatchedChecks are open PRs whose checks run while the thread has
+	// stopped with no PR watch armed.
+	UnwatchedChecks []UnwatchedCheck
+	HasIdle         bool
+	IdleMinutes     int
+	IdleText        string
+	UpdatedAt       string
+	SettledAt       string
+	Acknowledged    bool
+	CanAccept       bool
+	CanRefresh      bool
+	HasSummary      bool
+	SummaryStale    bool
 	// SummaryUnchecked marks a summary of a thread that changed after its
 	// messages were last checked.
 	SummaryUnchecked   bool
@@ -103,6 +108,13 @@ type RowView struct {
 	SummaryAt          time.Time
 	SummaryError       string
 	SummaryState       string
+}
+
+// UnwatchedCheck is one PR of a thread's unwatchedChecks; Number is empty
+// when neither the status facts nor the URL give one.
+type UnwatchedCheck struct {
+	URL    string
+	Number string
 }
 
 type Unblocker struct {
@@ -127,6 +139,25 @@ func threadLink(in InstanceConfig, env, threadID string) string {
 		return in.WebURL + "/"
 	}
 	return in.WebURL + "/" + url.PathEscape(env) + "/" + url.PathEscape(threadID)
+}
+
+// prNumber is a PR's number: from the status facts when they list the URL,
+// otherwise the URL's last path segment when that is a number.
+func prNumber(prURL string, prs []StatusPR) string {
+	for _, pr := range prs {
+		if pr.URL == prURL && pr.Number > 0 {
+			return strconv.Itoa(pr.Number)
+		}
+	}
+	u, err := url.Parse(prURL)
+	if err != nil {
+		return ""
+	}
+	n := path.Base(u.Path)
+	if _, err := strconv.Atoi(n); err != nil {
+		return ""
+	}
+	return n
 }
 
 // leftForYouList reads the Left-for-you steps, a list of strings or one
@@ -214,6 +245,7 @@ func (d *Deck) view() PageView {
 		v.Counts.Stalled += s.Stalled
 		v.Counts.Settle += s.Settle
 		v.Counts.SettledOpen += s.SettledOpen
+		v.Counts.UnwatchedChecks += s.UnwatchedChecks
 		for p, n := range s.Phases {
 			v.Counts.Phases[p] += n
 		}
@@ -395,6 +427,11 @@ func (d *Deck) rowLocked(in InstanceConfig, env string, gr GroupRow, st StatusTh
 	for _, pr := range gr.PRs {
 		if isOpenPR(pr.State) {
 			r.PRs = append(r.PRs, pr)
+		}
+	}
+	for _, u := range gr.UnwatchedChecks {
+		if u != "" {
+			r.UnwatchedChecks = append(r.UnwatchedChecks, UnwatchedCheck{URL: u, Number: prNumber(u, st.PRs)})
 		}
 	}
 	if st.IdleMinutes != nil {
