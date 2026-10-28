@@ -21,7 +21,7 @@ and retired ADRs. ADR numbers are never reused.
 | [ADR-0010](0010-fleet-reboot-policies.md) | Fleet reboots by policy and constraint group | `tools/nix-deploy/` |
 | [ADR-0011](0011-revkit-agent-review-toolkit.md) | revkit, an agent review toolkit with isolated reviewers | `tools/revkit/` |
 | [ADR-0012](0012-deck-t3-thread-dashboard.md) | deck, a live T3 thread dashboard | `tools/deck/` |
-| [ADR-0013](0013-deck-page-collections.md) | Operator-authored page collections in Deck, served from Git apart from the dashboard, with one shared colour scheme toggle and design stylesheet | `tools/deck/` |
+| [ADR-0013](0013-deck-page-collections.md) | Operator-authored page collections in Deck | `tools/deck/` |
 | [ADR-0014](0014-deck-backlog-view.md) | deck's backlog view, a live backlog overview | `tools/deck/`, `tools/gh-app/` |
 | [ADR-0015](0015-deck-design-system.md) | One design for deck's views and page bundles, chosen by purpose | `tools/deck/web/`, page bundles |
 | [ADR-0016](0016-nixfleet-triage.md) | nixfleet triage: run records and an agent playbook for failed deploys | `tools/nix-deploy/` |
