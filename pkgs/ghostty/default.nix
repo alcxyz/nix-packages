@@ -12,7 +12,7 @@
 
 let
   pname = "ghostty";
-  version = "1.3.1";
+  version = "1.4.0";
 in
 if lib.hasPrefix "aarch64-darwin" system || lib.hasPrefix "x86_64-darwin" system then
   stdenvNoCC.mkDerivation {
@@ -22,8 +22,8 @@ if lib.hasPrefix "aarch64-darwin" system || lib.hasPrefix "x86_64-darwin" system
       url = "https://release.files.ghostty.org/${version}/Ghostty.dmg";
 
       # Upstream (hex) SHA256:
-      # 18cff2b0a6cee90eead9c7d3064e808a252a40baf214aa752c1ecb793b8f5f69
-      hash = "sha256-GM/ysKbO6Q7q2cfTBk6AiiUqQLryFKp1LB7LeTuPX2k=";
+      # 3a02075dbd24318d778426af41dee5507d53ecc4578ede96912ec9ce6d18d3e8
+      hash = "sha256-OgIHXb0kMY13hCavQd7lUH1T7MRXjt6WkS7Jzm0Y0+g=";
     };
 
     nativeBuildInputs = [
