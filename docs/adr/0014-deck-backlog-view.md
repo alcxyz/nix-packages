@@ -24,7 +24,7 @@ table. It follows ADR-0012 wherever this ADR does not say otherwise: facts
 only from adapter commands, model calls with no tools, server-rendered pages,
 the same token check and content security policy. It runs in the dashboard
 process beside T3, which has the `light` role's CLI and hugin's credentials,
-and the proxy routes its path there (ADR-0013's 2026-10-24 amendment). Like
+and the proxy routes its path there (ADR-0013's pages-only mode). Like
 the threads `basePath`, its path is registered and reserved from the
 collections only when the `[backlog]` table configures it, so a process
 without that table serves neither. The root index links to it through

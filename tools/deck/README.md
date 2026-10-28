@@ -329,8 +329,7 @@ and the collections it should expose. Its existing audience remains unchanged.
 ## Dashboard and pages-only modes
 
 Deck runs in one of two modes, chosen by its configuration
-([ADR-0013](../../docs/adr/0013-deck-page-collections.md), amendment of
-2026-10-24):
+([ADR-0013](../../docs/adr/0013-deck-page-collections.md#pages-only-mode-run-apart-from-the-dashboard)):
 
 - **Dashboard mode**, with at least one `[[threads.instance]]`, runs beside T3:
   the thread dashboard at `basePath`, the backlog view when `[backlog]` is set,
