@@ -1,7 +1,7 @@
 # ADR-0012: deck, a live T3 thread dashboard
 
-**Status:** Accepted; summary interval amended 2026-10-24
-**Date:** 2026-10-20
+**Status:** Accepted
+**Date:** 2026-10-20, updated 2026-10-24 (summary interval, per #642)
 **Applies to:** `tools/deck/`
 
 ## Context

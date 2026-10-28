@@ -14,3 +14,4 @@ The root `.ignore` hides this directory from `rg` and `fd`; use `rg -u` or
 | [ADR-0003 history](0003-fail-loud-automated-package-updates-history.md) | Fail-Loud Automated Package Updates | History of [ADR-0003](../0003-fail-loud-automated-package-updates.md), text replaced 2026-10-28 |
 | [ADR-0007 history](0007-continuous-provider-updates-history.md) | Continuous grouped provider updates | History of [ADR-0007](../0007-continuous-provider-updates.md), text replaced 2026-10-28 |
 | [ADR-0008 history](0008-nix-deploy-in-go-history.md) | nix-deploy in Go, with evaluate, plan, build and activate phases | History of [ADR-0008](../0008-nix-deploy-in-go.md), text replaced 2026-10-28 |
+| [ADR-0011 history](0011-revkit-agent-review-toolkit-history.md) | revkit, an agent review toolkit with isolated reviewers | History of [ADR-0011](../0011-revkit-agent-review-toolkit.md), text replaced 2026-10-28 |

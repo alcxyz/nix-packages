@@ -1,7 +1,9 @@
 # ADR-0011: revkit, an agent review toolkit with isolated reviewers
 
-**Status:** Accepted; findings store, matching, resume and filing added 2026-10-17
+**Status:** Accepted
 **Date:** 2026-10-17
+**Amended:** 2026-10-17 (findings store, matching, resume and filing)
+**History:** [replaced text](archive/0011-revkit-agent-review-toolkit-history.md)
 **Applies to:** `tools/revkit/`
 
 ## Context
@@ -38,11 +40,13 @@ in one program rather than in another script.
 
 `revkit` is a Go program in `tools/revkit`, standard library only, with
 concrete types and explicit control flow (as [ADR-0008](0008-nix-deploy-in-go.md)).
-Package `review` is the shared core; each command is a subcommand. The first
-is `revkit repo-review`, read-only, which writes a local report and files
-nothing. Fingerprints, filing, the queue and the port of the PR review
-command (behind its existing contract) are later steps with their own
-amendments.
+Package `review` is the shared core; each command is a subcommand.
+`revkit repo-review` is read-only: it writes a local report, records its
+findings in the repository's findings store and files nothing. `revkit
+findings` lists, dismisses and reopens stored findings, and files the ones a
+person picks ([below](#filing)). The queue and
+the port of the PR review command (behind its existing contract) are later
+steps of #557.
 
 ### Runtime configuration
 
@@ -61,7 +65,7 @@ configuration). Unknown fields are rejected. Version 1:
 | `homeLinks` | string array, optional | Entries of the user's home linked into each Codex reviewer's home (see below) |
 | `readablePaths` | string array, optional | Absolute paths a Codex reviewer may read besides the tree and the platform minimum, for example where its tools live |
 | `stateDir` | absolute path, optional | Trees, runs and reports; default `$XDG_STATE_HOME/revkit`; with a Codex reviewer never under `/tmp`, which its profile denies (a deny beats the grant for the tree) and where Codex refuses a home |
-| `matcher` | reviewer, optional | Groups findings that describe the same problem (amendment of 2026-10-17); without one, findings match by lens and title |
+| `matcher` | reviewer, optional | Groups findings that describe the same problem ([below](#findings-store-matching-and-resume)); without one, findings match by lens and title |
 | `repositories` | list | `{ name, context, lenses, issues }`; `context` tells reviewers what the repository is; each lens is `{ name, prompt }` and becomes one job per reviewer; `issues`, optional, is the tracker findings are filed in: `{ url, owner, repo, tokenFile, limit }` (https only; `limit` per command, default 5) |
 
 The finding and verdict formats, and the instructions that go with them, are
@@ -162,50 +166,9 @@ why Codex runs without `--ephemeral`). These shapes are undocumented client
 output; anything missing or unexpected means "unknown", which a later
 budget policy must treat as "do not run".
 
-## Alternatives Considered
+### Findings store, matching and resume
 
-- **Keep extending the pilot script or the PR review script** — rejected for
-  the reasons of ADR-0008: run state, concurrency and deadlines are easier to
-  get right and test in Go, and the PR review script is tied to one
-  consumer's configuration.
-- **Rely on the clients' flags to skip user configuration** — rejected for
-  Codex: the pilot showed it loading the user's instructions with
-  `--ignore-user-config`. Enough for Claude, whose restricted mode was
-  verified to skip them.
-- **A temporary configuration directory for Claude too, with its login
-  linked or copied in** — rejected: a refresh replaces a link, a copy
-  diverges, and either can leave the user signed out; on macOS the login is
-  not a file. (The first version of this tool did this and moved a
-  refreshed login back over the user's file; keeping Claude's own directory
-  removes the need.)
-- **A long-lived token for reviewers** (for example from `claude
-  setup-token`, passed through a file descriptor) — possible later; it needs
-  a provisioned token per client and is not needed for the logins the user
-  already has.
-- **Strip known token variables instead of an allowlist** — rejected: the
-  clients and their sessions add variables over time, and an allowlist does
-  not need to know them.
-
-## Consequences
-
-- Reviewers see the reviewed tree and the clients' built-in instructions
-  only, so their findings can be filed in the reviewed repository without
-  carrying private context. What stays readable is the platform minimum and
-  `readablePaths`; a consumer that lists a store of built configuration
-  should know a reviewer that goes looking can read it.
-- Each Codex run starts without its caches or history, which costs a few
-  seconds and a fresh client state per run.
-- A consumer whose managed hooks need tools from the user's home names them
-  in `homeLinks`, or makes the hooks find them without `HOME`; one whose
-  shells reset `PATH` passes the variable that stops them.
-- A run's usage and windows are known only after a call; the queue reads
-  them from the runs it makes, as #557 planned.
-- Changing the finding or verdict format changes the program and its tests,
-  not only the configuration.
-
-## Amendment (2026-10-17): findings store, matching and resume
-
-Step 3 of #557. A run's findings now outlive its report.
+Step 3 of #557: a run's findings outlive its report.
 
 - **Store.** Each repository has a findings store
   (`repo-review/<repository>/findings.json` under the state directory) of
@@ -261,7 +224,9 @@ Step 3 of #557. A run's findings now outlive its report.
   secrets, credentials, access control or private details in a public
   repository. The store keeps the flag.
 
-Filing, decided with the owner:
+### Filing
+
+Decided with the owner:
 
 - A person picks the findings to file with `revkit findings file <ids>`;
   a run never files anything itself.
@@ -317,10 +282,47 @@ Filing, decided with the owner:
   without the breaks, and are cut to 200 characters. `--dry-run` reads the
   tracker and says what would be filed or linked.
 
-Considered and rejected:
+## Alternatives Considered
 
+- **Keep extending the pilot script or the PR review script** — rejected for
+  the reasons of ADR-0008: run state, concurrency and deadlines are easier to
+  get right and test in Go, and the PR review script is tied to one
+  consumer's configuration.
+- **Rely on the clients' flags to skip user configuration** — rejected for
+  Codex: the pilot showed it loading the user's instructions with
+  `--ignore-user-config`. Enough for Claude, whose restricted mode was
+  verified to skip them.
+- **A temporary configuration directory for Claude too, with its login
+  linked or copied in** — rejected: a refresh replaces a link, a copy
+  diverges, and either can leave the user signed out; on macOS the login is
+  not a file. (The first version of this tool did this and moved a
+  refreshed login back over the user's file; keeping Claude's own directory
+  removes the need.)
+- **A long-lived token for reviewers** (for example from `claude
+  setup-token`, passed through a file descriptor) — possible later; it needs
+  a provisioned token per client and is not needed for the logins the user
+  already has.
+- **Strip known token variables instead of an allowlist** — rejected: the
+  clients and their sessions add variables over time, and an allowlist does
+  not need to know them.
 - **Fingerprints from paths, lines or text hashes**: the same problem is
   cited at different lines by different reviewers and runs.
 - **Matching inside the verifier's prompt**: it would mix two judgements in
   one reply and give the matcher only one reviewer's findings at a time.
 
+## Consequences
+
+- Reviewers see the reviewed tree and the clients' built-in instructions
+  only, so their findings can be filed in the reviewed repository without
+  carrying private context. What stays readable is the platform minimum and
+  `readablePaths`; a consumer that lists a store of built configuration
+  should know a reviewer that goes looking can read it.
+- Each Codex run starts without its caches or history, which costs a few
+  seconds and a fresh client state per run.
+- A consumer whose managed hooks need tools from the user's home names them
+  in `homeLinks`, or makes the hooks find them without `HOME`; one whose
+  shells reset `PATH` passes the variable that stops them.
+- A run's usage and windows are known only after a call; the queue reads
+  them from the runs it makes, as #557 planned.
+- Changing the finding or verdict format changes the program and its tests,
+  not only the configuration.

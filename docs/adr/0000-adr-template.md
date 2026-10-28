@@ -1,7 +1,7 @@
 # ADR-0000: Template
 
 **Status:** Accepted | Superseded by [ADR-NNNN](../NNNN-title.md) | Retired (archived ADRs only)
-**Date:** YYYY-MM-DD
+**Date:** YYYY-MM-DD (a pure addition appends `, updated YYYY-MM-DD (<what>, per <source>)`)
 **Amended:** YYYY-MM-DD (when the decision text was rewritten)
 **History:** [history](archive/NNNN-title-history.md) (when replaced text was archived)
 **Applies to:** `path/to/relevant/file` (or component name)

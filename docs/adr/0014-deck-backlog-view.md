@@ -65,7 +65,7 @@ to the dashboard process's view.
   exactly what moves an issue onto the shortlist. An issue is judged again only
   when its basis changes and its last attempt, failed or not, is at least
   `verdictIntervalMinutes` old (360, as thread summaries since ADR-0012's
-  amendment, so at most four automatic attempts a day at an issue that keeps
+  summary interval, so at most four automatic attempts a day at an issue that keeps
   changing); a newly shortlisted issue does not wait. Failures back off as
   summaries do (15 minutes, doubling to six hours; invalid output waits for a
   change). A verdict whose basis no longer matches is shown as outdated until
@@ -158,7 +158,7 @@ consumer's wrapper, not deck, provides:
   thread can keep its summary; Refresh verdict and Refresh now get one
   sooner. Without the interval an issue that an agent updates on every step
   would be judged on every inventory run, as the thread that woke every 15
-  minutes was summarised before ADR-0012's amendment. At most about 140
+  minutes was summarised before ADR-0012's summary interval. At most about 140
   automatic calls a day, if every shortlisted issue kept changing.
 - The page lags the forges by up to `intervalMinutes`. One fleet-wide run makes
   a few hundred API requests, well within an installation token's hourly
