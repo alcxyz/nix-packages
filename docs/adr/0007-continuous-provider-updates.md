@@ -1,7 +1,9 @@
 # ADR-0007: Continuous grouped provider updates
 
-**Status:** Accepted; scan cadence amended 2026-09-30
+**Status:** Accepted
 **Date:** 2026-09-30
+**Amended:** 2026-09-30 (provider scans every six hours until an upstream token exists)
+**History:** [replaced text](archive/0007-continuous-provider-updates-history.md)
 **Applies to:** AI provider update and merge workflows
 
 ## Context
@@ -13,7 +15,10 @@ as each update changes the integration branch.
 
 ## Decision
 
-Check the stable Claude and Codex release sources every hour. Perform a
+Check the stable Claude and Codex release sources every six hours, at the top
+of the hour (since #442). Hourly scans exhausted GitHub's anonymous API limit
+without an authenticated upstream token; revisit hourly scans once
+`UPSTREAM_GITHUB_TOKEN` exists (#443). Perform a
 lightweight HTTP and version comparison before installing Nix or downloading
 package assets. Compare the release tuple with both the installed package pins
 and the immutable head of any open provider update PR. Identical candidates
@@ -27,8 +32,8 @@ A newer release may supersede an outstanding candidate; the existing stale-head
 watcher stops obsolete PR builds. Unchanged failed candidates remain visible
 for diagnosis or explicit CI retry rather than endlessly regenerating them.
 
-Keep the existing non-waiting merge queue hourly, at half past the hour after
-the provider scan at the top of the hour. Preserve required
+Keep the existing non-waiting merge queue hourly, at half past the hour, so a
+pass follows each provider scan. Preserve required
 checks, current-base validation, exact-head merges, and the consumer promotion
 and idle-session activation gates. Polling intervals are detection opportunities,
 not promises of deployment latency when runners, builds, or active sessions delay
@@ -57,13 +62,6 @@ build and verify the pinned T3 wrappers.
 Provider changes share one validation and merge lifecycle. A broken provider
 candidate blocks that combined update until fixed or superseded, while the
 last verified deployed packages remain available. Package-level updaters stay
-usable independently for diagnosis. Detection becomes more frequent without
-weakening release channels or build and activation gates.
-
-## Amendment (2026-09-30)
-
-Hourly provider scans exhausted GitHub's anonymous API limit without an
-authenticated upstream token. Since #442 provider scans run every six hours,
-and the T3 source scan workflow matches the six-hourly cadence ADR-0005
-already recorded; the merge queue stays hourly. Revisit hourly provider scans
-once `UPSTREAM_GITHUB_TOKEN` exists (#443).
+usable independently for diagnosis. Detection is more frequent than the daily package
+scans without weakening release channels or build and activation gates; until
+the upstream token exists it is limited to the six-hourly cadence.

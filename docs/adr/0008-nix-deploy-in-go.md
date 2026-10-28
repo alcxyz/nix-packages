@@ -1,7 +1,9 @@
 # ADR-0008: nix-deploy in Go, with evaluate, plan, build and activate phases
 
-**Status:** Accepted; phase order amended 2026-10-13, build profiles added 2026-10-15
+**Status:** Accepted
 **Date:** 2026-10-12
+**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles)
+**History:** [replaced text](archive/0008-nix-deploy-in-go-history.md)
 **Applies to:** `tools/nix-deploy/`
 
 ## Context
@@ -62,7 +64,8 @@ Every run, single-host or fleet, has four phases (#522):
    the rest of the run, since activation can come minutes later behind ready
    gates: the shared build links every output when all succeed, and each
    built target is rooted again through its derivation, which rebuilds an
-   output a collection removed in between.
+   output a collection removed in between. The build runs under a build
+   profile ([below](#build-profiles)).
 4. **Activate.** Only changed targets are activated: remote systems through
    `nixos-rebuild <switch|boot> --store-path P --no-reexec --target-host ...
    --use-substitutes`, which copies the closure and keeps the
@@ -97,6 +100,35 @@ The fleet summary adds the time each host spent in evaluation, activation
 and ready gates, and the shared build time (#523). `--json FILE` writes the
 same results and timings for comparison across runs.
 
+### Build profiles
+
+One shared build lets Nix schedule the whole fleet at once, under the
+operator's own `max-jobs` and `cores`. Those suit a workstation building one
+thing at a time (every core for each build), not a run after a flake update,
+when many large derivations compile from source at once: the first such fleet
+run overlapped kernel modules, a compositor, a Rust toolchain and builds under
+emulation until the operator froze (#548). A memory cap on the Nix daemon
+alone would turn that into a killed build rather than a finished one.
+
+Before the build, the run counts the derivations it would build (`nix
+build --dry-run` over the changed targets; downloads do not count, while
+work a remote builder would take does) and picks a profile. Light, below `DEPLOY_HEAVY_BUILDS` (default 50),
+leaves the settings alone, so a single large build keeps every core. Heavy
+passes `--option max-jobs 6 --option cores 8` (`DEPLOY_HEAVY_MAX_JOBS`,
+`DEPLOY_HEAVY_CORES`), each capped at the machine's own setting so heavy never
+loads a smaller host more than its defaults (a setting that cannot be read is
+left to the host rather than raised), to the shared build and to the
+roots built after it.
+Nix sends both settings to the daemon with the connection, so they bound this
+run's builds only. A count that fails, or lists paths under a heading it does not
+know, picks heavy, the safe side of a wrong guess. `--heavy` / `--light` or `DEPLOY_BUILD_PROFILE` skip the count, and
+`--dry-run` prints the profile a run would use.
+
+On the operator's fleet, a configuration change that touches every host
+added about 3 to 4 derivations per host (about 23 in all), while the first run
+after a flake update had more than 400 to build, so the threshold separates
+them with room on both sides.
+
 ## Alternatives Considered
 
 - **Keep Bash and add the phases there** — rejected; the planning state,
@@ -109,6 +141,21 @@ same results and timings for comparison across runs.
 - **Skip unchanged hosts by comparing evaluation results only** — rejected;
   the running system can differ from the profile (for example after a
   `boot` fallback), so the plan compares against the host itself.
+- **Build every target before the plan** — the first implementation, replaced
+  on 2026-10-13 (release 0.7.0). It assumed unchanged targets would come from
+  the local store or a cache. Neither held: the operator's garbage collection
+  removes outputs that only remote hosts use, and nothing in a binary cache
+  matches packages built for another architecture, so a fleet run recompiled
+  up-to-date Raspberry Pi hosts under emulation on the operator. Evaluation
+  already gives each target's store path, which is all the plan compares.
+- **Lower the operator's `max-jobs` and `cores` permanently** (instead of
+  build profiles): slows every single large build the workstation does
+  outside deployments.
+- **Weigh derivations, for example skipping `preferLocalBuild` ones**: a
+  better estimate of the work, but the plain count already separates the
+  two cases in [Build profiles](#build-profiles) by an order of magnitude.
+- **Lower `DEPLOY_EVAL_JOBS` under heavy**: evaluation ends before the count
+  and the build start, so it never overlaps the builds the profile bounds.
 
 ## Consequences
 
@@ -132,56 +179,5 @@ same results and timings for comparison across runs.
 - Hosts are compared by store path, so a configuration that embeds a
   changing input (for example a whole private flake source) still changes
   every time; consumers keep such inputs out of their closures.
-
-## Amendment (2026-10-13)
-
-The first implementation built every target before the plan, on the
-assumption that unchanged targets would come from the local store or a
-cache. Neither held: the operator's garbage collection removes outputs that
-only remote hosts use, and nothing in a binary cache matches packages built
-for another architecture, so a fleet run recompiled up-to-date Raspberry Pi
-hosts under emulation on the operator. Evaluation already gives each
-target's store path, which is all the plan compares, so the plan now runs
-between evaluation and the build, and only changed targets are built
-(release 0.7.0). Comparing against the host itself, not a previous
-evaluation, is unchanged. A dry run now skips the build phase, so it no
-longer shows that changed targets build.
-
-## Amendment (2026-10-15): build profiles
-
-One shared build lets Nix schedule the whole fleet at once, under the
-operator's own `max-jobs` and `cores`. Those suit a workstation building one
-thing at a time (every core for each build), not a run after a flake update,
-when many large derivations compile from source at once: the first such fleet
-run overlapped kernel modules, a compositor, a Rust toolchain and builds under
-emulation until the operator froze (#548). A memory cap on the Nix daemon
-alone would turn that into a killed build rather than a finished one.
-
-Before the build, the run now counts the derivations it would build (`nix
-build --dry-run` over the changed targets; downloads do not count, while
-work a remote builder would take does) and picks a profile. Light, below `DEPLOY_HEAVY_BUILDS` (default 50),
-leaves the settings alone, so a single large build keeps every core. Heavy
-passes `--option max-jobs 6 --option cores 8` (`DEPLOY_HEAVY_MAX_JOBS`,
-`DEPLOY_HEAVY_CORES`), each capped at the machine's own setting so heavy never
-loads a smaller host more than its defaults (a setting that cannot be read is
-left to the host rather than raised), to the shared build and to the
-roots built after it.
-Nix sends both settings to the daemon with the connection, so they bound this
-run's builds only. A count that fails, or lists paths under a heading it does not
-know, picks heavy, the safe side of a wrong guess. `--heavy` / `--light` or `DEPLOY_BUILD_PROFILE` skip the count, and
-`--dry-run` prints the profile a run would use.
-
-On the operator's fleet, a configuration change that touches every host
-added about 3 to 4 derivations per host (about 23 in all), while the first run
-after a flake update had more than 400 to build, so the threshold separates
-them with room on both sides.
-
-Considered and rejected:
-
-- **Lower the operator's `max-jobs` and `cores` permanently**: slows every
-  single large build the workstation does outside deployments.
-- **Weigh derivations, for example skipping `preferLocalBuild` ones**: a
-  better estimate of the work, but the plain count already separates the
-  two cases above by an order of magnitude.
-- **Lower `DEPLOY_EVAL_JOBS` under heavy**: evaluation ends before the count
-  and the build start, so it never overlaps the builds the profile bounds.
+- A dry run skips the build phase, so it does not show that changed targets
+  build.

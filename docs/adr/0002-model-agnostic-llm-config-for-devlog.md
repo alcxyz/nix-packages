@@ -2,81 +2,105 @@
 
 **Status:** Accepted
 **Date:** 2026-05-02
-**Amended:** 2026-10-09 by nix-config [ADR-0085](https://git.alc.xyz/alcxyz/nix-config/src/branch/dev/docs/adr/0085-one-role-vocabulary.md): devlog reads the `standard` role from the shared LLM config (`$XDG_CONFIG_HOME/llm/config.toml`), as role names replace the `fast`/`strong` tiers; `$XDG_CONFIG_HOME/devlog/config.toml` is no longer read, and the built-in default is Anthropic `opus` over the `cli` transport.
+**Amended:** 2026-10-09 by nix-config [ADR-0085](https://git.alc.xyz/alcxyz/nix-config/src/branch/dev/docs/adr/0085-one-role-vocabulary.md): devlog reads the `standard` role from the shared LLM config instead of its own config file.
+**History:** [replaced text](archive/0002-model-agnostic-llm-config-for-devlog-history.md)
 **Applies to:** `tools/devlog/`
 
 ## Context
 
-The devlog tool hardcodes `claude-sonnet-4-6` in its `runClaude()` helper (`main.go:402`):
+devlog generates daily and weekly entries from systemd timers through one LLM
+call site. A model hardcoded in that call site made every run depend on one
+provider and model: if it was unavailable (API outage, rate limit, session
+expiry), the timers could fail before a devlog entry was produced.
 
-```go
-cmd := exec.Command("claude", "-p", "--model", "claude-sonnet-4-6")
-```
-
-Both daily and weekly generation flow through this single call site. If Claude is unavailable (API outage, rate limit, session expiry), the systemd timers can fail before a devlog entry is produced.
-
-paperless-tools solved the same problem with [ADR-009](https://git.alc.xyz/alcxyz/paperless-tools/src/branch/dev/docs/adr/ADR-009-model-agnostic-llm-config.md), introducing a role-based config at `$XDG_CONFIG_HOME/paperweight/config.toml` with provider, model, and optional backup per role. That approach keeps config scoped to the tool, simple, and independent of other tools.
+paperless-tools solved the same problem with
+[ADR-009](https://git.alc.xyz/alcxyz/paperless-tools/src/branch/dev/docs/adr/ADR-009-model-agnostic-llm-config.md):
+provider, model and an optional backup per role, resolved from configuration
+rather than code. Role names are now one vocabulary across tools
+(nix-config ADR-0085).
 
 ## Decision
 
-Follow the same pattern as paperless-tools ADR-009, scoped to devlog.
+devlog takes its model from configuration, with an optional backup provider,
+and works without any configuration.
 
 ### Config file
 
-devlog reads its LLM settings from:
+devlog reads the `standard` role from the shared LLM config:
 
 ```
-$XDG_CONFIG_HOME/devlog/config.toml
+$XDG_CONFIG_HOME/llm/config.toml
 ```
 
-defaulting to `~/.config/devlog/config.toml` via `os.UserConfigDir()`.
+defaulting to `~/.config/llm/config.toml` via `os.UserConfigDir()`. It has no
+config file of its own.
 
 ### Schema
 
-devlog uses a single role (`model`) since it has only one LLM call site. Optional backup for fallback:
+devlog uses the one role, since it has only one LLM call site, with an
+optional backup for fallback:
 
 ```toml
-[model]
-provider = "anthropic"
-model    = "sonnet"
+[roles.standard]
+provider  = "anthropic"
+model     = "opus"
+transport = "cli"
+effort    = "high"          # optional, CLI transports only
 
-[model.backup]
-provider = "openai"
-model    = "gpt-4.1"
+[roles.standard.backup]
+provider    = "openai"
+model       = "gpt-4.1"
+transport   = "api"
 api_key_env = "OPENAI_API_KEY"
 ```
 
+`provider` is `anthropic` (the default when empty) or `openai`. `model` and
+`transport` are required. If the file exists but has no `roles.standard`, or
+an entry lacks a model or transport or names an unknown transport, devlog
+fails with an error naming the file and role. An unknown provider is only
+rejected when it is called, so a primary with one falls back to the backup.
+
 ### Auth resolution
 
-Same as paperless-tools ADR-009:
+The transport selects how a provider is called:
 
-1. If `api_key_env` is set and the named env var (or `<env var>_FILE`) resolves — direct HTTP.
-2. Otherwise — CLI with logged-in session (`claude -p --model <model>`).
+- `cli`: the provider's CLI with its logged-in session (`claude -p --model
+  <model>`), passing `effort` when set.
+- `api`: direct HTTP; requires `api_key_env` to name an environment variable
+  (or `<env var>_FILE`) that resolves.
+- `prefer-api`: direct HTTP when the key resolves, otherwise the CLI.
+- `prefer-cli`: the CLI.
+
+If the primary provider fails and a backup is configured, devlog retries once
+with the backup.
 
 ### Defaults
 
-If no config file exists, devlog behaves exactly as today: Anthropic CLI, model `claude-sonnet-4-6`. Zero-config must always work.
-
-### Migration
-
-1. Add config loading to `tools/devlog/` — a small TOML parse using `BurntSushi/toml` (already used elsewhere in the infra).
-2. Update `runClaude()` to resolve provider and model from config, falling back to current hardcoded values.
-3. Optionally deploy config file via nix-config home-manager.
-4. Add backup provider support (retry with backup entry on primary failure).
+If the shared config file does not exist, devlog uses Anthropic `opus` over
+the `cli` transport. `opus` is a Claude Code alias, not an API model ID, so the
+default must use the CLI. Zero-config must always work.
 
 ## Alternatives Considered
 
-- **Shared config across all tools (`$XDG_CONFIG_HOME/llm/config.toml`).** Rejected — adds implicit coupling between tools that don't otherwise depend on each other. Each tool has different LLM calling conventions, lives in a different repo, and should be independently configurable.
-- **Environment variable only (`DEVLOG_MODEL`).** Simple for model selection but doesn't support backup providers or auth configuration.
-- **NixOS module-level config.** Would work for the systemd service but not if devlog is ever run interactively. XDG config covers both.
+- **A devlog-specific config file (`$XDG_CONFIG_HOME/devlog/config.toml`).**
+  The original decision, replaced when roles became one vocabulary across
+  tools (nix-config ADR-0085): one shared file avoids repeating provider
+  setups per tool.
+- **Environment variable only (`DEVLOG_MODEL`).** Simple for model selection
+  but doesn't support backup providers or auth configuration.
+- **NixOS module-level config.** Would work for the systemd service but not if
+  devlog is ever run interactively. XDG config covers both.
 
 ## Consequences
 
-- Zero-config still works — existing deployments see no change.
-- Adding a backup provider requires only a config file, no code changes.
-- Config is user-specific (XDG), not repo-specific — different hosts can have different provider setups, which matters for headless systemd-timer hosts that may prefer API keys over CLI sessions.
-- Other tools (leantime-tidy, future nix-packages tools) follow the same pattern independently with their own XDG config, tracked by their own ADRs.
-
-## Follow-up
-
-`devlog catch-up` now covers host or timer outages by scanning a recent date window for missing daily entries and generating only the holes. When it creates daily entries for a completed week, it refreshes that weekly summary so late backfills are reflected in the aggregate view.
+- Zero-config still works.
+- Adding a backup provider requires only a config change, no code changes.
+- Config is user-specific (XDG), not repo-specific: different hosts can have
+  different provider setups, which matters for headless systemd-timer hosts
+  that may prefer API keys over CLI sessions.
+- devlog depends on the shared config's `standard` role; renaming or removing
+  that role breaks devlog runs on hosts that have the file.
+- `devlog catch-up` covers host or timer outages by scanning a recent date
+  window for missing daily entries and generating only the holes. When it
+  creates daily entries for a completed week, it refreshes that weekly summary
+  so late backfills are reflected in the aggregate view.

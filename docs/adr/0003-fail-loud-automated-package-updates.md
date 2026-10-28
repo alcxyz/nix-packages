@@ -2,7 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05
-**Updated:** 2026-09-30
+**Amended:** 2026-09-30; 2026-10-28 (the September 2026 follow-through folded into the decision; the platform table updated to the flake's current exports)
+**History:** [replaced text](archive/0003-fail-loud-automated-package-updates-history.md)
 **Applies to:** `.forgejo/workflows/update-packages.yml`, `.forgejo/workflows/auto-merge-updates.yml`, `.forgejo/workflows/ci.yml`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
 ## Context
@@ -46,9 +47,17 @@ CI must:
 - expand selection to all exports when root flake files or shared package inputs change; select package inputs together with their wrapper consumers, keeping those reverse dependencies aligned with `flake.nix`
 - regression-test package selection and failure classification with mocked Nix commands in CI
 - evaluate every advertised package derivation on all four systems on every validation run, including default aliases
-- build only affected exports and their wrapper consumers by default; retain
-  explicit baseline, combined baseline-and-selected, and deterministic sharding
-  controls for manual use
+- build only affected exports and their wrapper consumers by default, unsharded;
+  retain explicit baseline, combined baseline-and-selected, and deterministic
+  sharding controls for manual use
+- when the pre-Nix plan selects the complete export matrix, split its sorted
+  exports across two deterministic shard jobs, the second depending on the
+  first so the workflow graph serializes them even when Forgejo does not honor
+  matrix parallelism limits; each shard evaluates every platform of its
+  selected exports, builds their native Linux outputs and verifies the T3 Code
+  flavor it built, with the same 2 GiB dependency-cache limit and a distinct
+  cache key; the all-export platform check and every other prerequisite still
+  run
 - expose a pre-Nix selection plan so workflow setup and cache work can be
   skipped when a change has no package validation candidates; normal validation
   must recompute and verify the selection rather than trusting the plan
@@ -71,7 +80,8 @@ CI must:
   builds or fail an otherwise successful validation
 - preserve the required package-validation context through an aggregate job
   that succeeds only when Go tests, validation prerequisites, package builds,
-  and provider verification succeed
+  and provider verification succeed, including both shards when the complete
+  matrix is selected
 - keep unavailable optional assets out of package exports; required asset download failures stop an updater before package edits
 - compare pull request heads against the target branch, and use a conservative promotion baseline when the runner does not expose a target branch variable
 - avoid stale references to deleted or retired packages
@@ -89,7 +99,15 @@ Runner usage must:
 - serialize auto-merge passes so concurrent runs do not race to rebase or merge the same update
 - stop expensive package/provider commands when their pull-request head is
   superseded, using a bounded Git-ref watcher; do not depend solely on server
-  concurrency support, and do not apply PR cancellation to `main` pushes
+  concurrency support, and do not apply PR cancellation to `main` pushes.
+  On PR events a small supervisor compares the checked-out event head to the
+  current PR head ref every 30 seconds and terminates only its command process
+  group when a newer head exists. A stale command returns a nonzero status so
+  it cannot publish a cache or make the old validation aggregate green; the
+  latest commit has its own checks. Git lookup failures leave the build
+  running, ordinary command failures retain their original status, and non-PR
+  invocations execute directly, so the behavior needs no additional credential
+  or API permission
 - run short auto-merge passes hourly throughout the day, with manual dispatch for recovery; ordinary pull request events trigger validation
 - rely on pull request validation for automated update merges instead of running duplicate validation on every resulting `dev` push
 
@@ -126,8 +144,8 @@ The flake explicitly exports the following combinations. "All four" means
 
 | Packages | Exported systems |
 |----------|------------------|
-| `claude-code`, `codex-app-server`, `codex-cli`, `forge-mirror`, `gh-app`, `gh-app-gh`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `revkit`, `workmux` | All four |
-| `devlog`, `ndrop`, `openzfs_7_1`, `openzfs_7_3`, `stash`, `zfs-auto-unlock` | Both Linux systems |
+| `claude-code`, `codex-app-server`, `codex-cli`, `deck`, `forge-mirror`, `forgejo-deploy-key`, `gh-app`, `gh-app-gh`, `git-identity-guard`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `nixfleet`, `revkit`, `workmux` | All four |
+| `deck-image`, `devlog`, `forgejo-runner-cancellation`, `forgejo-runner-orphan-check`, `ndrop`, `openzfs_7_1`, `openzfs_7_3`, `stash`, `zfs-auto-unlock` | Both Linux systems |
 | `herdr` | Both Linux systems, `aarch64-darwin` |
 | `ghostty` | Both Darwin systems |
 | `t3code`, `ai-stack-upstream` | `x86_64-linux` |
@@ -169,8 +187,9 @@ longer has a default package.
   September 2026 slowdown was dominated by a runner file-descriptor limit that
   made Nix process startup abnormally expensive. Sharding multiplied Nix
   installation and checkout overhead and prevented shared closures from being
-  reused within one job. The selector retains manual sharding for future
-  measured capacity needs.
+  reused within one job. Only the complete export matrix is sharded, because
+  one complete export build reached the runner's job-duration limit before
+  provider verification and cache export finished.
 - **Build a fixed baseline on every pull request** — Rejected. It adds unrelated
   native builds to documentation, automation, and targeted package changes.
   Baseline mode remains available for explicit smoke testing, while ordinary
@@ -200,8 +219,10 @@ longer has a default package.
   provider checks and avoids repeated job setup. Documentation and general
   automation changes do not cause native package builds; provider-verification
   inputs still select both T3 Code exports, and applicable regression checks
-  remain mandatory. A full shared-input change can still approach the runner
-  limit, so explicit baseline and manual sharding support remain available.
+  remain mandatory. A full shared-input change selects the complete matrix,
+  which runs as two serialized shard jobs to stay within the runner's
+  job-duration limit; explicit baseline and manual sharding support remain
+  available.
 - Each runner warms independently. Pull-request cache writes remain isolated
   to that PR; later revisions may reuse them, while other PRs may only reuse
   snapshots written by trusted update jobs or branch-push validation. Restored
@@ -218,57 +239,15 @@ longer has a default package.
   that do not fit. Raw NAR sizes are conservative and can exclude highly
   compressible outputs. Oversized actual snapshots are still skipped and
   builds remain correct.
+- In the September 2026 live dependency-only probe, restoring T3's pnpm output
+  with local builds disabled and normal content verification enabled took 19s
+  (cache restore plus Nix realization) against 1m48s cold; export and upload
+  cost 47s on the first write. These are measurements from one runner, not a
+  guaranteed build latency; application compilation and runner contention
+  remain separate costs.
+- Validating packages in the consuming flake's dependency context is the
+  consumer's contract, recorded in nix-config ADR-0067.
 - Adding a new updater script requires maintaining the same fail-loud hash validation behavior.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
 - Manual `dev` to `main` promotion cannot rely on the repository's default branch cleanup; only disposable `update/*` branches are deleted by automation.
-
-## September 2026 follow-through
-
-The [repository audit milestone](https://git.alc.xyz/alcxyz/nix-packages/milestone/284)
-tracks gaps found while reviewing the producer and its configuration consumer:
-
-- [Do not classify supported-platform evaluation errors as platform absence](https://git.alc.xyz/alcxyz/nix-packages/issues/320)
-- [Make advertised package platforms and defaults usable](https://git.alc.xyz/alcxyz/nix-packages/issues/321)
-- [Shard complete package validation within the runner limit](https://git.alc.xyz/alcxyz/nix-packages/issues/347)
-- [Validate packages in the actual consumer dependency context](https://git.alc.xyz/alcxyz/nix-config/issues/275)
-
-The proposed
-[consumer-validation ADR](https://git.alc.xyz/alcxyz/nix-config/pulls/283)
-records the additional producer/consumer contract. Existing fail-loud policy
-remains accepted; the listed implementation gaps remain open until their
-Forgejo issues are completed.
-
-### Superseded build supervision
-
-The package and provider commands run under a small supervisor on PR events.
-It compares the checked-out event head to the current PR head ref every 30
-seconds and terminates only its command process group when a newer head exists.
-A stale command returns a nonzero status so it cannot publish a cache or make
-the old validation aggregate green. The latest commit has its own checks.
-
-Git lookup failures leave the build running, and ordinary command failures
-retain their original status. Non-PR invocations execute directly. This keeps
-the behavior independent of differences in server-side cancellation support
-and needs no additional credential or API permission.
-
-### Dependency-cache qualification
-
-The live dependency-only probe restored T3's pnpm output with local builds
-disabled and normal content verification enabled. Cold realization took 1m48s;
-cache restore plus Nix realization took 19s. Export and upload cost 47s on the
-first write. These are measurements from one runner, not a guaranteed build
-latency; application compilation and runner contention remain separate costs.
-
-### Bounded complete-export validation
-
-A complete export build reached the runner's job-duration limit before provider
-verification and cache export finished. Keep ordinary affected-package builds
-unsharded. When the pre-Nix plan selects the complete matrix, split its sorted
-exports across two deterministic shards. The second job depends on the first,
-so the workflow graph enforces serialization even when Forgejo does not honor
-matrix parallelism limits. Each shard evaluates every platform of its selected
-exports, builds their native Linux outputs, and verifies the T3 Code flavor it
-built. The all-export platform check and every other prerequisite still run, and the
-aggregate validation context requires both shards. Each job retains the same
-2 GiB dependency-cache limit and a distinct cache key.

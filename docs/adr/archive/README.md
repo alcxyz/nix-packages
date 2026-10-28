@@ -10,3 +10,7 @@ The root `.ignore` hides this directory from `rg` and `fd`; use `rg -u` or
 | ADR | Title | Status |
 |-----|-------|--------|
 | [ADR-0004](0004-patched-paneru-package.md) | Patched Paneru Package | Retired 2026-08-19 (package removed) |
+| [ADR-0002 history](0002-model-agnostic-llm-config-for-devlog-history.md) | Model-Agnostic LLM Configuration for devlog | History of [ADR-0002](../0002-model-agnostic-llm-config-for-devlog.md), text replaced 2026-10-28 |
+| [ADR-0003 history](0003-fail-loud-automated-package-updates-history.md) | Fail-Loud Automated Package Updates | History of [ADR-0003](../0003-fail-loud-automated-package-updates.md), text replaced 2026-10-28 |
+| [ADR-0007 history](0007-continuous-provider-updates-history.md) | Continuous grouped provider updates | History of [ADR-0007](../0007-continuous-provider-updates.md), text replaced 2026-10-28 |
+| [ADR-0008 history](0008-nix-deploy-in-go-history.md) | nix-deploy in Go, with evaluate, plan, build and activate phases | History of [ADR-0008](../0008-nix-deploy-in-go.md), text replaced 2026-10-28 |
