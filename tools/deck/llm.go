@@ -24,12 +24,9 @@ func loadSummaryRoles(path string, cfg ThreadsConfig, log *slog.Logger) (map[str
 	var defaultErr error
 	for _, name := range cfg.SummaryRoles {
 		role, err := loadRole(path, name)
+		var skipped []string
 		if err == nil {
-			var skipped []string
 			models[name], skipped = summaryModels(role)
-			for _, reason := range skipped {
-				log.Warn("model skipped for summaries", "role", name, "reason", reason)
-			}
 			if len(models[name]) == 0 {
 				err = fmt.Errorf("no entry of roles.%s can run without tools (%s)", name, strings.Join(skipped, "; "))
 			}
@@ -46,7 +43,13 @@ func loadSummaryRoles(path string, cfg ThreadsConfig, log *slog.Logger) (map[str
 		for _, m := range models[name] {
 			labels = append(labels, m.label())
 		}
-		log.Info("summary models", "role", name, "models", strings.Join(labels, ", "))
+		// Skipped entries are expected (Codex cannot run without tools), so
+		// they join this line instead of warning on every start.
+		attrs := []any{"role", name, "models", strings.Join(labels, ", ")}
+		if len(skipped) > 0 {
+			attrs = append(attrs, "skipped", strings.Join(skipped, "; "))
+		}
+		log.Info("summary models", attrs...)
 	}
 	return models, defaultErr
 }

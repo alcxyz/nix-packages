@@ -301,6 +301,19 @@ transport = "api"
 					t.Errorf("skipped entry %q was not logged: %s", skipped, logs.String())
 				}
 			}
+			// A usable role reports its skipped entries on its info line, not
+			// as a warning on every start.
+			for _, line := range strings.Split(logs.String(), "\n") {
+				if !strings.Contains(line, "role=standard") {
+					continue
+				}
+				if strings.Contains(line, "level=WARN") {
+					t.Errorf("usable role warned: %s", line)
+				}
+				if !strings.Contains(line, "level=INFO") || !strings.Contains(line, "skipped=") || !strings.Contains(line, "openai/codex-model") {
+					t.Errorf("standard info line lacks its skipped entries: %s", line)
+				}
+			}
 		})
 	}
 }
