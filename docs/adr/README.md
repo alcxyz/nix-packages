@@ -2,6 +2,11 @@
 
 Non-obvious decisions in this repo are documented here. Before changing tool design, dependency choices, build strategy, or any area with a clear trade-off — read the relevant ADR first.
 
+Each ADR listed here states the current decision. When a decision changes, the
+ADR is rewritten to say what is true now, and the replaced text moves to a
+history file in [`archive/`](archive/README.md), which also holds superseded
+and retired ADRs. ADR numbers are never reused.
+
 | ADR | Title | Area |
 |-----|-------|------|
 | [ADR-0000](0000-adr-template.md) | Template | — |

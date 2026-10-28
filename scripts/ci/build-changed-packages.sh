@@ -127,7 +127,7 @@ while IFS= read -r path; do
     scripts/ci/verify-t3code-providers.sh | scripts/ci/t3code-nix-home.sh | scripts/ci/ephemeral-nix-home.sh)
       changed_attrs+=(t3code)
       ;;
-    "" | docs/* | README.md | AGENTS.md | LICENSE* | .forgejo/* | scripts/ci/* | scripts/forgejo/* | scripts/update-packages/*) ;;
+    "" | docs/* | README.md | AGENTS.md | LICENSE* | .ignore | .forgejo/* | scripts/ci/* | scripts/forgejo/* | scripts/update-packages/*) ;;
     # Keep these reverse dependencies aligned with the explicit package inputs
     # in flake.nix. A wrapper must be validated when its packaged input changes.
     pkgs/claude-code/*)

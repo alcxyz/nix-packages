@@ -269,6 +269,12 @@ assert_not_called 'eval .#packages'
 assert_not_called 'build '
 grep -q 'No package-affecting changes detected' output
 
+new_case search-ignore-only
+change_file .ignore
+run_case 0
+assert_not_called 'eval .#packages'
+assert_not_called 'build '
+
 for automation in .forgejo/workflows/ci.yml scripts/ci/check.sh scripts/forgejo/check.sh scripts/update-packages/widget.sh; do
   new_case "automation-${automation//\//-}"
   change_file "$automation"
