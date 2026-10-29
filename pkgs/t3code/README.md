@@ -35,3 +35,19 @@ The package exposes it as `t3code.previewBrowser` and links it at
 host modules link that version directory into each base directory's
 `tools/chrome-headless-shell/<platform>/`, where T3 treats it as installed
 ([nix-config ADR-0092](https://git.alc.xyz/alcxyz/nix-config/src/branch/dev/docs/adr/0092-t3-preview-browser-from-nix.md)).
+
+## T3 Connect
+
+Upstream's release builds embed T3 Connect's public client configuration: the
+relay URL, the Clerk publishable key and JWT template, and the CLI's OAuth
+client ID. A source build without them compiles T3 Connect out, so `t3 connect`
+reports the configuration missing and mobile clients cannot reach the server
+through the relay. `connect.json` holds the values from the official release of
+`0.1.5-nightly.20261029.3877`; the updater does not refresh them when it moves
+the source pin. The build passes them as the environment variables
+upstream's `scripts/lib/public-config.ts` reads. Relay telemetry stays unset.
+The build fails if the server bundle no longer embeds the relay URL.
+
+The values are public: every official build ships them. When upstream rotates
+one, take it from the official `t3-<version>-linux-x64.tar.gz` release asset,
+where the server bundle and `client/assets/publicConfig-*.js` contain them.

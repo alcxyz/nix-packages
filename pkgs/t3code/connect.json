@@ -1,0 +1,6 @@
+{
+  "relayUrl": "https://relay.t3.codes",
+  "clerkPublishableKey": "pk_live_Y2xlcmsudDMuY29kZXMk",
+  "clerkJwtTemplate": "t3-relay",
+  "clerkCliOAuthClientId": "hzxSgY2cH10sDU2r"
+}

@@ -39,6 +39,9 @@ let
     '';
   };
   previewBrowser = callPackage ./preview-browser.nix { inherit src; };
+  # Upstream's release builds embed these public client values; without them
+  # T3 Connect (relay access and mobile notifications) is compiled out.
+  connect = lib.importJSON ./connect.json;
 in
 (t3code.override {
   inherit claude-code;
@@ -52,6 +55,15 @@ in
       inherit version src;
 
       VP_SKIP_INSTALL = "1";
+      # The web, server and desktop builds read these from the environment
+      # through scripts/lib/public-config.ts; with structured attributes only
+      # `env` is exported. Relay telemetry stays unset.
+      env = (previousAttrs.env or { }) // {
+        T3CODE_RELAY_URL = connect.relayUrl;
+        T3CODE_CLERK_PUBLISHABLE_KEY = connect.clerkPublishableKey;
+        T3CODE_CLERK_JWT_TEMPLATE = connect.clerkJwtTemplate;
+        T3CODE_CLERK_CLI_OAUTH_CLIENT_ID = connect.clerkCliOAuthClientId;
+      };
       postPatch = ''
         substituteInPlace apps/web/vite.config.ts \
           --replace-fail \
@@ -113,6 +125,9 @@ in
             "$out/libexec/t3code/apps/desktop/prod-resources/resource-monitor/t3-resource-monitor"
           install -Dm755 ${resourceMonitor}/bin/t3-resource-monitor \
             "$out/libexec/t3code/apps/server/dist/resource-monitor/t3-resource-monitor"
+          # Fail rather than ship a build without T3 Connect if upstream stops
+          # reading the public values from the environment.
+          grep -rqF -- 'normalizeSecureRelayUrl("${connect.relayUrl}")' "$out/libexec/t3code/apps/server/dist"
         ''
         + lib.optionalString stdenv.hostPlatform.isLinux ''
           if [[ -f apps/desktop/scripts/build-browser-secret.mjs ]]; then
