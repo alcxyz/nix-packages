@@ -6,13 +6,13 @@
 
 ## Context
 
-The backlog overview skill (nix-config ADR-0093) builds a triage page of open
-issues and pull requests on request: `backlog-inventory` computes the facts,
-`light` readers judge the issues the facts cannot decide, and a renderer draws
-a snapshot inside the thread that asked. Like the thread overview before
-[ADR-0012](0012-deck-t3-thread-dashboard.md), each look costs minutes and
-several agent runs, re-reads issues that did not change and cannot be kept
-open. Most of the backlog is the agent account hugin's issues and pull
+The backlog overview skill (its ADR is in a private repository) builds a
+triage page of open issues and pull requests on request: `backlog-inventory`
+computes the facts, `light` readers judge the issues the facts cannot decide,
+and a renderer draws a snapshot inside the thread that asked. Like the thread
+overview before [ADR-0012](0012-deck-t3-thread-dashboard.md), each look costs
+minutes and several agent runs, re-reads issues that did not change and cannot
+be kept open. Most of the backlog is the agent account hugin's issues and pull
 requests, so a live view is in effect a consolidated view of hugin's work.
 Tracked in [#619](https://git.alc.xyz/alcxyz/nix-packages/issues/619), whose
 decisions comment fixes the credentials, the scope and the verdict shortlist.
@@ -33,7 +33,7 @@ to the dashboard process's view.
 
 - **Two adapter commands are its only view of the forges.** deck holds no
   forge credentials and makes no forge requests itself.
-  - `inventory`, run with no arguments, prints the ADR-0093 inventory JSON for
+  - `inventory`, run with no arguments, prints the backlog inventory JSON for
     the consumer's fixed scope. The consumer's wrapper chooses the scope, the
     credentials and the thread inventory it joins. deck runs it every
     `intervalMinutes` (15) under a `timeoutMinutes` (5) deadline, and when
@@ -99,9 +99,9 @@ consumer's wrapper, not deck, provides:
 - **Forgejo:** a dedicated read-only token of hugin, separate from its working
   token, with `read:issue`, `read:repository` and `read:user` (the inventory
   asks `/user` who it reads as), passed through `FORGEJO_API_TOKEN_FILE`.
-- **GitHub:** installation tokens of hugin's App (nix-config ADR-0099),
-  requested with read-only permissions: metadata, issues, pull requests,
-  checks and commit statuses, all read. These are within the App's grant, so
+- **GitHub:** installation tokens of hugin's App, requested with read-only
+  permissions: metadata, issues, pull requests, checks and commit statuses,
+  all read. These are within the App's grant, so
   the App's settings do not change. `gh-app` gains a `read-only` command that
   mints such a token from the App key, caches it apart from the full token, and
   runs a command with it in `GH_TOKEN` and an empty gh configuration
@@ -163,7 +163,7 @@ consumer's wrapper, not deck, provides:
 - The page lags the forges by up to `intervalMinutes`. One fleet-wide run makes
   a few hundred API requests, well within an installation token's hourly
   limit at four runs an hour.
-- deck depends on the inventory's JSON contract (ADR-0093) and the `item`
+- deck depends on the inventory's JSON contract and the `item`
   command's; the tests use fixtures and fake commands in `testdata/` that
   follow them.
 - The read-only Forgejo token is one more credential for the operator to

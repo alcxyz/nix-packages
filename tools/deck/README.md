@@ -138,7 +138,7 @@ table it registers nothing under that path, which then belongs to the page
 collections like any other.
 
 deck holds no forge credentials. It runs one adapter command, with no
-arguments, that prints the backlog inventory JSON (nix-config ADR-0093) for
+arguments, that prints the backlog inventory JSON (`backlog-inventory`) for
 the consumer's chosen scope and credentials, every `intervalMinutes` under a
 `timeoutMinutes` deadline, and when **Refresh now** is pressed. A failed or
 slow run keeps the last good facts on the page with their time and the

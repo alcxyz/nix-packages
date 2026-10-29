@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-02
-**Amended:** 2026-10-09 by nix-config [ADR-0085](https://git.alc.xyz/alcxyz/nix-config/src/branch/dev/docs/adr/0085-one-role-vocabulary.md): devlog reads the `standard` role from the shared LLM config instead of its own config file.
+**Amended:** 2026-10-09 by nix-config [ADR-0085](https://git.alc.xyz/alcxyz/nix-config/src/branch/dev/docs/adr/archive/0085-one-role-vocabulary.md) (since moved to a private repository): devlog reads the `standard` role from the shared LLM config instead of its own config file.
 **History:** [replaced text](archive/0002-model-agnostic-llm-config-for-devlog-history.md)
 **Applies to:** `tools/devlog/`
 
@@ -17,7 +17,7 @@ paperless-tools solved the same problem with
 [ADR-009](https://git.alc.xyz/alcxyz/paperless-tools/src/branch/dev/docs/adr/ADR-009-model-agnostic-llm-config.md):
 provider, model and an optional backup per role, resolved from configuration
 rather than code. Role names are now one vocabulary across tools
-(nix-config ADR-0085).
+(the agent role decision, now in a private repository).
 
 ## Decision
 
@@ -84,7 +84,7 @@ default must use the CLI. Zero-config must always work.
 
 - **A devlog-specific config file (`$XDG_CONFIG_HOME/devlog/config.toml`).**
   The original decision, replaced when roles became one vocabulary across
-  tools (nix-config ADR-0085): one shared file avoids repeating provider
+  tools: one shared file avoids repeating provider
   setups per tool.
 - **Environment variable only (`DEVLOG_MODEL`).** Simple for model selection
   but doesn't support backup providers or auth configuration.

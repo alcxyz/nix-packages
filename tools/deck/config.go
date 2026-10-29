@@ -32,8 +32,8 @@ type Config struct {
 }
 
 // BacklogConfig configures the backlog view: where it is served, the
-// adapter commands that print the inventory and an issue's text (nix-config
-// ADR-0093), and how its verdicts are made.
+// adapter commands that print the inventory and an issue's text, and how its
+// verdicts are made.
 type BacklogConfig struct {
 	BasePath        string `toml:"basePath"`
 	IntervalMinutes int    `toml:"intervalMinutes"`

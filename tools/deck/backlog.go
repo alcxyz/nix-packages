@@ -14,9 +14,9 @@ import (
 	"time"
 )
 
-// The backlog view (ADR-0014) shows backlog-inventory's facts (nix-config
-// ADR-0093) live. deck holds no forge credentials: the inventory command
-// the consumer configures is its only view of the forges.
+// The backlog view (ADR-0014) shows backlog-inventory's facts live. deck
+// holds no forge credentials: the inventory command the consumer configures is
+// its only view of the forges.
 
 // Shortlist limits, as the backlog overview skill's: the issues that may be
 // done, then the idlest stale ones.
