@@ -37,20 +37,16 @@ let
     preConfigure = ''
       export HOME="$TMPDIR"
     '';
+    # The nixpkgs wrapper points T3CODE_RESOURCE_MONITOR_PATH at lib.getExe.
+    meta.mainProgram = "t3-resource-monitor";
   };
   previewBrowser = callPackage ./preview-browser.nix { inherit src; };
   # Upstream's release builds embed these public client values; without them
   # T3 Connect (relay access and mobile notifications) is compiled out.
   connect = lib.importJSON ./connect.json;
-in
-(t3code.override {
-  inherit claude-code;
-  codex = codex-cli;
-  # gh-app's gh runs plain gh until the App is configured in T3's environment.
-  gh = gh-app-gh;
-  enableClaude = true;
-}).overrideAttrs
-  (
+  # nixpkgs builds T3 Code in t3code.unwrapped and wraps that with the agent
+  # CLIs; customise the build here and hand it back to the wrapper below.
+  unwrapped = t3code.unwrapped.overrideAttrs (
     finalAttrs: previousAttrs: {
       inherit version src;
 
@@ -140,7 +136,10 @@ in
           ln -s ${previewBrowser} "$out/libexec/t3code/preview-browser"
         '';
 
+      # The wrapper passes these through; the updater and CI build
+      # .#t3code.pnpmDeps and .#t3code.resourceMonitor.
       passthru = (previousAttrs.passthru or { }) // {
+        inherit (finalAttrs) pnpmDeps;
         inherit previewBrowser resourceMonitor sourceRevision;
         embeddedProviderVersions = {
           claudeCode = claude-code.version;
@@ -152,4 +151,15 @@ in
         inherit changelog;
       };
     }
-  )
+  );
+in
+t3code.override {
+  inherit claude-code;
+  codex = codex-cli;
+  # gh-app's gh runs plain gh until the App is configured in T3's environment.
+  gh = gh-app-gh;
+  enableClaude = true;
+  t3code-unwrapped = unwrapped;
+  # Built from the pinned source, so its hash is the one in source.json.
+  t3code-resource-monitor = resourceMonitor;
+}
