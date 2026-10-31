@@ -3,6 +3,7 @@
   bash,
   buildGoModule,
   coreutils,
+  git,
   hostname,
   kubectl-cnpg,
   lib,
@@ -23,7 +24,7 @@ in
 buildGoModule (finalAttrs: {
   pname = "nixfleet";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.22.0";
+  version = "0.23.0";
 
   src = ./.;
 
@@ -43,6 +44,7 @@ buildGoModule (finalAttrs: {
   nativeCheckInputs = [
     bash
     coreutils
+    git
     python3
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [ acl ];

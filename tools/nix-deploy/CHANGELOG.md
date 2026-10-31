@@ -9,6 +9,18 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.23.0 (2026-10-31)
+
+- `nixfleet triage` adds the lock diff to `context.md` (#673, ADR-0016).
+  Each failed target's baseline is the `flake.lock` of the newest earlier
+  run of the same flake directory that shows it ok or unchanged.
+  Without one, it is the newest `flake.lock` in Git history at or before
+  the run's commit that differs from the run's lock, labelled as an
+  approximation. Targets with the same baseline share one diff of added,
+  removed and changed inputs, with their locked revisions, dates, sources
+  and store paths. A table lists every locked input with its store path,
+  computed offline from its `narHash`, and whether it is in the local store.
+
 ## 0.22.0 (2026-10-31)
 
 - `nixfleet triage [<run>]` writes `context.md` into a

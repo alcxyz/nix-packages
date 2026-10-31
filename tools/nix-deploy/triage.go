@@ -16,14 +16,22 @@ import (
 const triageUsage = `Usage: nixfleet triage [<run>]
 
 Writes context.md for a recorded deploy run (ADR-0016): the run's facts, its
-failed targets with the step that failed, the paths of their logs, and the
-first error of each with the files it names. <run> is a run ID, the name of a
+failed targets with the step that failed, the paths of their logs, the first
+error of each with the files it names, the lock diff since each target's
+baseline, and the store path of every locked input. <run> is a run ID, the name of a
 directory under $XDG_STATE_HOME/nix-deploy/runs (by default ~/.local/state),
 or the path of a run directory; without it, the newest run that failed.
 
 The file is written into the run directory and its path printed. The command
 fails when no run failed, the run does not exist, is still going on or has no
-report.json. This version launches no agent and has no lock diff yet.
+report.json. This version launches no agent.
+
+A target's baseline is the flake.lock of the newest earlier run of the same
+flake directory that shows it ok or unchanged (a build-only run proves no
+deploy, so built does not count). Without one, it is the newest flake.lock
+in the Git history, at or before the run's commit, that differs from the
+run's lock: an approximation, not a known good deploy.
+Store paths are computed from each input's narHash, without Nix or network.
 `
 
 // maxErrorLines caps the lines of one error kept in the context.
@@ -306,7 +314,7 @@ func writeTriageContext(dir string) (string, error) {
 			out.WriteString("\n")
 		}
 	}
-	out.WriteString("\nNot yet included: the lock diff since each failed target's last good run, and the store paths of the inputs.\n")
+	writeLockContext(&out, dir, info, failed)
 
 	path := filepath.Join(dir, "context.md")
 	// replaceFile creates the file 0600 and renames it into place.

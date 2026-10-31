@@ -141,7 +141,8 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
 - `nixfleet triage [<run>]`: writes `context.md` into a recorded run's
   directory, by default the newest failed run, and prints its path. It lists
   the run's facts, each failed target with the step that failed and its logs,
-  and the first error of each log with the files it names
+  and the first error of each log with the files it names, the lock diff
+  since each target's last good run (ok or unchanged) and the store path of every locked input
   ([ADR-0016](docs/adr/0016-nixfleet-triage.md)). It does not launch an
   agent yet.
 

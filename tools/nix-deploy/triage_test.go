@@ -177,7 +177,7 @@ func TestTriageContext(t *testing.T) {
 		"## Build errors",
 		filepath.Join(dir, "logs", "build-pkg-1.0.log"),
 		"error: builder failed",
-		"Not yet included: the lock diff",
+		"## Lock diff",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("context.md lacks %q:\n%s", want, text)
