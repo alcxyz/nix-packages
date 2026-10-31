@@ -164,6 +164,23 @@ func ownInputNodes(lock []byte, checkouts map[string]string) map[string]string {
 	return nodes
 }
 
+// ownMarks returns the lock nodes of the own inputs, and the configured own
+// inputs that are not in the lock.
+func ownMarks(lock []byte, checkouts map[string]string) (map[string]bool, []string) {
+	own := map[string]bool{}
+	nodes := ownInputNodes(lock, checkouts)
+	for _, node := range nodes {
+		own[node] = true
+	}
+	var unlocked []string
+	for _, name := range sortedPaths(checkouts) {
+		if _, ok := nodes[name]; !ok {
+			unlocked = append(unlocked, name)
+		}
+	}
+	return own, unlocked
+}
+
 // writeOwnInputs writes the Git state of each own input's checkout and how
 // its HEAD compares with the revision the run's lock pins.
 func writeOwnInputs(out *strings.Builder, lock []byte, checkouts map[string]string) {
@@ -249,8 +266,11 @@ func playbookPath(exe string) (string, error) {
 	return path, nil
 }
 
-func triagePrompt(context, playbook, addendum string) string {
+func triagePrompt(context, playbook, addendum string, warnings bool) string {
 	prompt := "A nixfleet deploy run needs triage. Read " + context + " first, then follow the playbook " + playbook + "."
+	if warnings {
+		prompt = "This is warning triage: a nixfleet deploy run printed evaluation warnings. Read " + context + " first, then follow the playbook " + playbook + ": its limits apply in every mode, and its Warnings section gives the procedure."
+	}
 	if addendum != "" {
 		prompt += " Also follow the operator's playbook addendum " + addendum + "."
 	}
@@ -259,12 +279,12 @@ func triagePrompt(context, playbook, addendum string) string {
 
 // launchTriage runs the agent command with the prompt in the flake
 // directory, on the inherited terminal, and returns its exit status.
-func launchTriage(cfg *triageConfig, context, flakeDir, playbook string) int {
+func launchTriage(cfg *triageConfig, context, flakeDir, playbook string, warnings bool) int {
 	if info, err := os.Stat(flakeDir); flakeDir == "" || err != nil || !info.IsDir() {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: the run's flake directory %s no longer exists; not launching the agent\n", flakeDir)
 		return 1
 	}
-	argv := append(append([]string{}, cfg.AgentCommand...), triagePrompt(context, playbook, cfg.PlaybookAddendum))
+	argv := append(append([]string{}, cfg.AgentCommand...), triagePrompt(context, playbook, cfg.PlaybookAddendum, warnings))
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = flakeDir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr

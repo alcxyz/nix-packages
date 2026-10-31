@@ -24,14 +24,22 @@ func (t target) key() string {
 
 // attribute returns the flake attribute that builds the target.
 func (d *deployer) attribute(t target) string {
+	root, build := targetAttribute(t, d.inv.HomeOutputPrefix, d.self, d.darwin)
+	return root + build
+}
+
+// targetAttribute returns the flake attribute of a target's configuration
+// and the attribute path below it that builds the target. A system target
+// is nix-darwin only when it is this machine and this machine is a Mac.
+func targetAttribute(t target, homePrefix, self string, darwin bool) (string, string) {
 	// Names are quoted because inventory names may contain dots.
 	if t.phase == "hm" {
-		return `.#homeConfigurations."` + d.inv.HomeOutputPrefix + t.host + `".activationPackage`
+		return `.#homeConfigurations."` + homePrefix + t.host + `"`, ".activationPackage"
 	}
-	if t.host == d.self && d.darwin {
-		return `.#darwinConfigurations."` + t.host + `".system`
+	if t.host == self && darwin {
+		return `.#darwinConfigurations."` + t.host + `"`, ".system"
 	}
-	return `.#nixosConfigurations."` + t.host + `".config.system.build.toplevel`
+	return `.#nixosConfigurations."` + t.host + `"`, ".config.system.build.toplevel"
 }
 
 func (d *deployer) label(t target) string {

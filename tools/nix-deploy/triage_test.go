@@ -58,12 +58,12 @@ func TestTriageSelectsRuns(t *testing.T) {
 	makeRun(t, runs, "20260102T030600.000000Z-3", false, rep, nil)
 
 	for _, name := range []string{"", "20260102T030500.000000Z-2", want} {
-		got, err := selectRun(runs, name)
+		got, err := selectRun(runs, name, false)
 		if err != nil || got != want {
 			t.Fatalf("selectRun(%q) = %q, %v; want %q", name, got, err, want)
 		}
 	}
-	if _, err := selectRun(runs, "20990101T000000.000000Z-1"); err == nil || !strings.Contains(err.Error(), "no run") {
+	if _, err := selectRun(runs, "20990101T000000.000000Z-1", false); err == nil || !strings.Contains(err.Error(), "no run") {
 		t.Fatalf("a missing run gave %v", err)
 	}
 }
@@ -71,7 +71,7 @@ func TestTriageSelectsRuns(t *testing.T) {
 func TestTriageNoFailedRun(t *testing.T) {
 	runs := stateRuns(t)
 	makeRun(t, runs, "20260102T030600.000000Z-3", false, &runReport{}, nil)
-	if _, err := selectRun(runs, ""); err == nil || !strings.Contains(err.Error(), "no failed run") {
+	if _, err := selectRun(runs, "", false); err == nil || !strings.Contains(err.Error(), "no failed run") {
 		t.Fatalf("got %v", err)
 	}
 	if status := runTriage(nil); status != 1 {

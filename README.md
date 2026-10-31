@@ -151,7 +151,12 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   terminal, and without `--no-launch`, triage then runs the agent in the
   run's flake directory with a prompt naming `context.md`, the playbook
   shipped in `share/nixfleet/triage-playbook.md` and the addendum, and exits
-  with its status.
+  with its status. `nixfleet triage --warnings [<run>]` takes the newest
+  finished run whatever its result and writes a `context.md` of its
+  evaluation warnings instead: each distinct message with the targets that
+  printed it, the files it names (mapped to their input, own or upstream),
+  the names it calls options as hints and, per target, a trace
+  re-evaluation for the agent to run; nixfleet runs no evaluation itself.
 
 The program chooses its command by the name it is invoked as, so each
 installed name is a wrapper that sets it.

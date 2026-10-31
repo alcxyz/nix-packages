@@ -81,7 +81,7 @@ const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
        nixfleet reboot [OPTIONS] [--all | <host>...]
        nixfleet off|on [OPTIONS] <host>
        nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
-       nixfleet triage [--config FILE] [--no-launch] [<run>]
+       nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]
 
 Subcommands:
   deploy   Evaluate, plan, build and activate the NixOS, nix-darwin and Home
@@ -103,7 +103,8 @@ Subcommands:
            runner units; see nixfleet status --help.
   triage   Write context.md for a recorded deploy run, by default the newest
            that failed: its facts, failed targets, their logs and first
-           errors, then launch the configured agent CLI on it; see
+           errors, or with --warnings the evaluation warnings of the newest
+           run, then launch the configured agent CLI on it; see
            nixfleet triage --help.
 
 Options:

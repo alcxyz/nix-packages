@@ -365,6 +365,12 @@ func writeLockContext(out *strings.Builder, dir string, info runInfo, failed []f
 		writeLockDiff(out, old, inputs)
 	}
 
+	writeLockedInputs(out, inputs, own, unlocked)
+}
+
+// writeLockedInputs writes the table of every input of the run's lock with
+// its store path, marking the nodes of the operator's own inputs.
+func writeLockedInputs(out *strings.Builder, inputs map[string]lockedInput, own map[string]bool, unlocked []string) {
 	out.WriteString("\n## Locked inputs\n\nStore paths are computed from each input's narHash; \"in store\" says whether the path exists on this machine. \"Own\" marks the operator's own inputs, as the triage configuration lists them; every other input is upstream.")
 	if len(own) == 0 && len(unlocked) == 0 {
 		out.WriteString(" No own input is configured.")

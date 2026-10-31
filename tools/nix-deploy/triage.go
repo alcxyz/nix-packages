@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const triageUsage = `Usage: nixfleet triage [--config FILE] [--no-launch] [<run>]
+const triageUsage = `Usage: nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]
 
 Writes context.md for a recorded deploy run (ADR-0016): the run's facts, its
 failed targets with the step that failed, the paths of their logs, the first
@@ -36,9 +36,21 @@ triage then runs the agent in the run's flake directory with one more
 argument, a prompt naming context.md, the playbook shipped with nixfleet and
 the addendum, and exits with the agent's status.
 
+With --warnings, the run is the newest finished one whatever its result
+(or the one named), and context.md lists each distinct "evaluation
+warning:" and "trace: warning:" message of its evaluation logs with the
+targets that printed it, its kind, the options and files it names (each
+file mapped to its locked input, own or upstream), and per target the
+command that attributes it: a trace re-evaluation with abort-on-warn.
+Names the message calls options are listed as hints; the playbook says how
+to look up their definitions. nixfleet runs nothing. It also compares
+the flake checkout now with the run's revision and lock, and has the own
+inputs and the locked inputs, and no lock diff.
+
 Options:
   --config FILE   Read the inventory from FILE instead of NIX_DEPLOY_CONFIG.
   --no-launch     Write context.md only.
+  --warnings      Triage the warnings of a run instead of its failures.
 
 A target's baseline is the flake.lock of the newest earlier run of the same
 flake directory that shows it ok or unchanged (a build-only run proves no
@@ -56,6 +68,7 @@ var errTriageHelp = errors.New("help requested")
 type triageOptions struct {
 	configFile string
 	noLaunch   bool
+	warnings   bool
 	run        string
 }
 
@@ -68,6 +81,8 @@ func parseTriageArgs(args []string) (triageOptions, error) {
 			return opts, errTriageHelp
 		case arg == "--no-launch":
 			opts.noLaunch = true
+		case arg == "--warnings":
+			opts.warnings = true
 		case arg == "--config":
 			if i+1 >= len(args) || args[i+1] == "" {
 				return opts, fmt.Errorf("--config requires a file")
@@ -117,9 +132,23 @@ func runTriage(args []string) int {
 	if cfg != nil {
 		checkouts = cfg.InputCheckouts
 	}
-	dir, err := selectRun(filepath.Join(stateHome(), "nix-deploy", "runs"), opts.run)
+	dir, err := selectRun(filepath.Join(stateHome(), "nix-deploy", "runs"), opts.run, opts.warnings)
 	path := ""
-	if err == nil {
+	switch {
+	case err != nil:
+	case opts.warnings:
+		// The inventory gives the Home Manager output prefix; without it the
+		// commands show a placeholder.
+		var inv *inventory
+		noInventory := "No inventory is configured (--config FILE or NIX_DEPLOY_CONFIG)"
+		if opts.configFile != "" {
+			var invErr error
+			if inv, invErr = loadInventory(opts.configFile); invErr != nil {
+				noInventory = "The inventory could not be read or is invalid"
+			}
+		}
+		path, err = writeWarningsContext(dir, checkouts, inv, noInventory)
+	default:
 		path, err = writeTriageContext(dir, checkouts)
 	}
 	if err != nil {
@@ -149,12 +178,14 @@ func runTriage(args []string) int {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
 		return 1
 	}
-	return launchTriage(cfg, path, info.FlakeDir, playbook)
+	return launchTriage(cfg, path, info.FlakeDir, playbook, opts.warnings)
 }
 
 // selectRun returns the absolute directory of the run named by an ID or a
-// path, or without a name the newest run whose run.json says it failed.
-func selectRun(runs, name string) (string, error) {
+// path, or without a name the newest run whose run.json says it failed or,
+// with finished, the newest finished run whatever its result: one with a
+// report.json that no longer holds its run.lock.
+func selectRun(runs, name string, finished bool) (string, error) {
 	dir := ""
 	switch {
 	case name == "":
@@ -170,10 +201,20 @@ func selectRun(runs, name string) (string, error) {
 		}
 		sort.Strings(ids)
 		for i := len(ids) - 1; i >= 0 && dir == ""; i-- {
-			info, err := readRunInfo(filepath.Join(runs, ids[i]))
-			if err == nil && info.Failed != nil && *info.Failed {
-				dir = filepath.Join(runs, ids[i])
+			run := filepath.Join(runs, ids[i])
+			if finished {
+				if held, err := runHeld(run); err == nil && !held && fileExists(filepath.Join(run, "report.json")) {
+					dir = run
+				}
+				continue
 			}
+			info, err := readRunInfo(run)
+			if err == nil && info.Failed != nil && *info.Failed {
+				dir = run
+			}
+		}
+		if dir == "" && finished {
+			return "", fmt.Errorf("no finished run in %s", runs)
 		}
 		if dir == "" {
 			return "", fmt.Errorf("no failed run in %s", runs)
@@ -215,6 +256,34 @@ func runHeld(dir string) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+// readFinishedRun reads the run.json and report.json of a run that no
+// longer holds its run.lock.
+func readFinishedRun(dir string) (runInfo, runReport, error) {
+	var rep runReport
+	held, err := runHeld(dir)
+	if err != nil {
+		return runInfo{}, rep, err
+	}
+	if held {
+		return runInfo{}, rep, fmt.Errorf("run %s is still going on", dir)
+	}
+	info, err := readRunInfo(dir)
+	if err != nil {
+		return info, rep, fmt.Errorf("cannot read the run.json of %s: %v", dir, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	if os.IsNotExist(err) {
+		return info, rep, fmt.Errorf("run %s has no report.json; it was interrupted or ended before writing one", dir)
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &rep)
+	}
+	if err != nil {
+		return info, rep, fmt.Errorf("cannot read the report.json of %s: %v", dir, err)
+	}
+	return info, rep, nil
 }
 
 // failedTarget is a target whose report status is failed, with the step
@@ -261,27 +330,9 @@ func fileExists(path string) bool {
 // writeTriageContext writes context.md into a finished run's directory and
 // returns its path; checkouts are the own inputs' checkouts by input name.
 func writeTriageContext(dir string, checkouts map[string]string) (string, error) {
-	held, err := runHeld(dir)
+	info, rep, err := readFinishedRun(dir)
 	if err != nil {
 		return "", err
-	}
-	if held {
-		return "", fmt.Errorf("run %s is still going on", dir)
-	}
-	info, err := readRunInfo(dir)
-	if err != nil {
-		return "", fmt.Errorf("cannot read the run.json of %s: %v", dir, err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "report.json"))
-	if os.IsNotExist(err) {
-		return "", fmt.Errorf("run %s has no report.json; it was interrupted or ended before writing one", dir)
-	}
-	var rep runReport
-	if err == nil {
-		err = json.Unmarshal(data, &rep)
-	}
-	if err != nil {
-		return "", fmt.Errorf("cannot read the report.json of %s: %v", dir, err)
 	}
 
 	buildFailed := map[string]bool{}
@@ -387,17 +438,7 @@ func writeTriageContext(dir string, checkouts map[string]string) (string, error)
 		}
 	}
 	lock, _ := os.ReadFile(filepath.Join(dir, "flake.lock"))
-	own := map[string]bool{}
-	nodes := ownInputNodes(lock, checkouts)
-	for _, node := range nodes {
-		own[node] = true
-	}
-	var unlocked []string
-	for _, name := range sortedPaths(checkouts) {
-		if _, ok := nodes[name]; !ok {
-			unlocked = append(unlocked, name)
-		}
-	}
+	own, unlocked := ownMarks(lock, checkouts)
 	writeLockContext(&out, dir, info, failed, own, unlocked)
 	writeOwnInputs(&out, lock, checkouts)
 

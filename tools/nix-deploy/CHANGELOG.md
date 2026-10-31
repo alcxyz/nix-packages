@@ -9,6 +9,27 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.25.0 (2026-10-31)
+
+- `nixfleet triage --warnings [<run>]` triages a run's evaluation warnings
+  (#673, ADR-0016). It takes the newest finished run whatever its result,
+  or the one named. `context.md` lists each distinct `evaluation warning:`
+  and `trace: warning:` message of the evaluation logs with the targets that
+  printed it, its kind, the option paths and files it names, each file
+  mapped to its locked input and marked own or upstream, and per target its
+  flake attribute with a trace re-evaluation (`abort-on-warn`), which
+  nixfleet does not run. A warning ends at the next message, a Nix
+  progress or status line, or the evaluation's own result. Names the
+  message calls options are listed as hints; the playbook says how to find
+  an option's definitions, also inside submodules. A flake reference in a
+  trace maps to an input by its revision and source, and a revision that
+  several inputs share is reported as ambiguous. The context compares the flake checkout now
+  with the run's revision, dirty state and lock, since the commands
+  evaluate the checkout. Own and locked inputs follow; there is no lock
+  diff. The launch prompt says it is warning triage.
+- The playbook's Warnings section gives the attribution procedure, the four
+  outcomes and how to verify a fix.
+
 ## 0.24.0 (2026-10-31)
 
 - `nixfleet triage [--config FILE] [--no-launch] [<run>]` launches the
