@@ -283,7 +283,7 @@ func processAlive(pid int) bool {
 
 func waitForPID(t *testing.T, pidFile string) int {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(hangGuard)
 	for {
 		data, err := os.ReadFile(pidFile)
 		if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && convErr == nil {
@@ -301,7 +301,7 @@ func TestSuccessfulRunLeavesTheGroupAlone(t *testing.T) {
 	pidFile := filepath.Join(dir, "child.pid")
 	// The child releases the output, so the command ends on its own.
 	script := writeScript(t, dir, "spawn", "sleep 30 >/dev/null 2>&1 </dev/null &\necho $! > "+pidFile+"\n")
-	c := Commands{cfg: CommandsConfig{Inventory: script}, timeout: 10 * time.Second}
+	c := Commands{cfg: CommandsConfig{Inventory: script}, timeout: hangGuard}
 	_, err := c.inventory(context.Background(), InstanceConfig{DB: "x"}, 3)
 	pid := waitForPID(t, pidFile)
 	defer syscall.Kill(pid, syscall.SIGKILL)
@@ -326,7 +326,7 @@ func TestHeldOutputKillsTheGroup(t *testing.T) {
 			dir := t.TempDir()
 			pidFile := filepath.Join(dir, "child.pid")
 			script := writeScript(t, dir, "spawn", "sleep 30 &\necho $! > "+pidFile+"\n"+exit+"\n")
-			c := Commands{cfg: CommandsConfig{Inventory: script}, timeout: 10 * time.Second}
+			c := Commands{cfg: CommandsConfig{Inventory: script}, timeout: hangGuard}
 			start := time.Now()
 			_, err := c.inventory(context.Background(), InstanceConfig{DB: "x"}, 3)
 			if err == nil {
@@ -353,7 +353,7 @@ func TestHeldOutputKillsTheGroup(t *testing.T) {
 
 func TestCallerDeadlineIsNotReportedAsTimeout(t *testing.T) {
 	script := writeScript(t, t.TempDir(), "slow", "sleep 5\n")
-	c := Commands{cfg: CommandsConfig{Inventory: script}, timeout: 90 * time.Second}
+	c := Commands{cfg: CommandsConfig{Inventory: script}, timeout: hangGuard}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_, err := c.inventory(ctx, InstanceConfig{DB: "x"}, 3)

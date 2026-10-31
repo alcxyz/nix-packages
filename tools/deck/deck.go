@@ -29,6 +29,9 @@ const (
 // primary leaves time for the backups.
 var modelTimeout = 5 * time.Minute
 
+// commandTimeout bounds each adapter command.
+var commandTimeout = 90 * time.Second
+
 var (
 	errBudget    = errors.New("model call budget for this hour is used up")
 	errNotQuiet  = errors.New("thread is active again")
@@ -116,7 +119,7 @@ type Deck struct {
 func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, roleErr error, log *slog.Logger) *Deck {
 	d := &Deck{
 		cfg:         cfg,
-		cmds:        Commands{cfg: cfg.Commands, timeout: 90 * time.Second},
+		cmds:        Commands{cfg: cfg.Commands, timeout: commandTimeout},
 		cache:       cache,
 		models:      models,
 		roleErr:     roleErr,

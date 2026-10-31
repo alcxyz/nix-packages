@@ -26,12 +26,13 @@ const (
 	// itemChars cuts each text the item command prints.
 	itemChars = 2000
 	// itemPRs is how many of an issue's merged pull requests a verdict reads.
-	itemPRs = 3
-	// itemTimeout bounds one item command.
-	itemTimeout        = 90 * time.Second
+	itemPRs            = 3
 	maxVerdictReason   = 300
 	maxVerdictCriteria = 500
 )
+
+// itemTimeout bounds one item command.
+var itemTimeout = 90 * time.Second
 
 var verdictValues = []string{"close", "dispatch", "refresh", "keep", "drop", "unclear"}
 

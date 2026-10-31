@@ -828,7 +828,7 @@ exec sed -e "s/__THREAD__/$id/" -e "s/40:2026-10-20T09:00:00.000Z/$rev/" "`+fixt
 	}
 
 	d.refreshInstance(context.Background(), in)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(hangGuard)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "started-thread-d4")); err == nil {
 			break
@@ -1043,12 +1043,12 @@ func TestShutdownWaitsForWork(t *testing.T) {
 	d.run(ctx)
 	select {
 	case <-started:
-	case <-time.After(10 * time.Second):
+	case <-time.After(hangGuard):
 		cancel()
 		t.Fatal("no summary started")
 	}
 	cancel()
-	if !d.wait(10 * time.Second) {
+	if !d.wait(hangGuard) {
 		t.Fatal("the background work did not stop")
 	}
 	mu.Lock()
@@ -1288,7 +1288,7 @@ func TestRefreshAllHonoursConcurrencyAndBudget(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case <-started:
-		case <-time.After(5 * time.Second):
+		case <-time.After(hangGuard):
 			t.Fatal("summary workers did not start")
 		}
 	}

@@ -48,6 +48,9 @@ const (
 // default one. Tests point it at a test server.
 var forgeTransport http.RoundTripper
 
+// forgeTimeout bounds each forge request.
+var forgeTimeout = 30 * time.Second
+
 func newForge(tracker *issueTracker) (*forge, error) {
 	content, err := os.ReadFile(tracker.TokenFile)
 	if err != nil {
@@ -58,7 +61,7 @@ func newForge(tracker *issueTracker) (*forge, error) {
 		return nil, fmt.Errorf("the token file %s holds no single-line token", tracker.TokenFile)
 	}
 	return &forge{tracker: tracker, token: token, client: &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   forgeTimeout,
 		Transport: forgeTransport,
 		// A redirect could carry the token to another host.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

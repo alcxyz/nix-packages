@@ -12,6 +12,19 @@ import (
 	"time"
 )
 
+// hangGuard bounds a wait that only stops a hung test. CI can pause a whole
+// job for minutes, so a hang guard must outlast such a pause rather than
+// measure speed.
+const hangGuard = 15 * time.Minute
+
+// TestMain gives the production SSH and agent timeouts the tests run under
+// the hang guard's length.
+func TestMain(m *testing.M) {
+	sshTimeout = hangGuard
+	agentTimeout = hangGuard
+	os.Exit(m.Run())
+}
+
 // fakeSSH plays Forgejo's SSH server. Each connection without a command
 // takes the next line of $state/modes (the last one repeats):
 //
@@ -558,7 +571,7 @@ func TestAgentStopsOnInterrupt(t *testing.T) {
 	var stdout bytes.Buffer
 	go func() { done <- provision(ctx, opts, &stdout) }()
 	for start := time.Now(); !f.exists("agent-key"); time.Sleep(10 * time.Millisecond) {
-		if time.Since(start) > 10*time.Second {
+		if time.Since(start) > hangGuard {
 			t.Fatal("the key never reached the agent")
 		}
 	}
@@ -570,7 +583,7 @@ func TestAgentStopsOnInterrupt(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "interrupt") {
 			t.Errorf("error = %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("provision did not stop")
 	}
 	if entries, _ := os.ReadDir(f.tmp); len(entries) != 0 {

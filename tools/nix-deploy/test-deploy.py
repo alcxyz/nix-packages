@@ -11,6 +11,11 @@ import sys
 import tempfile
 import time
 
+# Bounds a wait that only stops a hung test, in seconds. CI can pause a whole
+# job for minutes (#711), so a hang guard must outlast such a pause rather
+# than measure speed; the assertions check behavior and timing themselves.
+HANG_GUARD = 900
+
 HOST_DATA = {
     "schemaVersion": 1,
     "operatorHost": "xyz",
@@ -342,11 +347,9 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
             "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1",
             **settings,
         }
-        # CI's pressure guard may freeze the runner longer than the old 15s
-        # limit. This is only a hang bound; the assertions below check behavior.
         # No inherited stdin: bash builds that detect SSH by a socket on stdin
         # would read the system bashrc and reset the mocked PATH.
-        result = subprocess.run([str(deploy), "--config", str(config), *args], cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        result = subprocess.run([str(deploy), "--config", str(config), *args], cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=HANG_GUARD)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         assert result.returncode == status, (args, result.returncode, result.stdout, result.stderr)
         return calls, result
@@ -360,7 +363,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, _ = run("--help", status=1)
     assert not actions(calls)
     # --version needs no inventory or environment.
-    version = subprocess.run([str(deploy), "--version"], env={}, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    version = subprocess.run([str(deploy), "--version"], env={}, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=HANG_GUARD)
     assert version.returncode == 0 and re.fullmatch(r"deploy \S+\n", version.stdout), version
     version = version.stdout.split()[1]
     # As the value of another option it is a file name, not --version.
@@ -616,12 +619,12 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     report.write_text(json.dumps({"failed": False}))
     interrupted = subprocess.Popen([str(deploy), "--config", str(config), "--no-preflight", "--nixos", "node", "--json", str(report)], cwd=root, env=env,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + HANG_GUARD
     while not any(json.loads(line)[0] == "nixos-rebuild" and "switch" in json.loads(line) for line in log.read_text().splitlines()):
         assert time.monotonic() < deadline and interrupted.poll() is None
         time.sleep(0.1)
     os.killpg(interrupted.pid, signal.SIGINT)
-    assert interrupted.wait(timeout=30) == 130
+    assert interrupted.wait(timeout=HANG_GUARD) == 130
     assert json.loads(report.read_text())["failed"]
     calls, result = run("--no-preflight", "--nixos", "node", keep_state=True, MOCK_CURRENT="node")
     assert rebuilt(calls) == ["node"] and "from this machine failed" in result.stdout
@@ -1054,7 +1057,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
             "MOCK_HOST": "xyz", "MOCK_SYSTEM": "Linux", "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1",
             **settings,
         }
-        result = subprocess.run([str(names / name), *args], cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        result = subprocess.run([str(names / name), *args], cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=HANG_GUARD)
         assert result.returncode == status, (name, args, result.returncode, result.stdout, result.stderr)
         return [json.loads(line) for line in log.read_text().splitlines()], result
 

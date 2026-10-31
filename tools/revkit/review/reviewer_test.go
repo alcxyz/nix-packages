@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+// hangGuard bounds a wait that only stops a hung test. CI can pause a whole
+// job for minutes, so a hang guard must outlast such a pause rather than
+// measure speed.
+const hangGuard = 15 * time.Minute
+
 // The fake clients record what they see in $REVKIT_TEST_LOG and reply the
 // way the real ones do; $REVKIT_TEST_MODE selects a failure.
 const fakeClaude = `#!/bin/sh
@@ -162,7 +167,7 @@ func TestValidReadablePath(t *testing.T) {
 
 func TestRunClaude(t *testing.T) {
 	f := newFixture(t, "")
-	result := Run(context.Background(), f.job("claude", time.Minute))
+	result := Run(context.Background(), f.job("claude", hangGuard))
 	if result.Status != StatusOK || result.Text != "reply text\n" {
 		t.Fatalf("result = %+v", result)
 	}
@@ -203,7 +208,7 @@ func TestRunClaude(t *testing.T) {
 
 func TestRunCodex(t *testing.T) {
 	f := newFixture(t, "")
-	result := Run(context.Background(), f.job("codex", time.Minute))
+	result := Run(context.Background(), f.job("codex", hangGuard))
 	if result.Status != StatusOK || result.Text != "codex reply\n" {
 		t.Fatalf("result = %+v", result)
 	}
@@ -246,7 +251,7 @@ func TestRunFailedReviewerIsNotAReview(t *testing.T) {
 	for _, mode := range []string{"fail", "error"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t, mode)
-			result := Run(context.Background(), f.job("claude", time.Minute))
+			result := Run(context.Background(), f.job("claude", hangGuard))
 			if result.Status != StatusFailed || result.Problem == "" {
 				t.Fatalf("result = %+v", result)
 			}
@@ -299,7 +304,7 @@ func TestRunStartFailure(t *testing.T) {
 	f := newFixture(t, "")
 	// lookPath accepts this executable file, but cmd.Start cannot execute it.
 	writeFile(t, filepath.Join(f.bin, "claude"), "not an executable format\n", 0o755)
-	result := Run(context.Background(), f.job("claude", time.Minute))
+	result := Run(context.Background(), f.job("claude", hangGuard))
 	if result.Status != StatusFailed || !strings.Contains(result.Problem, "cannot start claude") || result.Exit != nil {
 		t.Fatalf("result = %+v", result)
 	}
@@ -324,21 +329,21 @@ func TestRunInterruptedKillsTheProcessGroup(t *testing.T) {
 	var result Result
 	done := make(chan struct{})
 	go func() {
-		result = Run(ctx, f.job("claude", time.Minute))
+		result = Run(ctx, f.job("claude", hangGuard))
 		close(done)
 	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(30 * time.Second):
+		case <-time.After(hangGuard):
 			t.Error("the reviewer did not finish after cancellation")
 		}
 	})
 
 	// The PID file is the fixture's readiness signal. Cancellation must
 	// follow child startup, even when the build machine is heavily loaded.
-	startup := time.NewTimer(30 * time.Second)
+	startup := time.NewTimer(hangGuard)
 	defer startup.Stop()
 	poll := time.NewTicker(10 * time.Millisecond)
 	defer poll.Stop()
@@ -371,7 +376,7 @@ func TestRunInterruptedKillsTheProcessGroup(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("the reviewer did not finish after cancellation")
 	}
 	if result.Status != StatusInterrupted {
@@ -388,7 +393,7 @@ func TestRunInterruptedKillsTheProcessGroup(t *testing.T) {
 
 func TestRunNotesAReplacedCodexLogin(t *testing.T) {
 	f := newFixture(t, "replace")
-	result := Run(context.Background(), f.job("codex", time.Minute))
+	result := Run(context.Background(), f.job("codex", hangGuard))
 	if result.Status != StatusOK {
 		t.Fatalf("result = %+v", result)
 	}

@@ -11,16 +11,24 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"revkit/review"
 )
 
+// hangGuard bounds a wait that only stops a hung test. CI can pause a whole
+// job for minutes, so a hang guard must outlast such a pause rather than
+// measure speed.
+const hangGuard = 15 * time.Minute
+
 // TestMain lets the test binary play a client: the fake claude and codex
-// scripts run it with REVKIT_FAKE_CLIENT set.
+// scripts run it with REVKIT_FAKE_CLIENT set. It also gives the forge
+// request timeout the tests run under the hang guard's length.
 func TestMain(m *testing.M) {
 	if client := os.Getenv("REVKIT_FAKE_CLIENT"); client != "" {
 		os.Exit(fakeClient(client))
 	}
+	forgeTimeout = hangGuard
 	os.Exit(m.Run())
 }
 
@@ -156,8 +164,9 @@ func newReviewFixture(t *testing.T, extra string) reviewFixture {
 		}
 	}
 	state := t.TempDir()
+	// The timeout only stops a hung fake reviewer; it outlasts a CI pause.
 	config := strings.Replace(validConfig, `"timeoutSeconds": 1800`,
-		fmt.Sprintf(`"timeoutSeconds": 60, "stateDir": %q`, state), 1)
+		fmt.Sprintf(`"timeoutSeconds": 900, "stateDir": %q`, state), 1)
 	return reviewFixture{repo: repo, config: writeConfig(t, config), state: state}
 }
 

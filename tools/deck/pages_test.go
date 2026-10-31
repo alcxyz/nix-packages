@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // newPagesDeck builds a pages-only deck: no thread instances, the
@@ -82,7 +81,7 @@ func TestPagesOnlyRunsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	d.run(ctx)
 	cancel()
-	if !d.wait(time.Second) {
+	if !d.wait(hangGuard) {
 		t.Fatal("background work did not stop")
 	}
 }

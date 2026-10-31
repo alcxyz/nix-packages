@@ -15,6 +15,21 @@ import (
 // most fixture threads.
 var testClock = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 
+// hangGuard bounds a wait that only stops a hung test. CI can pause a whole
+// job for minutes (#711), so a hang guard must outlast such a pause rather
+// than measure speed.
+const hangGuard = 15 * time.Minute
+
+// TestMain gives the production timeouts the tests run under the hang
+// guard's length. Tests that check a timeout firing set their own short one.
+func TestMain(m *testing.M) {
+	commandTimeout = hangGuard
+	itemTimeout = hangGuard
+	actionTimeout = hangGuard
+	modelTimeout = hangGuard
+	os.Exit(m.Run())
+}
+
 func quietLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

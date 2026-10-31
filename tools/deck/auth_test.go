@@ -320,7 +320,7 @@ func TestAuthHangingIssuer(t *testing.T) {
 	go func() { first <- get() }()
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("discovery never reached the issuer")
 	}
 

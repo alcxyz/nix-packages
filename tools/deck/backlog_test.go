@@ -16,7 +16,10 @@ import (
 func newBacklogDeck(t *testing.T) (*Deck, http.Handler) {
 	t.Helper()
 	d, _ := newTestDeck(t)
-	d.cfg.Backlog = &BacklogConfig{Commands: BacklogCommandsConfig{Inventory: fakeBin(t, "backlog-inventory")}}
+	d.cfg.Backlog = &BacklogConfig{
+		TimeoutMinutes: int(hangGuard / time.Minute),
+		Commands:       BacklogCommandsConfig{Inventory: fakeBin(t, "backlog-inventory")},
+	}
 	if err := d.cfg.Backlog.normalize(d.cfg.BasePath, false); err != nil {
 		t.Fatal(err)
 	}
