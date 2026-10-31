@@ -3,7 +3,8 @@
 // configurations from a flake, for one host or the fleet (ADR-0006,
 // ADR-0008); reboot reboots hosts of the fleet by policy and constraint
 // group (ADR-0010); off and on power-cycle a Kubernetes node behind the
-// cluster gates; status reads what each host runs. Installed as deploy or
+// cluster gates; status reads what each host runs; triage writes the context
+// of a recorded run (ADR-0016). Installed as deploy or
 // k8s-node-power, it is that command.
 package main
 
@@ -80,6 +81,7 @@ const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
        nixfleet reboot [OPTIONS] [--all | <host>...]
        nixfleet off|on [OPTIONS] <host>
        nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
+       nixfleet triage [<run>]
 
 Subcommands:
   deploy   Evaluate, plan, build and activate the NixOS, nix-darwin and Home
@@ -99,6 +101,9 @@ Subcommands:
   status   Read, without changing anything, what each host booted and runs,
            whether it needs a reboot, its Kubernetes cordon state and its CI
            runner units; see nixfleet status --help.
+  triage   Write context.md for a recorded deploy run, by default the newest
+           that failed: its facts, failed targets, their logs and first
+           errors; see nixfleet triage --help.
 
 Options:
   -h, --help   Show this help.
@@ -140,6 +145,8 @@ func dispatch(name string, args []string) int {
 		return runPower("nixfleet", args)
 	case "status":
 		return runStatus(args[1:])
+	case "triage":
+		return runTriage(args[1:])
 	}
 	fmt.Fprintf(os.Stderr, "nixfleet: unknown subcommand '%s'\n", args[0])
 	fmt.Fprint(os.Stderr, nixfleetUsage)

@@ -138,6 +138,12 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   `nextBootSystem`, `rebootNeeded` (`true`, `false` or `null` when it cannot be
   told), `rebootReason`, `rebootDiffers`, `node` (`name`, `cordoned`, `ready`,
   or `null`) and `runners` (`active`, `total`, `units`, or `null`).
+- `nixfleet triage [<run>]`: writes `context.md` into a recorded run's
+  directory, by default the newest failed run, and prints its path. It lists
+  the run's facts, each failed target with the step that failed and its logs,
+  and the first error of each log with the files it names
+  ([ADR-0016](docs/adr/0016-nixfleet-triage.md)). It does not launch an
+  agent yet.
 
 The program chooses its command by the name it is invoked as, so each
 installed name is a wrapper that sets it.

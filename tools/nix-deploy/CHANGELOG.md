@@ -9,6 +9,17 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.22.0 (2026-10-31)
+
+- `nixfleet triage [<run>]` writes `context.md` into a
+  recorded run's directory and prints its path (#673, ADR-0016). It takes
+  the newest failed run, or the one named by ID or path. The context holds
+  the run's facts from `run.json`, each failed target with the step that
+  failed, the paths of its logs, and the first `error:` of each log with the
+  store paths and flake references it names. It refuses a run that is still
+  going on or has no `report.json`. It launches no agent yet and has no lock
+  diff.
+
 ## 0.21.0 (2026-10-31)
 
 - `deploy --build-only [<host> | --all]` evaluates, plans and builds the
