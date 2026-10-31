@@ -264,6 +264,9 @@ func runDeploy(args []string) int {
 	// unknown working directory is left empty rather than stopping the run.
 	cwd, _ := os.Getwd()
 	d.record = startRunRecord(args, findFlakeDir(cwd), d.dryRun, d.buildOnly, d.force, d.settings.runKeep)
+	if !d.dryRun && !d.buildOnly {
+		d.pruneDeployedRoots()
+	}
 	defer d.releaseRoots()
 	// Ctrl-C reaches the running commands too; release the roots before
 	// exiting so an interrupted run does not pin its closures.
@@ -514,6 +517,14 @@ activated nor gated. --dry-run stops after the plan, before building, and
 never starts a host's garbage collection, --force builds and activates
 unchanged targets too, and --json FILE writes the results and per-host
 timings.
+
+Once a remote target activates, its generation stays rooted on this machine in
+$XDG_STATE_HOME/nix-deploy/roots, replacing the one it activated before, so a
+garbage collection here keeps what the fleet runs and the next run need not
+rebuild it. A run that can activate (not --dry-run or --build-only) removes the
+roots of targets the inventory no longer deploys from this machine; the
+directory is shared by every inventory this user deploys, so with a second
+inventory, each removes the other's roots.
 
 --build-only evaluates, plans and builds both phases like a real run and
 stops before activation: it skips preflight, the sudo prompt, the remote

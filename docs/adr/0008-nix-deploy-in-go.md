@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-12
-**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles)
+**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots)
 **History:** [replaced text](archive/0008-nix-deploy-in-go-history.md)
 **Applies to:** `tools/nix-deploy/`
 
@@ -64,8 +64,10 @@ Every run, single-host or fleet, has four phases (#522):
    the rest of the run, since activation can come minutes later behind ready
    gates: the shared build links every output when all succeed, and each
    built target is rooted again through its derivation, which rebuilds an
-   output a collection removed in between. The build runs under a build
-   profile ([below](#build-profiles)).
+   output a collection removed in between. Once a remote target activates,
+   its generation stays rooted beyond the run
+   ([deployed roots](#deployed-roots)). The build runs under a build profile
+   ([below](#build-profiles)).
 4. **Activate.** Only changed targets are activated: remote systems through
    `nixos-rebuild <switch|boot> --store-path P --no-reexec --target-host ...
    --use-substitutes`, which copies the closure and keeps the
@@ -129,6 +131,36 @@ added about 3 to 4 derivations per host (about 23 in all), while the first run
 after a flake update had more than 400 to build, so the threshold separates
 them with room on both sides.
 
+### Deployed roots
+
+The run's own roots end with the run, and nothing else on the operator roots
+what remote hosts run, so the operator's garbage collection removed those
+closures between runs. The next run that changed such a host rebuilt every
+derivation of its closure that no binary cache holds, unchanged ones
+included: on the operator's fleet, Raspberry Pi kernels cross-compiled on the
+operator, and Moonlight and FFmpeg builds for the Pis built under emulation,
+whenever a daily collection had run since the last deploy.
+
+Once a remote target activates, deploy roots its generation on the operator
+with `nix-store --add-root $XDG_STATE_HOME/nix-deploy/roots/<phase>-<host>
+--realise <path>`. The link replaces the one to the generation the target
+activated before, so each remote target keeps one rooted generation. The root
+is added inside the activation, while the target's lock across runs is held,
+so concurrent runs root a target in the order they activated it. A serial
+member that switched but failed its ready gate is rooted too, since it runs
+that generation. A root that cannot be made is a warning, not a failure: the
+host already runs the generation. The operator's own targets are not rooted
+there; its system and Home Manager profiles root them.
+
+A run that can activate (neither `--dry-run` nor `--build-only`) first
+removes the links there that name no remote target of the inventory
+(`system-<host>` for a known host, `hm-<host>` for a Home Manager host,
+neither for the operator itself), so a retired host does not pin its last
+closure. Other files in the directory are left alone. The directory is one
+per user on the operator, whatever inventory a run reads, so pruning assumes
+the user deploys a single inventory: a run with a second inventory removes
+the first one's roots.
+
 ## Alternatives Considered
 
 - **Keep Bash and add the phases there** — rejected; the planning state,
@@ -144,10 +176,12 @@ them with room on both sides.
 - **Build every target before the plan** — the first implementation, replaced
   on 2026-10-13 (release 0.7.0). It assumed unchanged targets would come from
   the local store or a cache. Neither held: the operator's garbage collection
-  removes outputs that only remote hosts use, and nothing in a binary cache
-  matches packages built for another architecture, so a fleet run recompiled
-  up-to-date Raspberry Pi hosts under emulation on the operator. Evaluation
-  already gives each target's store path, which is all the plan compares.
+  removed outputs that only remote hosts use (deployed roots now keep each
+  remote target's last generation activated from the operator, but not one a
+  host got another way), and nothing in a binary cache matches packages built
+  for another architecture, so a fleet run recompiled up-to-date Raspberry Pi
+  hosts under emulation on the operator. Evaluation already gives each
+  target's store path, which is all the plan compares.
 - **Lower the operator's `max-jobs` and `cores` permanently** (instead of
   build profiles): slows every single large build the workstation does
   outside deployments.
@@ -156,6 +190,20 @@ them with room on both sides.
   two cases in [Build profiles](#build-profiles) by an order of magnitude.
 - **Lower `DEPLOY_EVAL_JOBS` under heavy**: evaluation ends before the count
   and the build start, so it never overlaps the builds the profile bounds.
+- **Root only the derivations no cache holds** (for
+  [deployed roots](#deployed-roots); on the operator's fleet the Pi kernels,
+  Moonlight and FFmpeg, about 0.26 GiB): telling them apart needs a cache
+  query per path or a hand-kept list, and the rest of each closure would
+  still be downloaded again after every collection. Whole closures keep about
+  9 GiB more store paths (less on a compressed store), which the operator
+  has room for.
+- **Keep deployed closures through the operator's collection policy**, such
+  as an age limit: the collection belongs to the operator's configuration,
+  not to deploy, and an age limit keeps what was built recently rather than
+  what the hosts run.
+- **A binary cache for the fleet's own builds**: it would also serve other
+  builders, but needs a cache service, signing keys and an upload in every
+  run, which is outside this tool.
 
 ## Consequences
 
@@ -181,3 +229,9 @@ them with room on both sides.
   every time; consumers keep such inputs out of their closures.
 - A dry run skips the build phase, so it does not show that changed targets
   build.
+- The operator's store keeps one generation of each remote target. On the
+  operator's fleet on 2026-10-31, the closures beyond what the operator's own
+  roots already kept came to about 9.5 GiB of store paths, more than half of
+  it the two Raspberry Pi hosts' AArch64 closures. A generation a host got
+  another way, or that was activated before release 0.27.0, is rooted only
+  from its next activation from the operator.

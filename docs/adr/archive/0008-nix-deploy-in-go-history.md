@@ -1,4 +1,4 @@
-**History of** [ADR-0008](../0008-nix-deploy-in-go.md): text replaced on 2026-10-28.
+**History of** [ADR-0008](../0008-nix-deploy-in-go.md): text replaced on 2026-10-28, with later replacements at the end.
 
 # ADR-0008: nix-deploy in Go, with evaluate, plan, build and activate phases
 
@@ -187,3 +187,19 @@ Considered and rejected:
   two cases above by an order of magnitude.
 - **Lower `DEPLOY_EVAL_JOBS` under heavy**: evaluation ends before the count
   and the build start, so it never overlaps the builds the profile bounds.
+
+## Text replaced on 2026-10-31: deployed roots
+
+The date lines read:
+
+**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles)
+
+The first rejected alternative read:
+
+- **Build every target before the plan** — the first implementation, replaced
+  on 2026-10-13 (release 0.7.0). It assumed unchanged targets would come from
+  the local store or a cache. Neither held: the operator's garbage collection
+  removes outputs that only remote hosts use, and nothing in a binary cache
+  matches packages built for another architecture, so a fleet run recompiled
+  up-to-date Raspberry Pi hosts under emulation on the operator. Evaluation
+  already gives each target's store path, which is all the plan compares.

@@ -14,7 +14,7 @@ The root `.ignore` hides this directory from `rg` and `fd`; use `rg -u` or
 | [ADR-0004](0004-patched-paneru-package.md) | Patched Paneru Package | Retired 2026-08-19 (package removed) |
 | [ADR-0006 history](0006-runtime-configured-nix-deploy-history.md) | Runtime-configured nix-deploy | History of [ADR-0006](../0006-runtime-configured-nix-deploy.md), text replaced 2026-10-31 |
 | [ADR-0007 history](0007-continuous-provider-updates-history.md) | Continuous grouped provider updates | History of [ADR-0007](../0007-continuous-provider-updates.md), text replaced 2026-10-28 |
-| [ADR-0008 history](0008-nix-deploy-in-go-history.md) | nix-deploy in Go, with evaluate, plan, build and activate phases | History of [ADR-0008](../0008-nix-deploy-in-go.md), text replaced 2026-10-28 |
+| [ADR-0008 history](0008-nix-deploy-in-go-history.md) | nix-deploy in Go, with evaluate, plan, build and activate phases | History of [ADR-0008](../0008-nix-deploy-in-go.md), text replaced 2026-10-28 and 2026-10-31 |
 | [ADR-0010 history](0010-fleet-reboot-policies-history.md) | Fleet reboots by policy and constraint group | History of [ADR-0010](../0010-fleet-reboot-policies.md), text replaced 2026-10-28 |
 | [ADR-0011 history](0011-revkit-agent-review-toolkit-history.md) | revkit, an agent review toolkit with isolated reviewers | History of [ADR-0011](../0011-revkit-agent-review-toolkit.md), text replaced 2026-10-28 |
 | [ADR-0013 history](0013-deck-page-collections-history.md) | Operator-authored page collections in Deck | History of [ADR-0013](../0013-deck-page-collections.md), text replaced 2026-10-28 |

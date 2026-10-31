@@ -57,9 +57,18 @@ func (d *deployer) systemCommand(host, action, path string, nonInteractive bool)
 }
 
 // activateSystem switches host's system, or stages it for the next boot when
-// the inventory says so. A switch refused by a switch inhibitor is retried
-// with 'boot', so the change takes effect after the next reboot.
+// the inventory says so, and roots a remote host's generation once it is
+// active. A switch refused by a switch inhibitor is retried with 'boot', so
+// the change takes effect after the next reboot.
 func (d *deployer) activateSystem(host, path string, streams stdio, nonInteractive bool) int {
+	status := d.switchSystem(host, path, streams, nonInteractive)
+	if status == 0 {
+		d.keepDeployed(target{phase: "system", host: host}, path, streams.err)
+	}
+	return status
+}
+
+func (d *deployer) switchSystem(host, path string, streams stdio, nonInteractive bool) int {
 	if !d.readsSwitchOutput(host) {
 		return streams.command(d.systemCommand(host, d.systemAction(host), path, nonInteractive)).run()
 	}
@@ -113,8 +122,17 @@ fi
 exec "$g/activate"`
 }
 
-// activateHome activates host's built Home Manager generation.
+// activateHome activates host's built Home Manager generation, and roots a
+// remote host's generation once it is active.
 func (d *deployer) activateHome(host, path string, streams stdio) int {
+	status := d.switchHome(host, path, streams)
+	if status == 0 {
+		d.keepDeployed(target{phase: "hm", host: host}, path, streams.err)
+	}
+	return status
+}
+
+func (d *deployer) switchHome(host, path string, streams stdio) int {
 	script := homeActivationScript(path)
 	if host == d.self {
 		return streams.command([]string{"bash", "-c", script}).run()

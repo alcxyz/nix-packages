@@ -213,6 +213,17 @@ elif name == "nix":
             print(f"error: path '{output}' is not valid", file=sys.stderr)
             sys.exit(1)
         print(output)
+elif name == "nix-store":
+    # Rooting an activated generation: the link replaces an older one.
+    # MOCK_KEEP_FAIL refuses the roots it names.
+    link = pathlib.Path(args[args.index("--add-root") + 1])
+    if listed("MOCK_KEEP_FAIL", link.name):
+        print(f"error: fixture cannot add root {link}", file=sys.stderr)
+        sys.exit(1)
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(args[args.index("--realise") + 1])
+    print(link)
 elif name == "ready-check":
     logged = [json.loads(line) for line in open(os.environ["MOCK_LOG"])]
     def switches(host):
@@ -321,7 +332,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     # every run record.
     (root / "flake.lock").write_text('{"nodes": {"root": {}}, "root": "root", "version": 7}\n')
     (root / "flake.nix").write_text("{ outputs = _: { }; }\n")
-    for name in ["hostname", "uname", "sudo", "ssh", "nix", "nix-env", "nixos-rebuild", "home-manager", "ready-check"]:
+    for name in ["hostname", "uname", "sudo", "ssh", "nix", "nix-env", "nix-store", "nixos-rebuild", "home-manager", "ready-check"]:
         command = commands / name
         command.write_text("#!" + sys.executable + "\n" + MOCK)
         command.chmod(0o755)
@@ -754,6 +765,45 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert data["hosts"][0]["system"]["status"] == "unchanged"
     # Nothing to build is not counted.
     assert not counted(calls) and "buildProfile" not in data and "pendingBuilds" not in data
+
+    # Each remote target's activated generation stays rooted on this machine,
+    # replacing the one before (ADR-0008); this machine's own targets are
+    # rooted by its profiles.
+    deployed = root / ".local/state/nix-deploy/roots"
+    calls, result = run("--all", "--no-preflight")
+    assert sorted(p.name for p in deployed.iterdir()) == ["hm-node", "system-node", "system-solo"]
+    assert os.readlink(deployed / "system-solo") == system_path("solo")
+    assert os.readlink(deployed / "hm-node") == home_path("node")
+    keeps = [c for c in calls if c[0] == "nix-store"]
+    assert all(c[1] == "--add-root" and c[3] == "--realise" for c in keeps) and len(keeps) == 3
+    switch = next(c for c in calls if c[0] == "nixos-rebuild" and system_path("solo") in c)
+    assert calls.index(switch) < calls.index(["nix-store", "--add-root", str(deployed / "system-solo"), "--realise", system_path("solo")])
+    calls, _ = run("--all", "--no-preflight", keep_state=True, MOCK_VARIANT="2")
+    assert os.readlink(deployed / "system-solo") == str(store / "fixture2-solo-system")
+    # An unchanged target keeps its root, and a failed activation adds none.
+    calls, _ = run("--all", "--no-preflight", keep_state=True, MOCK_CURRENT="node")
+    assert "node" not in rebuilt(calls) and os.readlink(deployed / "system-node") == str(store / "fixture2-node-system")
+    calls, _ = run("--no-preflight", "--nixos", "node", status=7, MOCK_FAIL_HOST="node")
+    assert not deployed.exists() or not any(deployed.iterdir())
+    # A root that cannot be made is a warning: the host runs the generation.
+    calls, result = run("--no-preflight", "--nixos", "node", MOCK_KEEP_FAIL="system-node")
+    assert "deploy: cannot keep system:node rooted after its activation: error: fixture cannot add root" in result.stderr
+    assert rebuilt(calls) == ["node"] and not (deployed / "system-node").exists()
+    # A run that can activate removes the roots of targets the inventory no
+    # longer deploys from here; a dry run and a build-only run leave them.
+    stale = ["system-gone", "hm-solo", "system-xyz", "hm-xyz", "other-node"]
+    def plant():
+        deployed.mkdir(parents=True, exist_ok=True)
+        for name in stale + ["system-node"]:
+            if not (deployed / name).is_symlink():
+                (deployed / name).symlink_to(store / "missing")
+        (deployed / "notes").write_text("kept\n")
+    plant()
+    run("--all", "--dry-run", "--no-preflight", keep_state=True)
+    run("--all", "--build-only", keep_state=True)
+    assert sorted(p.name for p in deployed.iterdir()) == sorted(stale + ["system-node", "notes"])
+    run("--no-preflight", "solo", keep_state=True, MOCK_CURRENT="solo")
+    assert sorted(p.name for p in deployed.iterdir()) == ["notes", "system-node"]
 
     # Build profiles: a run that would build many derivations here bounds the
     # shared build, and the roots built after it.

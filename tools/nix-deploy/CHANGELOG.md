@@ -9,6 +9,24 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.27.0 (2026-10-31)
+
+- Each remote target's activated generation stays rooted on the operator, in
+  `$XDG_STATE_HOME/nix-deploy/roots/<phase>-<host>`, replacing the generation
+  it activated before (ADR-0008). Until now the build roots ended with the
+  run, so the operator's next garbage collection removed the closures of
+  remote hosts, and a later run rebuilt their unchanged derivations that no
+  binary cache holds, such as Raspberry Pi kernels and packages built under
+  emulation. The root is added through `nix-store --add-root` once the
+  activation succeeds, also when a serial member then fails its ready gate,
+  since the host runs it; a root that cannot be made is a warning. The
+  operator's own targets are not rooted here: its profiles root them.
+- A run that can activate (not `--dry-run` or `--build-only`) removes the
+  deployed roots of targets the inventory no longer deploys from this
+  machine, so a retired host does not pin its last closure. Known limit: the
+  directory is one per user, whatever inventory a run reads, so a user who
+  deploys two inventories has each run remove the other's roots.
+
 ## 0.26.0 (2026-10-31)
 
 - A failed `deploy` offers triage (#673, ADR-0016 phase 3). Any run that
