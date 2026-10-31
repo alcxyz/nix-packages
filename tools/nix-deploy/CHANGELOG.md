@@ -9,6 +9,19 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.21.0 (2026-10-31)
+
+- `deploy --build-only [<host> | --all]` evaluates, plans and builds the
+  system and Home Manager targets like a real run, then stops before
+  activation (#673, ADR-0016). It skips preflight (and with it the remote
+  garbage collection), the local sudo prompt, switches, serial group checks
+  and ready gates. Built targets report `built`, and targets that already
+  run their result report `unchanged`; with `--force` those are built too.
+  A target that fails to evaluate or build does not stop the others, on a
+  single host as in a fleet, and the run then exits non-zero. `run.json`
+  records `buildOnly`. It cannot be combined with `--dry-run`, or with
+  `--fail-unreachable`, since it skips preflight.
+
 ## 0.20.0 (2026-10-27)
 
 - A node reboot, power-off and `--check-only` stop before the database

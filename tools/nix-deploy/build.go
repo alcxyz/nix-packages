@@ -273,6 +273,10 @@ func resolve(path string) string {
 // no longer be in this machine's store, and the host already has it.
 func (d *deployer) plan(targets []target, evaluated map[string]evaluation, r *report) []target {
 	d.ui.section("plan")
+	next := "activating"
+	if d.buildOnly {
+		next = "building"
+	}
 	var changed []target
 	for _, t := range targets {
 		e, ok := evaluated[t.key()]
@@ -289,16 +293,16 @@ func (d *deployer) plan(targets []target, evaluated map[string]evaluation, r *re
 		retry := current == path && profile == path && d.failed.failed(t, path)
 		switch {
 		case retry:
-			fmt.Printf("%s last activation of %s from this machine failed; activating again\n", d.label(t), storeName(path))
+			fmt.Printf("%s last activation of %s from this machine failed; %s again\n", d.label(t), storeName(path), next)
 			changed = append(changed, t)
 		case current == path && profile == path && !d.force:
 			fmt.Printf("%s unchanged: %s\n", d.label(t), storeName(path))
 			r.record(t.phase, t.host, "unchanged")
 		case current == path && profile == path:
-			fmt.Printf("%s unchanged, activating anyway (--force): %s\n", d.label(t), storeName(path))
+			fmt.Printf("%s unchanged, %s anyway (--force): %s\n", d.label(t), next, storeName(path))
 			changed = append(changed, t)
 		case current == "":
-			fmt.Printf("%s current generation unknown; activating %s\n", d.label(t), storeName(path))
+			fmt.Printf("%s current generation unknown; %s %s\n", d.label(t), next, storeName(path))
 			changed = append(changed, t)
 		default:
 			fmt.Printf("%s changed: %s -> %s\n", d.label(t), storeName(current), storeName(path))

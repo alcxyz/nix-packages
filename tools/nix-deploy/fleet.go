@@ -111,7 +111,7 @@ func (d *deployer) deployFleet(mode string, selected []string, r *report) int {
 	var targets []target
 
 	if systems {
-		if contains(selected, d.self) && !d.dryRun {
+		if contains(selected, d.self) && !d.dryRun && !d.buildOnly {
 			stop, ok := d.startSudoKeepalive()
 			if !ok {
 				return 1
@@ -180,6 +180,12 @@ func (d *deployer) deployFleet(mode string, selected []string, r *report) int {
 		if _, ok := built[t.key()]; ok {
 			ready = append(ready, t)
 		}
+	}
+	if d.buildOnly {
+		for _, t := range ready {
+			r.record(t.phase, t.host, "built")
+		}
+		return d.finish(selected, r)
 	}
 	d.activateSystems(ready, built, blocked, r)
 	d.activateHomes(ready, built, r)

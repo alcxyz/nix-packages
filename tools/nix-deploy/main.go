@@ -8,6 +8,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -57,6 +58,7 @@ type deployer struct {
 	preflight       bool
 	failUnreachable bool
 	dryRun          bool
+	buildOnly       bool
 	force           bool
 	jsonPath        string
 
@@ -235,59 +237,24 @@ func runDeploy(args []string) int {
 		failed:     loadFailedActivations(),
 	}
 
-	mode := "full"
-	target := ""
-	all := false
-	for i := 0; i < len(rest); i++ {
-		arg := rest[i]
-		switch {
-		case arg == "--nixos":
-			mode = "nixos"
-		case arg == "--hm":
-			mode = "hm"
-		case arg == "--all":
-			all = true
-		case arg == "--here":
-			d.buildHere = true
-		case arg == "--no-preflight":
-			d.preflight = false
-		case arg == "--fail-unreachable":
-			d.failUnreachable = true
-		case arg == "--dry-run":
-			d.dryRun = true
-		case arg == "--force":
-			d.force = true
-		case arg == "--heavy" || arg == "--light":
-			d.settings.buildProfile = strings.TrimPrefix(arg, "--")
-			d.settings.profileSource = arg
-		case arg == "--json":
-			if i+1 >= len(rest) {
-				return failEarly("--json requires a file")
-			}
-			d.jsonPath = rest[i+1]
-			i++
-		case strings.HasPrefix(arg, "--json="):
-			d.jsonPath = strings.TrimPrefix(arg, "--json=")
-			if d.jsonPath == "" {
-				return failEarly("--json requires a file")
-			}
-		case arg == "--help" || arg == "-h":
-			return d.usage()
-		case strings.HasPrefix(arg, "-"):
-			if jsonPath != "" {
-				writeFailedJSON(jsonPath)
-			}
-			fmt.Fprintf(os.Stderr, "deploy: unknown option '%s'\n", arg)
-			return d.usage()
-		default:
-			target = arg
+	opts, err := d.parseOptions(rest)
+	switch {
+	case err == errDeployHelp:
+		return d.usage()
+	case errors.Is(err, errUnknownOption):
+		if jsonPath != "" {
+			writeFailedJSON(jsonPath)
 		}
+		fmt.Fprintln(os.Stderr, "deploy: "+err.Error())
+		return d.usage()
+	case err != nil:
+		return failEarly(err.Error())
 	}
 
 	// The flake is the one Nix finds for "." from the working directory; an
 	// unknown working directory is left empty rather than stopping the run.
 	cwd, _ := os.Getwd()
-	d.record = startRunRecord(args, findFlakeDir(cwd), d.dryRun, d.force, d.settings.runKeep)
+	d.record = startRunRecord(args, findFlakeDir(cwd), d.dryRun, d.buildOnly, d.force, d.settings.runKeep)
 	defer d.releaseRoots()
 	// Ctrl-C reaches the running commands too; release the roots before
 	// exiting so an interrupted run does not pin its closures.
@@ -310,13 +277,85 @@ func runDeploy(args []string) int {
 		}
 		os.Exit(status)
 	}()
-	if all {
-		return d.deployAll(mode)
+	if opts.all {
+		return d.deployAll(opts.mode)
 	}
-	if target == "" {
-		target = d.self
+	if opts.target == "" {
+		opts.target = d.self
 	}
-	return d.deployHost(target, mode)
+	return d.deployHost(opts.target, opts.mode)
+}
+
+// deployOptions are what a deploy command line selects besides the
+// deployer's own switches.
+type deployOptions struct {
+	// mode is "full", "nixos" or "hm".
+	mode   string
+	target string
+	all    bool
+}
+
+var (
+	errDeployHelp    = errors.New("help requested")
+	errUnknownOption = errors.New("unknown option")
+)
+
+// parseOptions reads the deploy options, with --config already taken out,
+// and sets the deployer's switches.
+func (d *deployer) parseOptions(rest []string) (deployOptions, error) {
+	opts := deployOptions{mode: "full"}
+	for i := 0; i < len(rest); i++ {
+		arg := rest[i]
+		switch {
+		case arg == "--nixos":
+			opts.mode = "nixos"
+		case arg == "--hm":
+			opts.mode = "hm"
+		case arg == "--all":
+			opts.all = true
+		case arg == "--here":
+			d.buildHere = true
+		case arg == "--no-preflight":
+			d.preflight = false
+		case arg == "--fail-unreachable":
+			d.failUnreachable = true
+		case arg == "--dry-run":
+			d.dryRun = true
+		case arg == "--build-only":
+			d.buildOnly = true
+		case arg == "--force":
+			d.force = true
+		case arg == "--heavy" || arg == "--light":
+			d.settings.buildProfile = strings.TrimPrefix(arg, "--")
+			d.settings.profileSource = arg
+		case arg == "--json":
+			if i+1 >= len(rest) {
+				return opts, errors.New("--json requires a file")
+			}
+			d.jsonPath = rest[i+1]
+			i++
+		case strings.HasPrefix(arg, "--json="):
+			d.jsonPath = strings.TrimPrefix(arg, "--json=")
+			if d.jsonPath == "" {
+				return opts, errors.New("--json requires a file")
+			}
+		case arg == "--help" || arg == "-h":
+			return opts, errDeployHelp
+		case strings.HasPrefix(arg, "-"):
+			return opts, fmt.Errorf("%w '%s'", errUnknownOption, arg)
+		default:
+			opts.target = arg
+		}
+	}
+	// A dry run stops before the build that --build-only is there to run.
+	if d.dryRun && d.buildOnly {
+		return opts, errors.New("--build-only and --dry-run cannot be combined")
+	}
+	// A build-only run skips preflight, so no host can fail it.
+	if d.failUnreachable && d.buildOnly {
+		return opts, errors.New("--build-only and --fail-unreachable cannot be combined")
+	}
+	return opts, nil
 }
 
 // loadInventory reads the inventory once, so validation and loading use the
@@ -438,8 +477,8 @@ func (d *deployer) usage() int {
        deploy [OPTIONS] --nixos [<host>]
        deploy [OPTIONS] --hm [<host>]
 
-Options: [--config FILE] [--here] [--no-preflight] [--dry-run] [--force]
-         [--heavy | --light] [--json FILE] [--version]
+Options: [--config FILE] [--here] [--no-preflight] [--dry-run | --build-only]
+         [--force] [--heavy | --light] [--json FILE] [--version]
 
 When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.
@@ -458,6 +497,14 @@ activated nor gated. --dry-run stops after the plan, before building, and
 never starts a host's garbage collection, --force builds and activates
 unchanged targets too, and --json FILE writes the results and per-host
 timings.
+
+--build-only evaluates, plans and builds both phases like a real run and
+stops before activation: it skips preflight, the sudo prompt, the remote
+garbage collection, switches, serial group checks and ready gates. A target
+that built shows as built, and an unchanged one as unchanged; with --force,
+unchanged targets are built too. It exits non-zero when any selected target
+fails to evaluate or build. It cannot be combined with --dry-run or
+--fail-unreachable.
 
 Every run leaves a record in $XDG_STATE_HOME/nix-deploy/runs (by default
 ~/.local/state): run.json, the flake.lock it deployed, the --json report

@@ -638,6 +638,30 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert not activations(calls) and not any(c == ["sudo", "-v"] for c in calls)
     rows = summary_rows(result)
     assert ["node", "unchanged", "unchanged"] in rows and ["solo", "planned", "-"] in rows
+    # --build-only evaluates, plans and builds like a real run, and stops
+    # before anything changes a host: no preflight (so no remote garbage
+    # collection), no sudo prompt, no copy and no activation.
+    calls, result = run("--all", "--build-only", MOCK_CURRENT="node", MOCK_FREE_KIB="1")
+    assert not activations(calls) and not remote_gc(calls) and ["sudo", "-v"] not in calls
+    assert all("/run/current-system" in c[-1] or "profiles/home-manager" in c[-1] for c in calls if c[0] == "ssh")
+    assert sorted(built(calls)) == ["fixture-solo-system", "fixture-xyz-home", "fixture-xyz-system"]
+    rows = summary_rows(result)
+    assert ["node", "unchanged", "unchanged"] in rows and ["solo", "built", "-"] in rows and ["xyz", "built", "built"] in rows
+    [record] = list((root / ".local/state/nix-deploy/runs").iterdir())
+    info = json.loads((record / "run.json").read_text())
+    assert info["buildOnly"] and not info["dryRun"] and not info["failed"]
+    calls, result = run("--nixos", "node", "--build-only", "--force", MOCK_CURRENT="node")
+    assert built(calls) == ["fixture-node-system"] and not activations(calls)
+    assert "building anyway (--force)" in result.stdout and "node built; nothing was activated" in result.stdout
+    calls, result = run("node", "--build-only", MOCK_CURRENT="node")
+    assert not built(calls) and "node is up to date; nothing to build" in result.stdout
+    calls, result = run("--all", "--build-only", status=1, MOCK_BUILD_FAIL="node-system")
+    assert not activations(calls) and ["node", "failed", "built"] in summary_rows(result)
+    # A single host keeps building the phase that evaluated.
+    calls, result = run("node", "--build-only", status=1, MOCK_EVAL_FAIL="node-system")
+    assert built(calls) == ["fixture-node-home"] and not activations(calls)
+    calls, result = run("--build-only", "--dry-run", status=1)
+    assert not actions(calls) and "--build-only and --dry-run cannot be combined" in result.stderr
     # A build or evaluation failure stops only its own target in a fleet, and
     # a single-host deploy activates nothing unless everything built.
     calls, result = run("--all", "--no-preflight", status=1, MOCK_BUILD_FAIL="node-system")

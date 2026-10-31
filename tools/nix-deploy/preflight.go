@@ -136,7 +136,8 @@ func (d *deployer) preflightHost(host, mode string) bool {
 // cannot proceed: a host failed and --fail-unreachable is set, or none is
 // reachable.
 func (d *deployer) filterReachable(mode string, hosts []string) (available, skipped []string, ok bool) {
-	if !d.preflight {
+	// A build-only run copies nothing to the hosts; see deploySingle.
+	if !d.preflight || d.buildOnly {
 		return hosts, nil, true
 	}
 	d.ui.section("preflight")

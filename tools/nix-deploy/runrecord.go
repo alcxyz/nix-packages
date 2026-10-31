@@ -62,6 +62,7 @@ type runInfo struct {
 	LockSHA256      string     `json:"lockSha256,omitempty"`
 	StartLockSHA256 string     `json:"startLockSha256,omitempty"`
 	DryRun          bool       `json:"dryRun"`
+	BuildOnly       bool       `json:"buildOnly"`
 	Force           bool       `json:"force"`
 	Failed          *bool      `json:"failed,omitempty"`
 }
@@ -86,18 +87,19 @@ func lockSum(data []byte) string {
 // startRunRecord creates the run's directory under the state directory and
 // writes run.json and the flake.lock of flakeDir, the directory whose flake
 // (.) the run deploys.
-func startRunRecord(args []string, flakeDir string, dryRun, force bool, keep int) *runRecord {
+func startRunRecord(args []string, flakeDir string, dryRun, buildOnly, force bool, keep int) *runRecord {
 	started := time.Now().UTC()
 	rec := &runRecord{
 		state: filepath.Join(stateHome(), "nix-deploy"),
 		keep:  keep,
 		info: runInfo{
-			Version:  version,
-			Started:  started,
-			Args:     args,
-			FlakeDir: flakeDir,
-			DryRun:   dryRun,
-			Force:    force,
+			Version:   version,
+			Started:   started,
+			Args:      args,
+			FlakeDir:  flakeDir,
+			DryRun:    dryRun,
+			BuildOnly: buildOnly,
+			Force:     force,
 		},
 	}
 	if rec.info.Args == nil {

@@ -40,7 +40,9 @@ func (d *deployer) deploySingle(host, mode string, r *report) int {
 	system := mode == "nixos" || mode == "full"
 	home := mode == "hm" || mode == "full"
 
-	if d.preflight && host != d.self {
+	// A build-only run builds on this machine and copies nothing, so it
+	// needs neither the host's SSH nor its free space.
+	if d.preflight && host != d.self && !d.buildOnly {
 		d.ui.section("preflight")
 		if system && !d.preflightHost(host, "nixos") {
 			fmt.Fprintf(os.Stderr, "deploy: %s failed system preflight; use --no-preflight to attempt anyway\n", host)
@@ -64,6 +66,9 @@ func (d *deployer) deploySingle(host, mode string, r *report) int {
 
 func (d *deployer) activateHost(host, mode string, targets []target, r *report) int {
 	evaluated := d.evaluate(targets, r)
+	if d.buildOnly {
+		return d.buildHost(host, targets, evaluated, r)
+	}
 	if r.failed {
 		fmt.Fprintf(os.Stderr, "deploy: %s did not evaluate; nothing was activated\n", host)
 		return 1
@@ -112,6 +117,29 @@ func (d *deployer) activateHost(host, mode string, targets []target, r *report) 
 			}
 			return status
 		}
+	}
+	return 0
+}
+
+// buildHost is a build-only run of one host. Like a fleet run, it plans and
+// builds every target that evaluated, even when the other one did not, so
+// one failure cannot hide the next, and records each result.
+func (d *deployer) buildHost(host string, targets []target, evaluated map[string]evaluation, r *report) int {
+	changed := d.plan(targets, evaluated, r)
+	built := d.buildTargets(changed, evaluated, r)
+	for _, t := range changed {
+		if _, ok := built[t.key()]; ok {
+			r.record(t.phase, t.host, "built")
+		}
+	}
+	switch {
+	case r.failed:
+		fmt.Fprintf(os.Stderr, "deploy: %s did not evaluate or build; nothing was activated\n", host)
+		return 1
+	case len(changed) == 0:
+		fmt.Printf("deploy: %s is up to date; nothing to build (use --force to build anyway)\n", host)
+	default:
+		fmt.Printf("deploy: %s built; nothing was activated (--build-only)\n", host)
 	}
 	return 0
 }

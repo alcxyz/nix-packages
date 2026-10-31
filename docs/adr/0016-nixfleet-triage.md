@@ -1,7 +1,7 @@
 # ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
 **Status:** Accepted
-**Date:** 2026-10-27, updated 2026-10-31 (warning triage, per nix-packages#673)
+**Date:** 2026-10-27, updated 2026-10-31 (warning triage, per nix-packages#673; `--build-only` in 0.21.0)
 **Applies to:** `tools/nix-deploy/`
 
 ## Context
@@ -202,7 +202,7 @@ target it can affect, without activating any: after a flake update that is
 the whole fleet. Evaluation alone is not enough, and one failure can hide the
 next. On 2026-10-27 two system evaluation errors hid a certificate bundle
 that failed only when built, while every Home Manager configuration evaluated.
-Phase 2 therefore adds `deploy --build-only [<host> | --all]`, which
+Phase 2 therefore adds `deploy --build-only [<host> | --all]` (0.21.0), which
 evaluates, plans and builds both phases like a real run and stops before
 activation. The playbook repeats it until the whole selection builds.
 

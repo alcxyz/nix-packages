@@ -59,7 +59,7 @@ func flakeWithLock(t *testing.T, content string) string {
 func TestRunRecordLayout(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
-	rec := startRunRecord([]string{"--all"}, flakeWithLock(t, "lock one"), true, false, 30)
+	rec := startRunRecord([]string{"--all"}, flakeWithLock(t, "lock one"), true, false, false, 30)
 	if rec.dir == "" || filepath.Dir(rec.dir) != filepath.Join(state, "nix-deploy", "runs") {
 		t.Fatalf("run directory %q", rec.dir)
 	}
@@ -111,7 +111,7 @@ func TestRunRecordLayout(t *testing.T) {
 func TestEvaluatedLockIsTheDeployedOne(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	flake := flakeWithLock(t, "stale")
-	rec := startRunRecord(nil, flake, false, false, 30)
+	rec := startRunRecord(nil, flake, false, false, false, 30)
 	start := rec.info.LockSHA256
 	// An unchanged lock leaves the record alone.
 	rec.noteEvaluatedLock()
@@ -141,7 +141,7 @@ func TestStepLogsAreClosed(t *testing.T) {
 		t.Skip("no /proc/self/fd")
 	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	d := &deployer{record: startRunRecord(nil, t.TempDir(), false, false, 30)}
+	d := &deployer{record: startRunRecord(nil, t.TempDir(), false, false, false, 30)}
 	open := func() int {
 		entries, _ := os.ReadDir("/proc/self/fd")
 		return len(entries)
@@ -239,7 +239,7 @@ func TestPruneKeepsNewestAndActiveRuns(t *testing.T) {
 
 	// The current run is older than the newest kept ones, as when its
 	// clock was behind, and must survive anyway.
-	rec := startRunRecord(nil, flakeWithLock(t, "current"), false, false, 2)
+	rec := startRunRecord(nil, flakeWithLock(t, "current"), false, false, false, 2)
 	current := runID(started.Add(-time.Hour), 1)
 	if err := os.Rename(rec.dir, filepath.Join(runs, current)); err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestRunRecordUnwritableStateWarnsOnce(t *testing.T) {
 	d := &deployer{}
 	var logged stdio
 	output := captureStderr(t, func() {
-		d.record = startRunRecord(nil, flakeWithLock(t, "lock"), false, false, 30)
+		d.record = startRunRecord(nil, flakeWithLock(t, "lock"), false, false, false, 30)
 		logged, _ = d.logged(attached, target{phase: "system", host: "node"}, "activate")
 		d.finishRecord(nil, newReport(), true)
 	})
@@ -301,7 +301,7 @@ func TestFailedRunNamesItsRecord(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	d := &deployer{}
 	output := captureStderr(t, func() {
-		d.record = startRunRecord(nil, flakeWithLock(t, "lock"), false, false, 30)
+		d.record = startRunRecord(nil, flakeWithLock(t, "lock"), false, false, false, 30)
 		r := newReport()
 		r.record("system", "node", "failed")
 		d.finishRecord([]string{"node"}, r, true)
@@ -374,7 +374,7 @@ func TestMissingLockBesideFlakeWarns(t *testing.T) {
 	flake := t.TempDir()
 	os.WriteFile(filepath.Join(flake, "flake.nix"), nil, 0o644)
 	output := captureStderr(t, func() {
-		rec := startRunRecord(nil, flake, false, false, 30)
+		rec := startRunRecord(nil, flake, false, false, false, 30)
 		rec.noteEvaluatedLock()
 		rec.noteEvaluatedLock()
 	})
@@ -383,7 +383,7 @@ func TestMissingLockBesideFlakeWarns(t *testing.T) {
 	}
 	// Without a flake there is nothing to warn about.
 	output = captureStderr(t, func() {
-		startRunRecord(nil, t.TempDir(), false, false, 30).noteEvaluatedLock()
+		startRunRecord(nil, t.TempDir(), false, false, false, 30).noteEvaluatedLock()
 	})
 	if output != "" {
 		t.Fatalf("stderr %q", output)
