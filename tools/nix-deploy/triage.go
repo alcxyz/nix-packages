@@ -34,7 +34,8 @@ playbookAddendum, a private Markdown file the agent also follows. With an
 agentCommand, standard input and output on a terminal and no --no-launch,
 triage then runs the agent in the run's flake directory with one more
 argument, a prompt naming context.md, the playbook shipped with nixfleet and
-the addendum, and exits with the agent's status.
+the addendum, and exits with the agent's status. The agent's environment has
+NIXFLEET_TRIAGE=1, so a deploy it runs does not offer triage again.
 
 With --warnings, the run is the newest finished one whatever its result
 (or the one named), and context.md lists each distinct "evaluation

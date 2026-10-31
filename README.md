@@ -104,7 +104,13 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   [<host> | --all]` evaluates, plans and builds both phases like a real run
   and stops before activation, so it checks that a fix builds without
   changing any host; it exits non-zero when a selected target fails to
-  evaluate or build.
+  evaluate or build. When a run fails with standard input and output on a
+  terminal, an `agentCommand` in the inventory's `triage` object and no
+  `NIXFLEET_TRIAGE` in the environment, deploy asks whether to start
+  `nixfleet triage` on the run it just recorded; `y` or `yes` starts it, and
+  deploy still exits with its own failure status. Triage sets
+  `NIXFLEET_TRIAGE=1` for the agent, so a deploy the agent runs does not ask
+  again.
 - `nixfleet reboot [--all | <host>...]`: reboots hosts of the fleet, each
   under the policies the inventory gives it ([ADR-0010](docs/adr/0010-fleet-reboot-policies.md)):
   Kubernetes nodes (`kubernetesNodes`, in the cluster of `kubernetesContext`)
@@ -150,8 +156,8 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   playbook addendum (`playbookAddendum`). With an agent command and a
   terminal, and without `--no-launch`, triage then runs the agent in the
   run's flake directory with a prompt naming `context.md`, the playbook
-  shipped in `share/nixfleet/triage-playbook.md` and the addendum, and exits
-  with its status. `nixfleet triage --warnings [<run>]` takes the newest
+  shipped in `share/nixfleet/triage-playbook.md` and the addendum, with
+  `NIXFLEET_TRIAGE=1` in its environment, and exits with its status. `nixfleet triage --warnings [<run>]` takes the newest
   finished run whatever its result and writes a `context.md` of its
   evaluation warnings instead: each distinct message with the targets that
   printed it, the files it names (mapped to their input, own or upstream),

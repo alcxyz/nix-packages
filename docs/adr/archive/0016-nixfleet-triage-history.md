@@ -238,3 +238,9 @@ activation. The playbook repeats it until the whole selection builds.
   overridden first, so warning triage on a target with many warnings takes
   minutes. A warning behind one that cannot be fixed or overridden may stay
   unknown.
+
+## Text replaced on 2026-10-31 (phase 3)
+
+- The JSON report is unchanged, and the run layout is the interface phase 2
+  reads. The inventory gains one optional `triage` object (ADR-0006), read only
+  by `nixfleet triage`; deploy ignores it.

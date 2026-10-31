@@ -1,7 +1,7 @@
 # ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
 **Status:** Accepted
-**Date:** 2026-10-27, updated 2026-10-31 (warning triage, per nix-packages#673; `--build-only` in 0.21.0, the triage context in 0.22.0, its lock diff in 0.23.0, the agent launch, own inputs and playbook in 0.24.0, warning triage in 0.25.0)
+**Date:** 2026-10-27, updated 2026-10-31 (warning triage, per nix-packages#673; `--build-only` in 0.21.0, the triage context in 0.22.0, its lock diff in 0.23.0, the agent launch, own inputs and playbook in 0.24.0, warning triage in 0.25.0, the offer after a failed deploy in 0.26.0)
 **Applies to:** `tools/nix-deploy/`
 **History:** [replaced text](archive/0016-nixfleet-triage-history.md)
 
@@ -231,8 +231,9 @@ activation. The playbook repeats it until the whole selection builds.
   keep the terminal, leave no activation log; their result is still in
   `report.json`, and a fleet run logs Home Manager activations.
 - The JSON report is unchanged, and the run layout is the interface phase 2
-  reads. The inventory gains one optional `triage` object (ADR-0006), read only
-  by `nixfleet triage`; deploy ignores it.
+  reads. The inventory gains one optional `triage` object (ADR-0006), read by
+  `nixfleet triage`, and by deploy after a failed run in a terminal, which
+  offers triage only when the object is valid and has an `agentCommand`.
 - Locating a warning that names no file costs one more uncached evaluation
   of its target per warning, in order, with the earlier ones fixed or
   overridden first, so warning triage on a target with many warnings takes

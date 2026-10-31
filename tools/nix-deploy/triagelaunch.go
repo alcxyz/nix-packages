@@ -287,6 +287,8 @@ func launchTriage(cfg *triageConfig, context, flakeDir, playbook string, warning
 	argv := append(append([]string{}, cfg.AgentCommand...), triagePrompt(context, playbook, cfg.PlaybookAddendum, warnings))
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = flakeDir
+	// A deploy the agent runs during repair sees this and offers no triage.
+	cmd.Env = append(os.Environ(), triageGuard+"=1")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// The terminal sends an interrupt or quit to the agent itself, so this
 	// process only outlives it; a termination or hangup sent to this

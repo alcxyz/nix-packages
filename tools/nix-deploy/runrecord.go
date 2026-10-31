@@ -38,9 +38,9 @@ type runRecord struct {
 	dir   string
 	keep  int
 	info  runInfo
-	// active holds the lock on the run directory for the run's lifetime, so
-	// another run's prune leaves the directory alone; the kernel releases it
-	// when the process ends.
+	// active holds the lock on the run directory until the record is
+	// finished, so another run's prune leaves the directory alone; the
+	// kernel releases it when the process ends first.
 	active *os.File
 
 	warned sync.Once
@@ -642,6 +642,12 @@ func (rec *runRecord) finish(failed bool) {
 	rec.writeInfo()
 	if err := rec.prune(); err != nil {
 		rec.warn(err)
+	}
+	// The record is complete: release its run.lock, so nixfleet triage, which
+	// refuses a run still going on, can read it before deploy exits.
+	if rec.active != nil {
+		rec.active.Close()
+		rec.active = nil
 	}
 }
 

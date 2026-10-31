@@ -698,6 +698,13 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert json.loads((record / "report.json").read_text())["failed"]
     assert (record / "flake.lock").read_text() == (root / "flake.lock").read_text()
     assert not (state / "last-good.json").exists()
+    # With an agent configured, a failed run offers triage only on a
+    # terminal; without one its output stays as it was, and so does its status.
+    config.write_text(json.dumps({**HOST_DATA, "triage": {"agentCommand": ["fixture-agent"]}}))
+    calls, offered = run("--all", "--no-preflight", status=1, MOCK_EVAL_FAIL="node-system")
+    config.write_text(json.dumps(HOST_DATA))
+    assert "nixfleet triage" not in offered.stdout + offered.stderr
+    assert offered.stderr.splitlines()[-1].startswith("deploy: run record: ")
     # A lock the evaluation rewrote is the one deployed; the one the run
     # started with is kept beside it.
     started_lock = (root / "flake.lock").read_text()

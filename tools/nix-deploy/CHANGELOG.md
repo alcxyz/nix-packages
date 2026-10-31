@@ -9,6 +9,28 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.26.0 (2026-10-31)
+
+- A failed `deploy` offers triage (#673, ADR-0016 phase 3). Any run that
+  records itself (including `--dry-run` and `--build-only`) and fails, with
+  standard input and output on a terminal, an `agentCommand` in the
+  inventory's `triage` object and `NIXFLEET_TRIAGE` unset, asks
+  `deploy: start nixfleet triage on this run? [y/N]`. `y` or `yes`
+  (any case) runs triage on that run in the same process, which writes
+  `context.md` and launches the agent; anything else, end of input, a read
+  error or an answer of 64 bytes without a newline declines, so an endless
+  byte source such as `/dev/zero` cannot keep it reading. An idle character
+  device that is not a terminal can still block the read. Known limit: keystrokes typed during a long
+  deploy stay buffered and can answer the question; the default is No, so a
+  stray Enter declines. deploy then exits with its own failure status, not the
+  agent's. `--json` does not change the gate: a terminal on both ends is an
+  operator. Without the offer, output and status are unchanged.
+- The run record releases its `run.lock` once the record is finished,
+  rather than at exit, so triage can read the run before deploy ends. The
+  roots of built paths are released before the offer.
+- Triage launches the agent with `NIXFLEET_TRIAGE=1`, so a deploy the agent
+  runs during repair does not offer triage again.
+
 ## 0.25.0 (2026-10-31)
 
 - `nixfleet triage --warnings [<run>]` triages a run's evaluation warnings

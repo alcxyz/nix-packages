@@ -286,13 +286,21 @@ func runDeploy(args []string) int {
 		}
 		os.Exit(status)
 	}()
+	var exit int
 	if opts.all {
-		return d.deployAll(opts.mode)
+		exit = d.deployAll(opts.mode)
+	} else {
+		if opts.target == "" {
+			opts.target = d.self
+		}
+		exit = d.deployHost(opts.target, opts.mode)
 	}
-	if opts.target == "" {
-		opts.target = d.self
-	}
-	return d.deployHost(opts.target, opts.mode)
+	// The run and its record are finished: an interrupt no longer rewrites
+	// the report, the agent triage may launch takes the terminal's
+	// interrupts itself, and the roots need not outlive the run.
+	signal.Stop(interrupts)
+	d.releaseRoots()
+	return d.offerTriage(exit, isTerminal(os.Stdin) && isTerminal(os.Stdout), os.Stdin, os.Stdout, runTriage)
 }
 
 // deployOptions are what a deploy command line selects besides the
@@ -522,6 +530,13 @@ system switch that deploy already reads (commands on the terminal keep it and
 are not logged), and for a failed build the build logs Nix kept. The newest DEPLOY_RUN_KEEP
 (default 30) records are kept, and those of runs still going on. A failed run
 prints the directory of its record.
+
+When a run fails with standard input and output on a terminal (with or
+without --json), an agentCommand in the triage object of the inventory and
+NIXFLEET_TRIAGE not set, deploy asks whether to start nixfleet triage on that
+run; y or yes starts it, anything else declines. deploy then exits with its
+own failure status, not the agent's. Triage sets NIXFLEET_TRIAGE=1 for the
+agent, so a deploy the agent runs does not ask again.
 
 Before the build, the run counts the derivations it would build (nix build
 --dry-run; downloads do not count) and picks a build profile. Light keeps this
