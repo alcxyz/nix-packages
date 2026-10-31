@@ -144,7 +144,7 @@ The flake explicitly exports the following combinations. "All four" means
 
 | Packages | Exported systems |
 |----------|------------------|
-| `claude-code`, `codex-app-server`, `codex-cli`, `deck`, `forge-mirror`, `forgejo-deploy-key`, `gh-app`, `gh-app-gh`, `git-identity-guard`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `nixfleet`, `revkit`, `workmux` | All four |
+| `claude-code`, `codex-app-server`, `codex-cli`, `deck`, `desk`, `forge-mirror`, `forgejo-deploy-key`, `gh-app`, `gh-app-gh`, `git-identity-guard`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `nixfleet`, `revkit`, `workmux` | All four |
 | `deck-image`, `devlog`, `forgejo-runner-cancellation`, `forgejo-runner-orphan-check`, `ndrop`, `openzfs_7_1`, `openzfs_7_3`, `stash`, `zfs-auto-unlock` | Both Linux systems |
 | `herdr` | Both Linux systems, `aarch64-darwin` |
 | `ghostty` | Both Darwin systems |

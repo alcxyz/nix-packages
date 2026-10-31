@@ -38,6 +38,7 @@ Internal tools built from source, tracked in this repo.
 | Tool | Description | Platforms |
 |------|-------------|-----------|
 | [deck](tools/deck/README.md) | T3 thread dashboard and operator-authored interactive page collections; `deck-image` is its pages-only container image | all (`deck-image`: Linux) |
+| [desk](tools/desk/README.md) | Starts and ends a remote-desk session on a host in one step: SSH tunnel (LAN name first), `remote-desk on`, VNC viewer, `remote-desk off` | all |
 | [forgejo-deploy-key](tools/forgejo-deploy-key/README.md) | Creates a write deploy key for one Forgejo repository and stores its private half straight into a new SOPS file | all |
 | gh-app | Routes gh and Git through a GitHub App's installation token for the App's installed repositories, registers new Apps from a manifest (`gh-app register`) and runs a command with a read-only token (`gh-app read-only`) | all |
 | gh-app-gh | A `gh` that runs through gh-app, and is plain gh until the App is configured; used by t3code | all |

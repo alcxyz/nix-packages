@@ -51,6 +51,7 @@
             inherit (allPackages) gh-app;
           };
           deck = pkgs.callPackage ./tools/deck { };
+          desk = pkgs.callPackage ./tools/desk { };
           git-identity-guard = pkgs.callPackage ./tools/git-identity-guard { };
           kdash = pkgs.callPackage ./pkgs/kdash { };
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
@@ -182,6 +183,8 @@
         checks.revkit = allPackages.revkit;
         # The package build runs deck's Go tests, with fake adapter commands.
         checks.deck = allPackages.deck;
+        # The package build runs desk's Go tests, with a fake ssh and viewer.
+        checks.desk = allPackages.desk;
         # The package build runs forgejo-deploy-key's Go tests, with fake ssh and sops.
         checks.forgejo-deploy-key = allPackages.forgejo-deploy-key;
         # The package build runs gh-app's Go tests, with a fake GitHub API.
