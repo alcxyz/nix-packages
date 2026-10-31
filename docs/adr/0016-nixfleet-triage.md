@@ -1,7 +1,7 @@
-# ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys
+# ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
 **Status:** Accepted
-**Date:** 2026-10-27
+**Date:** 2026-10-27, updated 2026-10-31 (warning triage, per nix-packages#673)
 **Applies to:** `tools/nix-deploy/`
 
 ## Context
@@ -22,6 +22,13 @@ triage` is a thin command that writes the machine facts and a versioned
 playbook, then starts the operator's own `claude` or `codex` CLI interactively,
 whose own permission prompts gate every action. The tool gathers evidence; the
 agent and the operator decide.
+
+Runs that succeed can still print evaluation warnings: renamed or obsolete
+options, renamed package aliases, deprecated attributes such as
+`stdenv.isLinux`. Each is a failure a later nixpkgs update will turn into an
+error when it removes the old name. Some come from the operator's own code and
+can be fixed now; others come from an input the operator does not own, and the
+fix is to update that input or to wait for its upstream.
 
 ## Decision
 
@@ -118,6 +125,61 @@ The runtime configuration of ADR-0006 supplies the agent command (resolved
 from a role, not a pinned model), local checkouts of the operator's own
 inputs, and an optional private playbook addendum.
 
+#### Warnings
+
+`nixfleet triage --warnings [run]` takes the newest run whatever its result,
+or the one named, and writes the same kind of `context.md` for the warnings in
+its logs: each distinct `evaluation warning:` and `trace: warning:` message,
+with the targets that printed it. The run records already hold every
+evaluation's output, so no new recording is needed; warnings printed only to
+the terminal (the shared `nix build`, and the activations that keep the
+terminal) are out of reach, as for errors.
+
+Each warning is attributed to the code that causes it before anything is
+fixed:
+
+- An option warning (renamed, obsolete or ignored option) names the option;
+  the module system's `options.<path>.definitionsWithLocations` gives the
+  files that define it.
+- Any other warning is located by evaluating its target again with
+  `--no-eval-cache --option abort-on-warn true --show-trace`. Nix stops at
+  the first `builtins.warn` it reaches and labels each trace frame with the
+  flake reference of its file, which names the input directly. Since every
+  such evaluation stops at that same first warning, a target's warnings are
+  attributed in evaluation order: the agent checks that the aborted message
+  is the one it is after, then fixes that warning in its worktree, or there
+  overrides it for the time being, and evaluates again to reach the next. A
+  warning behind one that can be neither fixed nor overridden stays
+  unattributed by this method, and is unknown unless the option method or a
+  source search for its name locates it. The trace shows where a value was
+  forced, not where it was named (a renamed package alias shows the list
+  operation that forced it), so the agent then searches that input's source
+  for the name.
+  Warnings printed through `builtins.trace` are not stopped by
+  `abort-on-warn`; they are usually option warnings and covered by the first
+  method.
+- A file belongs to the operator when it comes from the flake itself or from
+  one of the operator's own inputs as the runtime configuration lists them;
+  every other input is upstream. Option definitions and some messages name
+  bare `/nix/store/<hash>-source` paths, so `context.md` maps every locked
+  input to its store path (as `nix flake archive --json --dry-run` lists
+  them), not only the inputs whose lock changed.
+
+The playbook then sorts each warning into one outcome:
+
+- **Own code:** fix it in a worktree.
+- **Upstream, fixed in a newer revision:** when updating only that input in a
+  worktree removes the warning, propose the update, or, where the operator
+  pins the input on purpose, a local override that the next update removes
+  (for example setting a module's package option to the renamed package).
+- **Upstream, not yet fixed:** report it with its evidence and wait; an
+  upstream issue or a watch on its release needs the operator's approval.
+- **Unknown:** report the evidence and leave it.
+
+A fix is verified like a repair: the affected targets build with
+`deploy --build-only`, and evaluating them with `--no-eval-cache` no longer
+prints the warning (an evaluation answered from the cache can skip it).
+
 ### Phase 3: `deploy` offers triage (decided design)
 
 When `deploy` runs in a terminal and fails, it offers to start triage on the
@@ -151,6 +213,9 @@ activation. The playbook repeats it until the whole selection builds.
   `context.md`.
 - **An always-headless repair bot**: rejected for the first version; the fleet
   is live and the private inputs need the operator in the loop.
+- **Fixing every warning where it appears**: rejected; a warning raised in
+  an input the operator does not own cannot be fixed in the flake without
+  forking or overriding that input, so attribution comes first.
 - **Launching inside a T3 Code thread**: deferred; a terminal works over SSH
   from any machine, and the record and context are the same either way.
 
@@ -166,3 +231,8 @@ activation. The playbook repeats it until the whole selection builds.
   `report.json`, and a fleet run logs Home Manager activations.
 - The JSON report and the inventory schema are unchanged; the run layout is
   the interface phase 2 reads.
+- Locating a warning that names no file costs one more uncached evaluation
+  of its target per warning, in order, with the earlier ones fixed or
+  overridden first, so warning triage on a target with many warnings takes
+  minutes. A warning behind one that cannot be fixed or overridden may stay
+  unknown.
