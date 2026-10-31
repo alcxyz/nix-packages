@@ -4,7 +4,7 @@
 // ADR-0008); reboot reboots hosts of the fleet by policy and constraint
 // group (ADR-0010); off and on power-cycle a Kubernetes node behind the
 // cluster gates; status reads what each host runs; triage writes the context
-// of a recorded run (ADR-0016). Installed as deploy or
+// of a recorded run and launches the operator's agent on it (ADR-0016). Installed as deploy or
 // k8s-node-power, it is that command.
 package main
 
@@ -81,7 +81,7 @@ const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
        nixfleet reboot [OPTIONS] [--all | <host>...]
        nixfleet off|on [OPTIONS] <host>
        nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
-       nixfleet triage [<run>]
+       nixfleet triage [--config FILE] [--no-launch] [<run>]
 
 Subcommands:
   deploy   Evaluate, plan, build and activate the NixOS, nix-darwin and Home
@@ -103,7 +103,8 @@ Subcommands:
            runner units; see nixfleet status --help.
   triage   Write context.md for a recorded deploy run, by default the newest
            that failed: its facts, failed targets, their logs and first
-           errors; see nixfleet triage --help.
+           errors, then launch the configured agent CLI on it; see
+           nixfleet triage --help.
 
 Options:
   -h, --help   Show this help.

@@ -24,7 +24,8 @@ type flakeLock struct {
 }
 
 type lockNode struct {
-	Locked json.RawMessage `json:"locked"`
+	Locked json.RawMessage            `json:"locked"`
+	Inputs map[string]json.RawMessage `json:"inputs"`
 }
 
 // lockedInput holds the fields of a locked node the context shows; whole is
@@ -245,6 +246,18 @@ func goodRun(kept []keptRun, t failedTarget) string {
 // pathExists tells whether a store path exists; tests replace it.
 var pathExists = fileExists
 
+// readGit runs a read-only Git command in dir with a timeout and returns its
+// output. Reading must neither take the index lock nor, in a partial clone,
+// fetch a missing object into the repository.
+func readGit(dir string, args ...string) ([]byte, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1")
+	output, err := cmd.Output()
+	return output, err == nil
+}
+
 // maxLockCommits bounds the commits the Git fallback reads.
 const maxLockCommits = 50
 
@@ -257,14 +270,7 @@ func gitBaseline(flakeDir, rev string, lock []byte) (string, []byte) {
 		return "", nil
 	}
 	git := func(args ...string) ([]byte, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", flakeDir}, args...)...)
-		// Reading must neither take the index lock nor, in a partial clone,
-		// fetch a missing object into the repository.
-		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1")
-		output, err := cmd.Output()
-		return output, err == nil
+		return readGit(flakeDir, args...)
 	}
 	// Without a filter, Git's default history simplification keeps the
 	// merges that changed the lock (a resolved conflict), which any
@@ -304,7 +310,7 @@ func gitBaseline(flakeDir, rev string, lock []byte) (string, []byte) {
 // writeLockContext writes, for the failed targets, the lock each one last
 // deployed well from and what changed since, grouped by baseline, and the
 // store path of every input of the run's lock.
-func writeLockContext(out *strings.Builder, dir string, info runInfo, failed []failedTarget) {
+func writeLockContext(out *strings.Builder, dir string, info runInfo, failed []failedTarget, own map[string]bool, unlocked []string) {
 	out.WriteString("\n## Lock diff\n\n")
 	lock, err := os.ReadFile(filepath.Join(dir, "flake.lock"))
 	if err != nil {
@@ -359,8 +365,14 @@ func writeLockContext(out *strings.Builder, dir string, info runInfo, failed []f
 		writeLockDiff(out, old, inputs)
 	}
 
-	out.WriteString("\n## Locked inputs\n\nStore paths are computed from each input's narHash; \"in store\" says whether the path exists on this machine.\n\n")
-	out.WriteString("| Input | Source | Store path | In store |\n|---|---|---|---|\n")
+	out.WriteString("\n## Locked inputs\n\nStore paths are computed from each input's narHash; \"in store\" says whether the path exists on this machine. \"Own\" marks the operator's own inputs, as the triage configuration lists them; every other input is upstream.")
+	if len(own) == 0 && len(unlocked) == 0 {
+		out.WriteString(" No own input is configured.")
+	}
+	if len(unlocked) > 0 {
+		fmt.Fprintf(out, " Configured own inputs that are not in this lock (a misspelt name, or an input that follows another): %s; see \"Own inputs\".", strings.Join(unlocked, ", "))
+	}
+	out.WriteString("\n\n| Input | Own | Source | Store path | In store |\n|---|---|---|---|---|\n")
 	for _, name := range sortedNames(inputs) {
 		in := inputs[name]
 		present := "unknown"
@@ -370,7 +382,11 @@ func writeLockContext(out *strings.Builder, dir string, info runInfo, failed []f
 				present = "yes"
 			}
 		}
-		fmt.Fprintf(out, "| %s | %s | %s | %s |\n", name, in.source(), in.storePath(), present)
+		mark := "no"
+		if own[name] {
+			mark = "yes"
+		}
+		fmt.Fprintf(out, "| %s | %s | %s | %s | %s |\n", name, mark, in.source(), in.storePath(), present)
 	}
 }
 

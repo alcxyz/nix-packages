@@ -9,6 +9,20 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.24.0 (2026-10-31)
+
+- `nixfleet triage [--config FILE] [--no-launch] [<run>]` launches the
+  operator's agent CLI (#673, ADR-0016). The inventory gains an optional
+  `triage` object, read only by triage: `agentCommand`, `inputCheckouts`
+  and `playbookAddendum` (ADR-0006). With an agent command, a terminal and
+  no `--no-launch`, triage runs the agent in the run's flake directory with
+  one prompt argument naming `context.md`, the playbook and the addendum,
+  and exits with its status; otherwise it prints why it did not launch.
+- `context.md` gains an "Own inputs" section: each configured checkout's
+  branch, HEAD, whether tracked files differ, the revision the run's lock
+  pins and whether HEAD is it. The "Locked inputs" table marks own inputs.
+- A public playbook ships in `share/nixfleet/triage-playbook.md`.
+
 ## 0.23.0 (2026-10-31)
 
 - `nixfleet triage` adds the lock diff to `context.md` (#673, ADR-0016).

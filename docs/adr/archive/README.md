@@ -17,3 +17,4 @@ The root `.ignore` hides this directory from `rg` and `fd`; use `rg -u` or
 | [ADR-0010 history](0010-fleet-reboot-policies-history.md) | Fleet reboots by policy and constraint group | History of [ADR-0010](../0010-fleet-reboot-policies.md), text replaced 2026-10-28 |
 | [ADR-0011 history](0011-revkit-agent-review-toolkit-history.md) | revkit, an agent review toolkit with isolated reviewers | History of [ADR-0011](../0011-revkit-agent-review-toolkit.md), text replaced 2026-10-28 |
 | [ADR-0013 history](0013-deck-page-collections-history.md) | Operator-authored page collections in Deck | History of [ADR-0013](../0013-deck-page-collections.md), text replaced 2026-10-28 |
+| [ADR-0016 history](0016-nixfleet-triage-history.md) | nixfleet triage: run records and an agent playbook for failed deploys and warnings | History of [ADR-0016](../0016-nixfleet-triage.md), text replaced 2026-10-31 |

@@ -142,9 +142,16 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   directory, by default the newest failed run, and prints its path. It lists
   the run's facts, each failed target with the step that failed and its logs,
   and the first error of each log with the files it names, the lock diff
-  since each target's last good run (ok or unchanged) and the store path of every locked input
-  ([ADR-0016](docs/adr/0016-nixfleet-triage.md)). It does not launch an
-  agent yet.
+  since each target's last good run (ok or unchanged), the store path of every locked input
+  and the Git state of the operator's own inputs
+  ([ADR-0016](docs/adr/0016-nixfleet-triage.md)). The optional `triage`
+  object of the inventory names the agent CLI (`agentCommand`), the local
+  checkouts of the operator's own inputs (`inputCheckouts`) and a private
+  playbook addendum (`playbookAddendum`). With an agent command and a
+  terminal, and without `--no-launch`, triage then runs the agent in the
+  run's flake directory with a prompt naming `context.md`, the playbook
+  shipped in `share/nixfleet/triage-playbook.md` and the addendum, and exits
+  with its status.
 
 The program chooses its command by the name it is invoked as, so each
 installed name is a wrapper that sets it.

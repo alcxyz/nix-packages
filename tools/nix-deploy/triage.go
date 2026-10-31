@@ -13,18 +13,32 @@ import (
 	"time"
 )
 
-const triageUsage = `Usage: nixfleet triage [<run>]
+const triageUsage = `Usage: nixfleet triage [--config FILE] [--no-launch] [<run>]
 
 Writes context.md for a recorded deploy run (ADR-0016): the run's facts, its
 failed targets with the step that failed, the paths of their logs, the first
 error of each with the files it names, the lock diff since each target's
-baseline, and the store path of every locked input. <run> is a run ID, the name of a
+baseline, the store path of every locked input, and the Git state of the
+operator's own inputs. <run> is a run ID, the name of a
 directory under $XDG_STATE_HOME/nix-deploy/runs (by default ~/.local/state),
 or the path of a run directory; without it, the newest run that failed.
 
 The file is written into the run directory and its path printed. The command
 fails when no run failed, the run does not exist, is still going on or has no
-report.json. This version launches no agent.
+report.json.
+
+The triage object of the inventory (--config FILE, or NIX_DEPLOY_CONFIG)
+configures the rest: agentCommand, the agent's argv; inputCheckouts, the
+local checkout of each of the operator's own flake inputs by input name;
+playbookAddendum, a private Markdown file the agent also follows. With an
+agentCommand, standard input and output on a terminal and no --no-launch,
+triage then runs the agent in the run's flake directory with one more
+argument, a prompt naming context.md, the playbook shipped with nixfleet and
+the addendum, and exits with the agent's status.
+
+Options:
+  --config FILE   Read the inventory from FILE instead of NIX_DEPLOY_CONFIG.
+  --no-launch     Write context.md only.
 
 A target's baseline is the flake.lock of the newest earlier run of the same
 flake directory that shows it ok or unchanged (a build-only run proves no
@@ -39,26 +53,46 @@ const maxErrorLines = 40
 
 var errTriageHelp = errors.New("help requested")
 
-func parseTriageArgs(args []string) (string, error) {
-	run := ""
-	for _, arg := range args {
+type triageOptions struct {
+	configFile string
+	noLaunch   bool
+	run        string
+}
+
+func parseTriageArgs(args []string) (triageOptions, error) {
+	opts := triageOptions{configFile: os.Getenv("NIX_DEPLOY_CONFIG")}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		switch {
 		case arg == "-h" || arg == "--help":
-			return "", errTriageHelp
+			return opts, errTriageHelp
+		case arg == "--no-launch":
+			opts.noLaunch = true
+		case arg == "--config":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return opts, fmt.Errorf("--config requires a file")
+			}
+			i++
+			opts.configFile = args[i]
+		case strings.HasPrefix(arg, "--config="):
+			opts.configFile = strings.TrimPrefix(arg, "--config=")
+			if opts.configFile == "" {
+				return opts, fmt.Errorf("--config requires a file")
+			}
 		case strings.HasPrefix(arg, "-"):
-			return "", fmt.Errorf("unknown option '%s'", arg)
-		case run != "":
-			return "", fmt.Errorf("more than one run given")
+			return opts, fmt.Errorf("unknown option '%s'", arg)
+		case opts.run != "":
+			return opts, fmt.Errorf("more than one run given")
 		default:
-			run = arg
+			opts.run = arg
 		}
 	}
-	return run, nil
+	return opts, nil
 }
 
 // runTriage is nixfleet triage.
 func runTriage(args []string) int {
-	run, err := parseTriageArgs(args)
+	opts, err := parseTriageArgs(args)
 	if errors.Is(err, errTriageHelp) {
 		fmt.Print(triageUsage)
 		return 0
@@ -68,16 +102,54 @@ func runTriage(args []string) int {
 		fmt.Fprint(os.Stderr, triageUsage)
 		return 2
 	}
-	dir, err := selectRun(filepath.Join(stateHome(), "nix-deploy", "runs"), run)
+	cfg, warnings, err := loadTriageConfig(opts.configFile)
+	unreadable := errors.Is(err, errInventoryUnreadable)
+	if unreadable {
+		warnings = append(warnings, err.Error())
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
+		return 1
+	}
+	for _, warning := range warnings {
+		fmt.Fprintf(os.Stderr, "nixfleet triage: warning: %s\n", warning)
+	}
+	var checkouts map[string]string
+	if cfg != nil {
+		checkouts = cfg.InputCheckouts
+	}
+	dir, err := selectRun(filepath.Join(stateHome(), "nix-deploy", "runs"), opts.run)
+	path := ""
 	if err == nil {
-		dir, err = writeTriageContext(dir)
+		path, err = writeTriageContext(dir, checkouts)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
 		return 1
 	}
-	fmt.Println(dir)
-	return 0
+	fmt.Println(path)
+	launch, reason := launchDecision(cfg, opts.noLaunch, isTerminal(os.Stdin), isTerminal(os.Stdout))
+	if unreadable {
+		launch, reason = false, "the inventory could not be read"
+	}
+	if !launch {
+		fmt.Fprintf(os.Stderr, "nixfleet triage: not launching an agent: %s\n", reason)
+		return 0
+	}
+	exe, err := os.Executable()
+	playbook := ""
+	if err == nil {
+		playbook, err = playbookPath(exe)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
+		return 1
+	}
+	info, err := readRunInfo(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
+		return 1
+	}
+	return launchTriage(cfg, path, info.FlakeDir, playbook)
 }
 
 // selectRun returns the absolute directory of the run named by an ID or a
@@ -187,8 +259,8 @@ func fileExists(path string) bool {
 }
 
 // writeTriageContext writes context.md into a finished run's directory and
-// returns its path.
-func writeTriageContext(dir string) (string, error) {
+// returns its path; checkouts are the own inputs' checkouts by input name.
+func writeTriageContext(dir string, checkouts map[string]string) (string, error) {
 	held, err := runHeld(dir)
 	if err != nil {
 		return "", err
@@ -314,7 +386,20 @@ func writeTriageContext(dir string) (string, error) {
 			out.WriteString("\n")
 		}
 	}
-	writeLockContext(&out, dir, info, failed)
+	lock, _ := os.ReadFile(filepath.Join(dir, "flake.lock"))
+	own := map[string]bool{}
+	nodes := ownInputNodes(lock, checkouts)
+	for _, node := range nodes {
+		own[node] = true
+	}
+	var unlocked []string
+	for _, name := range sortedPaths(checkouts) {
+		if _, ok := nodes[name]; !ok {
+			unlocked = append(unlocked, name)
+		}
+	}
+	writeLockContext(&out, dir, info, failed, own, unlocked)
+	writeOwnInputs(&out, lock, checkouts)
 
 	path := filepath.Join(dir, "context.md")
 	// replaceFile creates the file 0600 and renames it into place.

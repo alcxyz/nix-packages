@@ -89,13 +89,13 @@ func TestTriageRefusesRunInProgressOrWithoutReport(t *testing.T) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeTriageContext(dir); err == nil || !strings.Contains(err.Error(), "still going on") {
+	if _, err := writeTriageContext(dir, nil); err == nil || !strings.Contains(err.Error(), "still going on") {
 		t.Fatalf("a held run gave %v", err)
 	}
 	lock.Close()
 
 	bare := makeRun(t, runs, "20260102T030600.000000Z-3", true, nil, nil)
-	if _, err := writeTriageContext(bare); err == nil || !strings.Contains(err.Error(), "no report.json") {
+	if _, err := writeTriageContext(bare, nil); err == nil || !strings.Contains(err.Error(), "no report.json") {
 		t.Fatalf("a run without a report gave %v", err)
 	}
 }
@@ -153,7 +153,7 @@ func TestTriageContext(t *testing.T) {
 		"build.log":                 "command: nix build\nexit status: 1\nfailed targets: system:beta\n",
 		"build-pkg-1.0.log":         "compiling\nerror: builder failed\n",
 	})
-	path, err := writeTriageContext(dir)
+	path, err := writeTriageContext(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestTriageBuildLogsUnderBracketPath(t *testing.T) {
 		"build.log":         "failed targets: system:beta\n",
 		"build-pkg-1.0.log": "error: builder failed\n",
 	})
-	path, err := writeTriageContext(dir)
+	path, err := writeTriageContext(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestTriageUnknownStepListsLogsAndTail(t *testing.T) {
 		"system-gamma-evaluate.log": "evaluated\n\n",
 		"system-gamma-activate.log": "copying\n\x1b[1mdeploy: nix: not found\x1b[0m\n\n",
 	})
-	path, err := writeTriageContext(dir)
+	path, err := writeTriageContext(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestTriageUnknownStepListsLogsAndTail(t *testing.T) {
 	// Without an activate log the step is unknown; the evaluate log's tail
 	// is shown.
 	os.Remove(filepath.Join(dir, "logs", "system-gamma-activate.log"))
-	if _, err := writeTriageContext(dir); err != nil {
+	if _, err := writeTriageContext(dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(path)

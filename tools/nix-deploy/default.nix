@@ -24,7 +24,7 @@ in
 buildGoModule (finalAttrs: {
   pname = "nixfleet";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.23.0";
+  version = "0.24.0";
 
   src = ./.;
 
@@ -75,6 +75,8 @@ buildGoModule (finalAttrs: {
   postInstall = ''
     mkdir -p $out/libexec
     mv $out/bin/nix-deploy $out/libexec/nixfleet
+    # nixfleet triage finds its playbook at <exe dir>/../share/nixfleet.
+    install -Dm644 ${./triage-playbook.md} $out/share/nixfleet/triage-playbook.md
     install -Dm755 ${../k8s-node-reboot/scripts/ops/k8s-node-network-audit.sh} \
       $out/libexec/k8s-node-network-audit
     makeWrapper $out/libexec/nixfleet $out/bin/deploy \

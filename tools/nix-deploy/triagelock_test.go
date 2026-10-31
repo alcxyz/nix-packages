@@ -142,7 +142,7 @@ func TestTriageLockBaselines(t *testing.T) {
 
 	pathExists = func(path string) bool { return path == lockedStorePath(hashB, "source") }
 	defer func() { pathExists = fileExists }()
-	path, err := writeTriageContext(dir)
+	path, err := writeTriageContext(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +154,8 @@ func TestTriageLockBaselines(t *testing.T) {
 		"- Removed `gone`: tarball+https://example.invalid/gone.tar.gz at " + hashA,
 		"- Changed `nixpkgs`: github:example/pkgs\n  - locked: aaaa -> bbbb\n  - last modified: 2026-01-01 00:00 UTC -> 2026-02-01 00:00 UTC\n  - store path: " + lockedStorePath(hashA, "source") + " -> " + lockedStorePath(hashB, "source"),
 		"### Since the baseline of gamma home-manager\n\nNo baseline:",
-		"| local | path:/src/local | unknown | unknown |",
-		"| nixpkgs | github:example/pkgs | " + lockedStorePath(hashB, "source") + " | yes |",
+		"| local | no | path:/src/local | unknown | unknown |",
+		"| nixpkgs | no | github:example/pkgs | " + lockedStorePath(hashB, "source") + " | yes |",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("context.md lacks %q:\n%s", want, text)
@@ -206,7 +206,7 @@ func TestTriageLockGitFallback(t *testing.T) {
 	dir := makeRun(t, runs, "20260102T030500.000000Z-4", true,
 		&runReport{Hosts: []hostReport{{Host: "alpha", System: phaseReport{Status: "failed"}}}}, nil)
 	setRun(t, dir, time.Date(2026, 1, 2, 3, 5, 0, 0, time.UTC), flakeDir, head, lockData(t, newLock))
-	path, err := writeTriageContext(dir)
+	path, err := writeTriageContext(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

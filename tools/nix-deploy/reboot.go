@@ -877,11 +877,16 @@ func (f *fleetReboot) canAsk() bool {
 	return f.terminal && !f.opts.yes
 }
 
-// stdinIsTerminal tells whether standard input is a terminal to ask on: a
-// character device other than the null device. Any other device can only
-// decline, since the answer is read in a few bytes.
+// stdinIsTerminal tells whether standard input is a terminal to ask on. Any
+// other device can only decline, since the answer is read in a few bytes.
 func stdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
+	return isTerminal(os.Stdin)
+}
+
+// isTerminal tells whether file is a terminal: a character device other
+// than the null device.
+func isTerminal(file *os.File) bool {
+	info, err := file.Stat()
 	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
 		return false
 	}
