@@ -27,8 +27,8 @@ const usage = `usage: desk [options] HOST [-- VIEWER-OPTIONS...]
 Starts a remote session on HOST and ends it when the viewer exits:
 
  1. opens an SSH tunnel from 127.0.0.1:PORT to the host's loopback VNC
-    server, through HOST-lan first when the SSH configuration defines that
-    name and through HOST otherwise or when HOST-lan does not answer;
+    server, through the first of HOST-lan, HOST-wan and HOST that answers,
+    trying the first two only when the SSH configuration defines them;
  2. runs remote-desk on, which moves the host's desktop to a virtual output
     and turns its displays off;
  3. starts the VNC viewer on 127.0.0.1::PORT and waits for it to exit;
@@ -41,8 +41,8 @@ or status alone, for example when a session ended without off.
 The command uses ssh and its configuration as they are; it never handles
 the VNC password, which the viewer asks for. Options go before HOST:
 
-  -via A,B         SSH names to try in order (default: HOST-lan if the SSH
-                   configuration defines it, then HOST)
+  -via A,B         SSH names to try in order (default: HOST-lan and HOST-wan
+                   if the SSH configuration defines them, then HOST)
   -lan-timeout D   how long each name but the last may take to answer; they
                    are tried with strict host key checking (default 2s)
   -port N          local port the tunnel listens on (default 5900)
@@ -155,7 +155,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 func validPort(p int) bool { return p > 0 && p < 65536 }
 
 // routes lists the SSH names to try in order: the -via list, or HOST-lan
-// when the SSH configuration defines it, followed by HOST.
+// and HOST-wan when the SSH configuration defines them, followed by HOST.
 func routes(host, via string) []string {
 	if via != "" {
 		var out []string
@@ -166,11 +166,13 @@ func routes(host, via string) []string {
 		}
 		return out
 	}
-	lan := host + "-lan"
-	if sshDefines(lan) {
-		return []string{lan, host}
+	var out []string
+	for _, suffix := range []string{"-lan", "-wan"} {
+		if sshDefines(host + suffix) {
+			out = append(out, host+suffix)
+		}
 	}
-	return []string{host}
+	return append(out, host)
 }
 
 // sshDefines reports whether the SSH configuration gives name a host name

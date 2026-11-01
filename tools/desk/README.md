@@ -26,13 +26,16 @@ connected drops at the end; that is expected.
 
 ## Routes
 
-`desk HOST` tries `HOST-lan` first when the SSH configuration defines that
-name (`ssh -G` gives it a host name of its own), and `HOST` when it does not
-answer within `-lan-timeout` (2 seconds). Every name but the last is tried
-with strict host key checking, because a LAN address on another network may
-belong to a different machine; give the LAN name the host's key alias
-(`HostKeyAlias`) so it shares the known host key. `-via a,b` replaces the
-list.
+`desk HOST` tries `HOST-lan`, then `HOST-wan`, then `HOST`, skipping the
+first two unless the SSH configuration defines them (`ssh -G` gives them a
+host name of their own). A name that does not answer within `-lan-timeout`
+(2 seconds) passes to the next. The usual setup is the host's LAN address as
+`HOST-lan`, a public address that the router forwards to its SSH port as
+`HOST-wan`, and an overlay network such as NetBird as `HOST`. Every name but
+the last is tried with strict host key checking, because a LAN address on
+another network may belong to a different machine; give those names the
+host's key alias (`HostKeyAlias`) so they share the known host key. `-via
+a,b` replaces the list.
 
 The tunnel is a backgrounded ssh control master that only holds the
 forward. `remote-desk on` and `off` run on connections of their own, with

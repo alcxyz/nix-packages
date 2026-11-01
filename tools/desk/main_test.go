@@ -161,6 +161,7 @@ func TestSessionOverLAN(t *testing.T) {
 	}
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
 		direct+" "+probe+" xyz-lan remote-desk on",
 		"viewer -FullScreen 127.0.0.1::PORT",
@@ -180,7 +181,50 @@ func TestSessionFallsBackWhenLANDoesNotAnswer(t *testing.T) {
 	// on and off go through the chosen route.
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
+		master+" xyz",
+		direct+" xyz remote-desk on",
+		"viewer 127.0.0.1::PORT",
+		direct+" xyz remote-desk off",
+		closeCtl,
+	)
+}
+
+func TestSessionOverWANWhenLANDoesNotAnswer(t *testing.T) {
+	f := setup(t)
+	t.Setenv("FAKE_DEFINED", "xyz-lan xyz-wan")
+	t.Setenv("FAKE_DOWN", "xyz-lan")
+	code, stderr := f.run("xyz")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	// Both names before the last one are probed; on and off use xyz-wan.
+	f.want(
+		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
+		master+" "+probe+" xyz-lan",
+		master+" "+probe+" xyz-wan",
+		direct+" "+probe+" xyz-wan remote-desk on",
+		"viewer 127.0.0.1::PORT",
+		direct+" "+probe+" xyz-wan remote-desk off",
+		closeCtl,
+	)
+}
+
+func TestSessionFallsBackPastLANAndWAN(t *testing.T) {
+	f := setup(t)
+	t.Setenv("FAKE_DEFINED", "xyz-lan xyz-wan")
+	t.Setenv("FAKE_DOWN", "xyz-lan xyz-wan")
+	code, stderr := f.run("xyz")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	f.want(
+		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
+		master+" "+probe+" xyz-lan",
+		master+" "+probe+" xyz-wan",
 		master+" xyz",
 		direct+" xyz remote-desk on",
 		"viewer 127.0.0.1::PORT",
@@ -197,6 +241,7 @@ func TestSessionWithoutLANName(t *testing.T) {
 	}
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" xyz",
 		direct+" xyz remote-desk on",
 		"viewer 127.0.0.1::PORT",
@@ -215,6 +260,7 @@ func TestFailedOnStillRunsOffAndSkipsViewer(t *testing.T) {
 	// A remote-desk failure is not retried over another route.
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" xyz",
 		direct+" xyz remote-desk on",
 		direct+" xyz remote-desk off",
@@ -248,7 +294,7 @@ func TestBusyPortFailsBeforeConnecting(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
 	// Only the configuration was read.
-	f.want("ssh -G xyz-lan")
+	f.want("ssh -G xyz-lan", "ssh -G xyz-wan")
 }
 
 func TestSignalEndsViewerAndRunsOff(t *testing.T) {
@@ -276,6 +322,7 @@ func TestSignalEndsViewerAndRunsOff(t *testing.T) {
 	}
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" xyz",
 		direct+" xyz remote-desk on",
 		"viewer 127.0.0.1::PORT",
@@ -298,6 +345,7 @@ func TestOffMovesOnFromStalledRoute(t *testing.T) {
 	// The stalled attempt gets its own deadline; then the next route.
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
 		direct+" "+probe+" xyz-lan remote-desk on",
 		"viewer 127.0.0.1::PORT",
@@ -318,6 +366,7 @@ func TestOnIsNotRetriedOnAnotherRoute(t *testing.T) {
 	// off moves on to the next route; on does not.
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
 		direct+" "+probe+" xyz-lan remote-desk on",
 		direct+" "+probe+" xyz-lan remote-desk off",
@@ -351,6 +400,7 @@ func TestSignalEndsStalledOn(t *testing.T) {
 	}
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		master+" xyz",
 		direct+" xyz remote-desk on",
 		direct+" xyz remote-desk off",
@@ -369,9 +419,11 @@ func TestOffAndStatusAlone(t *testing.T) {
 	}
 	f.want(
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		direct+" "+probe+" xyz-lan remote-desk off",
 		direct+" xyz remote-desk off",
 		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
 		direct+" "+probe+" xyz-lan remote-desk status",
 		direct+" xyz remote-desk status",
 	)
@@ -397,7 +449,7 @@ func TestMissingViewerFailsBeforeConnecting(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr, "viewer") {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}
-	f.want("ssh -G xyz-lan")
+	f.want("ssh -G xyz-lan", "ssh -G xyz-wan")
 }
 
 func TestFindViewer(t *testing.T) {

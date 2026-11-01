@@ -7,6 +7,12 @@ with every change to the tool and add an entry here:
 - minor: a new command or option, or a change in what a session does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.2.0 (2026-11-01)
+
+- `desk HOST` also tries `HOST-wan`, when the SSH configuration defines it,
+  after `HOST-lan` and before `HOST`, so a direct route through the router's
+  SSH forward comes before an overlay network.
+
 ## 0.1.0 (2026-10-31)
 
 - First release: `desk HOST` opens an SSH tunnel to the host's loopback VNC
