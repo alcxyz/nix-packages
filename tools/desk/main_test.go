@@ -35,11 +35,18 @@ for a in "$@"; do
 done
 [ -z "$route" ] && route=$prev
 case " $* " in *" -O exit "*) exit 0 ;; esac
+case " $* " in *" -O forward "*) [ -n "$FAKE_FORWARD_FAIL" ] && exit 255; exit 0 ;; esac
 # remote-desk over route: "<action>@<route>" in $FAKE_STALL hangs, in
 # $FAKE_LOST drops the connection.
 if [ -n "$action" ]; then
 	case " $FAKE_STALL " in *" $action@$route "*) exec sleep 30 ;; esac
 	case " $FAKE_LOST " in *" $action@$route "*) exit 255 ;; esac
+fi
+# remote-desk socket: the path in $FAKE_SOCKET, else the usage status of a
+# remote-desk without the command.
+if [ "$action" = socket ]; then
+	[ -n "$FAKE_SOCKET" ] && { printf "%s\n" "$FAKE_SOCKET"; exit 0; }
+	exit 2
 fi
 case " $FAKE_DOWN " in *" $route "*) [ -n "$route" ] && exit 255 ;; esac
 case " $* " in *" -f "*)
@@ -84,6 +91,8 @@ func setup(t *testing.T) *fixture {
 	t.Setenv("FAKE_VIEWER_SLEEP", "")
 	t.Setenv("FAKE_STALL", "")
 	t.Setenv("FAKE_LOST", "")
+	t.Setenv("FAKE_SOCKET", "")
+	t.Setenv("FAKE_FORWARD_FAIL", "")
 	oldSSH := sshPath
 	sshPath = ssh
 	t.Cleanup(func() { sshPath = oldSSH })
@@ -109,7 +118,7 @@ func (f *fixture) run(args ...string) (int, string) {
 }
 
 // calls returns the recorded calls with the control socket path replaced
-// by CTL and the forward by FWD.
+// by CTL and the forward's local end by FWD.
 func (f *fixture) calls() []string {
 	f.t.Helper()
 	data, err := os.ReadFile(f.log)
@@ -128,8 +137,9 @@ func (f *fixture) calls() []string {
 			}
 			if strings.HasPrefix(fields[i], "127.0.0.1::") {
 				fields[i] = "127.0.0.1::PORT"
-			} else if strings.HasPrefix(fields[i], "127.0.0.1:") {
-				fields[i] = "FWD"
+			} else if rest, ok := strings.CutPrefix(fields[i], "127.0.0.1:"); ok {
+				_, target, _ := strings.Cut(rest, ":")
+				fields[i] = "FWD>" + target
 			}
 		}
 		out = append(out, strings.Join(fields, " "))
@@ -146,7 +156,7 @@ func (f *fixture) want(want ...string) {
 }
 
 const (
-	master   = "ssh -f -N -M -S CTL -o ControlPersist=no -o ExitOnForwardFailure=yes -L FWD"
+	master   = "ssh -f -N -M -S CTL -o ControlPersist=no -o ExitOnForwardFailure=yes"
 	probe    = "-o ConnectTimeout=2 -o StrictHostKeyChecking=yes"
 	direct   = "ssh -o ControlPath=none"
 	closeCtl = "ssh -S CTL -O exit xyz"
@@ -163,6 +173,8 @@ func TestSessionOverLAN(t *testing.T) {
 		"ssh -G xyz-lan",
 		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
+		"ssh -S CTL -o ControlMaster=no "+probe+" xyz-lan remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz-lan",
 		direct+" "+probe+" xyz-lan remote-desk on",
 		"viewer -FullScreen 127.0.0.1::PORT",
 		direct+" "+probe+" xyz-lan remote-desk off",
@@ -184,6 +196,8 @@ func TestSessionFallsBackWhenLANDoesNotAnswer(t *testing.T) {
 		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
 		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz",
 		direct+" xyz remote-desk on",
 		"viewer 127.0.0.1::PORT",
 		direct+" xyz remote-desk off",
@@ -205,6 +219,8 @@ func TestSessionOverWANWhenLANDoesNotAnswer(t *testing.T) {
 		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
 		master+" "+probe+" xyz-wan",
+		"ssh -S CTL -o ControlMaster=no "+probe+" xyz-wan remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz-wan",
 		direct+" "+probe+" xyz-wan remote-desk on",
 		"viewer 127.0.0.1::PORT",
 		direct+" "+probe+" xyz-wan remote-desk off",
@@ -226,6 +242,8 @@ func TestSessionFallsBackPastLANAndWAN(t *testing.T) {
 		master+" "+probe+" xyz-lan",
 		master+" "+probe+" xyz-wan",
 		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz",
 		direct+" xyz remote-desk on",
 		"viewer 127.0.0.1::PORT",
 		direct+" xyz remote-desk off",
@@ -243,11 +261,92 @@ func TestSessionWithoutLANName(t *testing.T) {
 		"ssh -G xyz-lan",
 		"ssh -G xyz-wan",
 		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz",
 		direct+" xyz remote-desk on",
 		"viewer 127.0.0.1::PORT",
 		direct+" xyz remote-desk off",
 		closeCtl,
 	)
+}
+
+func TestSessionForwardsToTheHostsSocket(t *testing.T) {
+	f := setup(t)
+	t.Setenv("FAKE_SOCKET", "/home/alc/.local/state/wayvnc/vnc.sock")
+	code, stderr := f.run("xyz")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	f.want(
+		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
+		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>/home/alc/.local/state/wayvnc/vnc.sock xyz",
+		direct+" xyz remote-desk on",
+		"viewer 127.0.0.1::PORT",
+		direct+" xyz remote-desk off",
+		closeCtl,
+	)
+}
+
+func TestFailedForwardSkipsOn(t *testing.T) {
+	f := setup(t)
+	t.Setenv("FAKE_SOCKET", "/run/vnc.sock")
+	t.Setenv("FAKE_FORWARD_FAIL", "1")
+	code, stderr := f.run("xyz")
+	if code != 1 || !strings.Contains(stderr, "forwarding") {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	// Nothing was turned on, so nothing is turned off.
+	f.want(
+		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
+		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>/run/vnc.sock xyz",
+		closeCtl,
+	)
+}
+
+func TestLostConnectionWhileAskingForTheSocket(t *testing.T) {
+	f := setup(t)
+	t.Setenv("FAKE_LOST", "socket@xyz")
+	code, stderr := f.run("xyz")
+	if code != 1 || !strings.Contains(stderr, "VNC socket") {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	f.want(
+		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
+		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		closeCtl,
+	)
+}
+
+func TestUnusableSocketAnswerFails(t *testing.T) {
+	f := setup(t)
+	t.Setenv("FAKE_SOCKET", "relative/vnc.sock")
+	code, stderr := f.run("xyz")
+	if code != 1 || !strings.Contains(stderr, "unusable answer") {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	f.want(
+		"ssh -G xyz-lan",
+		"ssh -G xyz-wan",
+		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		closeCtl,
+	)
+}
+
+func TestSocketPathWithBackslashFails(t *testing.T) {
+	f := setup(t)
+	t.Setenv("FAKE_SOCKET", `/run/a\b.sock`)
+	if code, stderr := f.run("xyz"); code != 1 || !strings.Contains(stderr, "unusable answer") {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
 }
 
 func TestFailedOnStillRunsOffAndSkipsViewer(t *testing.T) {
@@ -262,6 +361,8 @@ func TestFailedOnStillRunsOffAndSkipsViewer(t *testing.T) {
 		"ssh -G xyz-lan",
 		"ssh -G xyz-wan",
 		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz",
 		direct+" xyz remote-desk on",
 		direct+" xyz remote-desk off",
 		closeCtl,
@@ -324,6 +425,8 @@ func TestSignalEndsViewerAndRunsOff(t *testing.T) {
 		"ssh -G xyz-lan",
 		"ssh -G xyz-wan",
 		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz",
 		direct+" xyz remote-desk on",
 		"viewer 127.0.0.1::PORT",
 		direct+" xyz remote-desk off",
@@ -347,6 +450,8 @@ func TestOffMovesOnFromStalledRoute(t *testing.T) {
 		"ssh -G xyz-lan",
 		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
+		"ssh -S CTL -o ControlMaster=no "+probe+" xyz-lan remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz-lan",
 		direct+" "+probe+" xyz-lan remote-desk on",
 		"viewer 127.0.0.1::PORT",
 		direct+" "+probe+" xyz-lan remote-desk off",
@@ -368,6 +473,8 @@ func TestOnIsNotRetriedOnAnotherRoute(t *testing.T) {
 		"ssh -G xyz-lan",
 		"ssh -G xyz-wan",
 		master+" "+probe+" xyz-lan",
+		"ssh -S CTL -o ControlMaster=no "+probe+" xyz-lan remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz-lan",
 		direct+" "+probe+" xyz-lan remote-desk on",
 		direct+" "+probe+" xyz-lan remote-desk off",
 		direct+" xyz remote-desk off",
@@ -402,6 +509,8 @@ func TestSignalEndsStalledOn(t *testing.T) {
 		"ssh -G xyz-lan",
 		"ssh -G xyz-wan",
 		master+" xyz",
+		"ssh -S CTL -o ControlMaster=no xyz remote-desk socket",
+		"ssh -S CTL -o ControlMaster=no -O forward -L FWD>127.0.0.1:5900 xyz",
 		direct+" xyz remote-desk on",
 		direct+" xyz remote-desk off",
 		closeCtl,

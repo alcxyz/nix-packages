@@ -1,5 +1,6 @@
 // desk starts and ends a remote-desk session on a host in one step: an SSH
-// tunnel to the host's loopback VNC server, `remote-desk on`, a VNC viewer
+// tunnel to the host's VNC server (its Unix socket or loopback port),
+// `remote-desk on`, a VNC viewer
 // on the forwarded port and, when the viewer exits, `remote-desk off` and
 // the tunnel's close.
 package main
@@ -26,9 +27,11 @@ const usage = `usage: desk [options] HOST [-- VIEWER-OPTIONS...]
 
 Starts a remote session on HOST and ends it when the viewer exits:
 
- 1. opens an SSH tunnel from 127.0.0.1:PORT to the host's loopback VNC
-    server, through the first of HOST-lan, HOST-wan and HOST that answers,
-    trying the first two only when the SSH configuration defines them;
+ 1. opens an SSH tunnel from 127.0.0.1:PORT to the host's VNC server,
+    through the first of HOST-lan, HOST-wan and HOST that answers, trying
+    the first two only when the SSH configuration defines them; the tunnel
+    ends at the Unix socket that remote-desk socket names, or at the host's
+    loopback port when remote-desk has no socket command;
  2. runs remote-desk on, which moves the host's desktop to a virtual output
     and turns its displays off;
  3. starts the VNC viewer on 127.0.0.1::PORT and waits for it to exit;
@@ -39,14 +42,16 @@ connected then drops. desk off HOST and desk status HOST run remote-desk off
 or status alone, for example when a session ended without off.
 
 The command uses ssh and its configuration as they are; it never handles
-the VNC password, which the viewer asks for. Options go before HOST:
+a VNC password, which the viewer asks for if the server wants one. Options
+go before HOST:
 
   -via A,B         SSH names to try in order (default: HOST-lan and HOST-wan
                    if the SSH configuration defines them, then HOST)
   -lan-timeout D   how long each name but the last may take to answer; they
                    are tried with strict host key checking (default 2s)
   -port N          local port the tunnel listens on (default 5900)
-  -remote-port N   the VNC server's port on the host's loopback (default 5900)
+  -remote-port N   the VNC server's port on the host's loopback, used when
+                   remote-desk names no socket (default 5900)
   -viewer PATH     the VNC viewer (default: vncviewer on PATH, else
                    TigerVNC.app's)
   -version         print the version and exit
@@ -323,15 +328,13 @@ func (o *options) session() error {
 // openTunnel starts a backgrounded ssh master that holds the forward and
 // returns once the forward listens, through the first route that answers.
 func (o *options) openTunnel(ctx context.Context) (string, error) {
-	forward := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", o.port, o.remotePort)
 	for i, r := range o.routes {
 		if ctx.Err() != nil {
 			return "", errors.New("interrupted")
 		}
 		fmt.Fprintf(o.stderr, "desk: connecting through %s\n", r)
 		args := []string{"-f", "-N", "-M", "-S", o.controlPath,
-			"-o", "ControlPersist=no", "-o", "ExitOnForwardFailure=yes",
-			"-L", forward}
+			"-o", "ControlPersist=no", "-o", "ExitOnForwardFailure=yes"}
 		args = append(args, o.sshArgs(r)...)
 		args = append(args, r)
 		cmd := exec.CommandContext(ctx, sshPath, args...)
@@ -340,7 +343,7 @@ func (o *options) openTunnel(ctx context.Context) (string, error) {
 		cmd.Stderr = o.stderr
 		err := cmd.Run()
 		if err == nil {
-			return r, nil
+			return r, o.forward(ctx, r)
 		}
 		if ctx.Err() != nil {
 			return "", errors.New("interrupted")
@@ -352,6 +355,59 @@ func (o *options) openTunnel(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no route to %s answered: %s: %w", o.host, r, err)
 	}
 	return "", errors.New("no SSH names to try")
+}
+
+// forward adds the tunnel to the master: from 127.0.0.1:PORT to the Unix
+// socket that remote-desk socket names on the host, or to the host's
+// loopback port when its remote-desk has no socket command.
+func (o *options) forward(ctx context.Context, route string) error {
+	target, err := o.vncTarget(ctx, route)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, sshPath, "-S", o.controlPath, "-o", "ControlMaster=no",
+		"-O", "forward", "-L", fmt.Sprintf("127.0.0.1:%d:%s", o.port, target), route)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return errors.New("interrupted")
+		}
+		return fmt.Errorf("forwarding 127.0.0.1:%d to %s: %v: %s", o.port, target, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// vncTarget asks the host, over the master's connection, where its VNC
+// server listens. A remote-desk without the socket command fails with its
+// usage status (2); the server then listens on -remote-port. Anything else
+// that fails is an error.
+func (o *options) vncTarget(ctx context.Context, route string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, attemptTimeout)
+	defer cancel()
+	// ControlMaster=no keeps a ControlMaster from the user's configuration
+	// from opening a connection of its own; the probe options apply should
+	// the master be gone.
+	args := append([]string{"-S", o.controlPath, "-o", "ControlMaster=no"}, o.sshArgs(route)...)
+	args = append(args, route, "remote-desk", "socket")
+	cmd := exec.CommandContext(ctx, sshPath, args...)
+	cmd.Stderr = io.Discard
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	path := strings.TrimSpace(string(out))
+	var exit *exec.ExitError
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		return "", errors.New("interrupted")
+	case ctx.Err() != nil:
+		return "", fmt.Errorf("asking %s for its VNC socket: %w", route, ctx.Err())
+	case err == nil && strings.HasPrefix(path, "/") && !strings.ContainsAny(path, " \t\n:\\"):
+		return path, nil
+	case err == nil:
+		return "", fmt.Errorf("asking %s for its VNC socket: unusable answer %q", route, path)
+	case errors.As(err, &exit) && exit.ExitCode() == 2:
+		fmt.Fprintf(o.stderr, "desk: %s's remote-desk names no socket; forwarding to its port %d\n", route, o.remotePort)
+		return fmt.Sprintf("127.0.0.1:%d", o.remotePort), nil
+	}
+	return "", fmt.Errorf("asking %s for its VNC socket: %w", route, err)
 }
 
 // closeTunnel stops the master, if one is listening on the control socket.

@@ -7,6 +7,14 @@ with every change to the tool and add an entry here:
 - minor: a new command or option, or a change in what a session does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.3.0 (2026-11-01)
+
+- The tunnel ends where the host's VNC server listens: `desk` asks
+  `remote-desk socket` over the new connection and forwards to that Unix
+  socket, or to the loopback port (`-remote-port`) when the host's
+  `remote-desk` has no `socket` command. The forward is added to the SSH
+  master after it connects.
+
 ## 0.2.0 (2026-11-01)
 
 - `desk HOST` also tries `HOST-wan`, when the SSH configuration defines it,
