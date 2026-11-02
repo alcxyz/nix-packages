@@ -11,7 +11,7 @@ on:
 jobs:
   auto-merge:
     name: Merge green update PRs
-    runs-on: forgejo-podman-canary
+    runs-on: forgejo-podman
     container:
       image: docker.io/library/node:20-bookworm
     concurrency:

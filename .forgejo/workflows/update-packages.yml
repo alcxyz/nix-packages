@@ -9,7 +9,7 @@ on:
 jobs:
   update:
     name: Scan ${{ matrix.package }} for updates
-    runs-on: forgejo-podman-canary
+    runs-on: forgejo-podman
     container:
       image: docker.io/library/node:20-bookworm
     concurrency:
