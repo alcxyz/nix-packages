@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -131,7 +132,7 @@ func TestStatusReadsEachHost(t *testing.T) {
 	if !xyz.Reachable || xyz.RebootNeeded == nil || !*xyz.RebootNeeded || !slices.Equal(xyz.RebootDiffers, []string{"kernel"}) {
 		t.Errorf("xyz: %+v", xyz)
 	}
-	if xyz.Runners == nil || xyz.Runners.Active != 1 || xyz.Runners.Total != 2 || xyz.Runners.Units[1] != (runnerUnit{Unit: "gitea-runner-spare.service", State: "failed"}) {
+	if xyz.Runners == nil || xyz.Runners.Active != 1 || xyz.Runners.Total != 2 || !reflect.DeepEqual(xyz.Runners.Units[1], runnerUnit{Unit: "gitea-runner-spare.service", State: "failed", SubState: "failed"}) {
 		t.Errorf("xyz runners: %+v", xyz.Runners)
 	}
 	if xyz.Node != nil {

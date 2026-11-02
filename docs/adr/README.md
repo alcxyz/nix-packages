@@ -25,3 +25,4 @@ and retired ADRs. ADR numbers are never reused.
 | [ADR-0014](0014-deck-backlog-view.md) | deck's backlog view, a live backlog overview | `tools/deck/`, `tools/gh-app/` |
 | [ADR-0015](0015-deck-design-system.md) | One design for deck's views and page bundles, chosen by purpose | `tools/deck/web/`, page bundles |
 | [ADR-0016](0016-nixfleet-triage.md) | nixfleet triage: run records and an agent playbook for failed deploys and warnings | `tools/nix-deploy/` |
+| [ADR-0017](0017-nixfleet-runner-status-and-restarts.md) | nixfleet runner status and restarts once idle | `tools/nix-deploy/` |

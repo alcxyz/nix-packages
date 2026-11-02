@@ -1055,6 +1055,12 @@ func (f *fleetReboot) decide(t *rebootTarget, h hostStatus, cluster clusterStatu
 	if h.Runners == nil {
 		return
 	}
+	// A host whose runner report cannot be read may run runners that a
+	// reboot would cut off without their jobs finishing.
+	if h.Runners.Error != "" {
+		t.fail = "its runner units cannot be read: " + h.Runners.Error
+		return
+	}
 	for _, unit := range h.Runners.Units {
 		if unit.State != "active" {
 			continue

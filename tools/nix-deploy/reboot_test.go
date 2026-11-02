@@ -53,8 +53,10 @@ type fakeHost struct {
 	// node makes the cluster list a node named like the host.
 	node     bool
 	cordoned bool
-	// runners maps runner units to their state.
-	runners map[string]string
+	// runners maps runner units to their state; runnerReport, when set, is
+	// the host's nixfleet-runner-status output in their place.
+	runners      map[string]string
+	runnerReport string
 	// runnersStayDown keeps the runner units inactive after a reboot, and
 	// neverReturns the host down.
 	runnersStayDown bool
@@ -290,7 +292,7 @@ func (f *rebootFake) statusRun(timeout time.Duration, argv ...string) (string, s
 		for _, unit := range sortedUnits(h.runners) {
 			output += fmt.Sprintf("runner=%s loaded %s running runner\n", unit, h.runners[unit])
 		}
-		return output, "", 0
+		return output + h.runnerReport, "", 0
 	}
 	f.t.Errorf("unexpected status command: %v", argv)
 	return "", "unexpected command\n", 97
@@ -953,6 +955,28 @@ func TestRebootPlanDecisions(t *testing.T) {
 	r, hosts = f.fleet("host-a")
 	if target := r.plan(hosts).groups[0].members[0]; target.skip != "" || target.fail != "" {
 		t.Errorf("host-a without --needed: %+v", target)
+	}
+}
+
+// A host whose runner report cannot be read may run runners a reboot would
+// cut off, so it is not rebooted; one whose report reads is drained as usual.
+func TestRebootNeedsReadableRunners(t *testing.T) {
+	f := newRebootFake(t)
+	f.hosts["host-a"].runners = nil
+	f.hosts["host-a"].runnerReport = "runners.version\t1\nrunners.exit\t1\n"
+	f.hosts["host-b"].runners = nil
+	f.hosts["host-b"].runnerReport = runnerReport([]string{primaryOK, fastHeld, policyOK}, "")
+	f.run("host-a", "host-b", "--yes")
+	f.expectOutcomes(map[string]string{"host-a": "failed", "host-b": "rebooted"})
+	f.expectNote("host-a", "its runner units cannot be read: nixfleet-runner-status exited with status 1")
+	// Only host-b's running runner is stopped; the held one is left alone.
+	if got := f.changes(); !slices.Equal(got, []string{"stop host-b", "reboot host-b"}) {
+		t.Errorf("changes: %v", got)
+	}
+	if !slices.ContainsFunc(f.commands, func(c string) bool {
+		return strings.HasSuffix(c, "systemctl stop 'forgejo-actions-runner.service'")
+	}) {
+		t.Errorf("commands: %v", f.commands)
 	}
 }
 

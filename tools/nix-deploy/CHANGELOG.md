@@ -9,6 +9,27 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.28.0 (2026-11-02)
+
+- `nixfleet runners [status]` lists every CI runner unit of the selected
+  hosts, and the engine APIs and resource policy their hosts track, with
+  why a runner does not run and whether a unit needs a restart (ADR-0017).
+- `nixfleet runners restart [--all | <host>...] [--dry-run] [--yes]` starts
+  each host's `forgejo-runner-restart.service`, which restarts the units a
+  switch left on an older definition once every runner on the host is idle,
+  and gives up without restarting when they stay busy; nixfleet follows it
+  and reports each host's outcome.
+- `nixfleet status` reads the host's `nixfleet-runner-status` where it is
+  installed: the runner count covers every runner, and notes explain each
+  runner that does not run, name the units that need a restart and report a
+  restart under way, busy or failed. `--json` gains each runner's
+  sub-state, restart flag, labels and reason, the tracked services, the
+  runner hold and the last restart. Without it, runner units named
+  `forgejo-*-runner-*` (such as `forgejo-podman-runner-fast`) now count too,
+  so `nixfleet reboot` stops and starts them like the others. A report
+  that fails, stops early or has an unknown version is an error, and
+  `nixfleet reboot` fails such a host instead of rebooting it.
+
 ## 0.27.0 (2026-10-31)
 
 - Each remote target's activated generation stays rooted on the operator, in

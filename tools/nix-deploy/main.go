@@ -81,6 +81,7 @@ const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
        nixfleet reboot [OPTIONS] [--all | <host>...]
        nixfleet off|on [OPTIONS] <host>
        nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
+       nixfleet runners [status | restart] [OPTIONS] [--all | <host>...]
        nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]
 
 Subcommands:
@@ -101,6 +102,10 @@ Subcommands:
   status   Read, without changing anything, what each host booted and runs,
            whether it needs a reboot, its Kubernetes cordon state and its CI
            runner units; see nixfleet status --help.
+  runners  List every CI runner unit with why it does not run and whether
+           it needs a restart, or (restart) restart the units a switch left
+           on an older definition once the host's runners are idle; see
+           nixfleet runners --help.
   triage   Write context.md for a recorded deploy run, by default the newest
            that failed: its facts, failed targets, their logs and first
            errors, or with --warnings the evaluation warnings of the newest
@@ -147,6 +152,8 @@ func dispatch(name string, args []string) int {
 		return runPower("nixfleet", args)
 	case "status":
 		return runStatus(args[1:])
+	case "runners":
+		return runRunners(args[1:])
 	case "triage":
 		return runTriage(args[1:])
 	}
