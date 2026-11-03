@@ -192,7 +192,7 @@ func TestStatusReadsEachHost(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	printStatus(&out, report)
+	printStatus(&out, nil, report)
 	for _, want := range []string{
 		"host         ssh          system           reboot   node                  runners  boot\n",
 		"xyz          ok           switched         yes      -                     1/2      -\n",
@@ -200,10 +200,10 @@ func TestStatusReadsEachHost(t *testing.T) {
 		"solo         unreachable  -                -        -                     -        -\n",
 		"mac          ok           darwin           -        -                     -        -\n",
 		"k1           ok           booted           unknown  schedulable,notready  -        -\n",
-		"xyz: reboot needed: kernel differs between the booted system and the current or next-boot system\n",
-		"solo: unreachable: ssh: connect to host solo.invalid port 22: Connection timed out\n",
-		"k1: reboot unknown: cannot compare initrd",
-		"spare: unreachable: no answer within 30s\n",
+		"[xyz] reboot needed: kernel differs between the booted system and the current or next-boot system\n",
+		"[solo] unreachable: ssh: connect to host solo.invalid port 22: Connection timed out\n",
+		"[k1] reboot unknown: cannot compare initrd",
+		"[spare] unreachable: no answer within 30s\n",
 		"cluster: 3 nodes\n",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -253,7 +253,7 @@ func TestStatusWithoutCluster(t *testing.T) {
 			t.Errorf("%s: %+v", name, report)
 		}
 		var out bytes.Buffer
-		printStatus(&out, report)
+		printStatus(&out, nil, report)
 		if !strings.Contains(out.String(), c.want) {
 			t.Errorf("%s: missing %q in:\n%s", name, c.want, out.String())
 		}
@@ -393,11 +393,11 @@ func TestStatusReadsBootCheck(t *testing.T) {
 		{"bootcheck.status=ok\nbootcheck.time=1700000000\n", &bootCheckStatus{Status: "ok", Time: 1700000000, Reasons: []string{}}, "ok", ""},
 		{"bootcheck.status=failed\nbootcheck.time=1\nbootcheck.reason=unit a.service failed\nbootcheck.reason=booted x but the system profile is y\n",
 			&bootCheckStatus{Status: "failed", Time: 1, Reasons: []string{"unit a.service failed", "booted x but the system profile is y"}}, "failed",
-			"node: boot check failed: unit a.service failed; booted x but the system profile is y\n"},
+			"[node] boot check failed: unit a.service failed; booted x but the system profile is y\n"},
 		{"bootcheck.present=1\n", &bootCheckStatus{Status: "failed", Reasons: []string{"the result has no status"}}, "failed",
-			"node: boot check failed: the result has no status\n"},
+			"[node] boot check failed: the result has no status\n"},
 		{"bootcheck.status=weird\n", &bootCheckStatus{Status: "failed", Reasons: []string{`the result has status "weird"`}}, "failed",
-			`node: boot check failed: the result has status "weird"` + "\n"},
+			`[node] boot check failed: the result has status "weird"` + "\n"},
 	}
 	for _, c := range cases {
 		check := &statusCheck{inv: s.inv, self: "xyz", connectTimeout: "5", run: func(timeout time.Duration, argv ...string) (string, string, int) {
@@ -415,7 +415,7 @@ func TestStatusReadsBootCheck(t *testing.T) {
 			t.Errorf("%q: got %+v, want %+v", c.output, got, c.want)
 		}
 		var out bytes.Buffer
-		printStatus(&out, report)
+		printStatus(&out, nil, report)
 		if !strings.Contains(out.String(), "cordoned              -        "+c.row+"\n") || !strings.Contains(out.String(), c.note) {
 			t.Errorf("%q: row %q or note %q missing in:\n%s", c.output, c.row, c.note, out.String())
 		}

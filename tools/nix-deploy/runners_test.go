@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -82,12 +83,13 @@ func TestStatusExplainsRunners(t *testing.T) {
 	r := parseRunners(runnerReport([]string{primaryOld, fastHeld, policyNew},
 		"restart\tactivating\twaiting\t1762100000\tforgejo-actions-runner.service\trecent_job unit=forgejo-podman-runner.service"))
 	var out bytes.Buffer
-	printStatus(&out, statusReport{Hosts: []hostStatus{{Host: "xyz", Reachable: true, OS: "Linux", Runners: r}}})
+	printStatus(&out, nil, statusReport{Hosts: []hostStatus{{Host: "xyz", Reachable: true, OS: "Linux", Runners: r}}})
 	text := out.String()
 	for _, want := range []string{
-		"xyz: runner forgejo-podman-runner-fast.service inactive: held by the runner hold (game); it starts when that ends\n",
-		"xyz: restart needed: forgejo-actions-runner.service (started from an older definition), forgejo-runner-resource-policy.service (no start record); nixfleet runners restart xyz\n",
-		"xyz: runner restart waiting (forgejo-actions-runner.service): recent_job unit=forgejo-podman-runner.service, at ",
+		"[xyz] forgejo-podman-runner-fast.service inactive: held by the runner hold (game); it starts when that ends\n",
+		"[xyz] 2 units need a restart (started from an older definition, no start record): nixfleet runners restart xyz\n",
+		"[xyz] runner restart waiting at ",
+		" (forgejo-actions-runner.service): recent_job unit=forgejo-podman-runner.service\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in:\n%s", want, text)
@@ -99,7 +101,7 @@ func TestStatusExplainsRunners(t *testing.T) {
 	// A finished restart that did its work is not news.
 	r.LastRestart = &runnerRestart{State: "inactive", Status: "done", Units: []string{}}
 	out.Reset()
-	printStatus(&out, statusReport{Hosts: []hostStatus{{Host: "xyz", Reachable: true, OS: "Linux", Runners: r}}})
+	printStatus(&out, nil, statusReport{Hosts: []hostStatus{{Host: "xyz", Reachable: true, OS: "Linux", Runners: r}}})
 	if strings.Contains(out.String(), "runner restart") {
 		t.Errorf("done restart reported:\n%s", out.String())
 	}
@@ -115,7 +117,7 @@ func TestRunnersStatusTable(t *testing.T) {
 	}
 	states[0].Runners.Hold.Reason = "game"
 	var out bytes.Buffer
-	printRunners(&out, states)
+	printRunners(&out, nil, states)
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	fields := func(line string) []string { return strings.Fields(line) }
 	if got := fields(lines[1]); !slices.Equal(got[:5], []string{"xyz", "forgejo-actions-runner.service", "active/running", "yes", "started"}) {
@@ -131,7 +133,7 @@ func TestRunnersStatusTable(t *testing.T) {
 	if got := fields(lines[4]); !slices.Equal(got, []string{"old", "forgejo-actions-runner.service", "active/running", "-"}) {
 		t.Errorf("old: %q", lines[4])
 	}
-	for _, want := range []string{"gone: unreachable: timed out", "xyz: runner hold active: game", "xyz: last runner restart failed: systemctl restart exited with status 1, at "} {
+	for _, want := range []string{"[gone] unreachable: timed out\n", "[xyz] runner hold active: game\n", "[xyz] last runner restart failed at ", ": systemctl restart exited with status 1\n"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
 		}
@@ -235,13 +237,17 @@ func TestRunnersRestart(t *testing.T) {
 	if code := r.run(states, runnersOptions{command: "restart", dryRun: true}); code != 1 || len(f.starts) != 0 {
 		t.Fatalf("dry run: %d %v", code, f.starts)
 	}
+	// The units a host restarts follow it, one per line.
+	unitLine := func(unit, reason string) string { return fmt.Sprintf("    %-40s %s", unit, reason) }
 	for _, want := range []string{
-		"xyz: restart once idle, waiting up to 1h0m0s: forgejo-actions-runner.service (started from an older definition), forgejo-runner-resource-policy.service (no start record)",
-		"node: nothing to restart",
-		"solo: restart once idle, waiting up to 1h0m0s: forgejo-actions-runner.service (started from an older definition)",
-		"k1: no restart unit (the host has no nixfleet-runner-status); restart its runners by hand",
-		`spare: the host reports no usable restart unit (""); restart its runners by hand`,
-		"mac: unreachable: ssh: unreachable",
+		"[xyz] restart once idle, waiting up to 1h:\n" +
+			unitLine("forgejo-actions-runner.service", "started from an older definition") + "\n" +
+			unitLine("forgejo-runner-resource-policy.service", "no start record"),
+		"[node] nothing to restart",
+		"[solo] restart once idle, waiting up to 1h:\n" + unitLine("forgejo-actions-runner.service", "started from an older definition"),
+		"[k1] no restart unit (the host has no nixfleet-runner-status); restart its runners by hand",
+		`[spare] the host reports no usable restart unit (""); restart its runners by hand`,
+		"[mac] unreachable: ssh: unreachable",
 	} {
 		if !strings.Contains(out.String(), want+"\n") {
 			t.Errorf("plan lacks %q:\n%s", want, out.String())
@@ -271,8 +277,8 @@ func TestRunnersRestart(t *testing.T) {
 		t.Errorf("starts: %q", f.starts)
 	}
 	for _, want := range []string{
-		"xyz: restarted forgejo-actions-runner.service, forgejo-runner-resource-policy.service\n",
-		"solo: busy for 1h0m0s, nothing restarted: job_running unit=forgejo-runner-docker.service\n",
+		"[xyz] restarted 2 units\n",
+		"[solo] busy for 1h, nothing restarted: job_running unit=forgejo-runner-docker.service\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q:\n%s", want, out.String())
@@ -304,11 +310,12 @@ func TestRunnersRestartFailures(t *testing.T) {
 		t.Errorf("exit %d", code)
 	}
 	for _, want := range []string{
-		"k1: a restart already runs (waiting (forgejo-actions-runner.service): store_reset_running, at ",
-		"node: could not start forgejo-runner-restart.service: ssh: connect to host node: refused\n",
-		"solo: failed (forgejo-actions-runner.service): systemctl restart exited with status 1, at ",
-		"; systemctl start: ssh: connect to host solo: refused\n",
-		"k1: restarted forgejo-actions-runner.service; systemctl start: ssh: connect to host k1: refused\n",
+		"[k1] a restart already runs (waiting at ",
+		" (forgejo-actions-runner.service): store_reset_running); following it\n",
+		"[node] could not start forgejo-runner-restart.service: ssh: connect to host node: refused\n",
+		"[solo] failed at ",
+		" (forgejo-actions-runner.service): systemctl restart exited with status 1; systemctl start: ssh: connect to host solo: refused\n",
+		"[k1] restarted forgejo-actions-runner.service; systemctl start: ssh: connect to host k1: refused\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q:\n%s", want, out.String())
@@ -354,10 +361,10 @@ func TestRunnersRestartProgress(t *testing.T) {
 		t.Errorf("exit %d:\n%s", code, out.String())
 	}
 	text := out.String()
-	if strings.Count(text, "node: waiting (forgejo-actions-runner.service): job_running unit=forgejo-runner-podman.service") != 1 {
+	if strings.Count(text, "[node] waiting: job_running unit=forgejo-runner-podman.service\n") != 1 {
 		t.Errorf("progress:\n%s", text)
 	}
-	if !strings.HasSuffix(text, "node: restarted forgejo-actions-runner.service\n") {
+	if !strings.HasSuffix(text, "[node] restarted forgejo-actions-runner.service\n") {
 		t.Errorf("outcome:\n%s", text)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // Catppuccin colors for phase labels and headings.
@@ -29,8 +30,9 @@ func newUI(hostColors map[string]string) *ui {
 	return &ui{color: color, hostColors: hostColors}
 }
 
+// paint colors text on a terminal; a nil ui paints nothing.
 func (u *ui) paint(rgb, text string) string {
-	if !u.color {
+	if u == nil || !u.color {
 		return text
 	}
 	return "\033[38;2;" + rgb + "m" + text + "\033[0m"
@@ -49,12 +51,27 @@ func (u *ui) phase(phase string) string {
 	}
 }
 
+// host labels a line about a host, in the host's color: [host].
 func (u *ui) host(host string) string {
+	return u.hostName("["+host+"]", host)
+}
+
+// hostName paints text, usually the host's name, in the host's color.
+func (u *ui) hostName(text, host string) string {
+	if u == nil {
+		return text
+	}
 	rgb, ok := u.hostColors[host]
 	if !ok {
 		rgb = colorText
 	}
-	return u.paint(rgb, "["+host+"]")
+	return u.paint(rgb, text)
+}
+
+// hostColumn is a host's name in a table column of width characters; it is
+// padded before it is painted, so the escape codes do not count.
+func (u *ui) hostColumn(host string, width int) string {
+	return u.hostName(fmt.Sprintf("%-*s", width, host), host)
 }
 
 func (u *ui) section(title string) {
@@ -74,6 +91,34 @@ func (u *ui) warnPartial(hosts []string) {
 
 func formatGiB(kib int64) string {
 	return fmt.Sprintf("%d.%01d GiB", kib/1048576, ((kib%1048576)*10)/1048576)
+}
+
+// formatWait writes a duration in whole hours, minutes and seconds,
+// leaving out zero parts: 1h, 1h30m, 45s.
+func formatWait(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d <= 0 {
+		return "0s"
+	}
+	var text string
+	if h := d / time.Hour; h > 0 {
+		text += fmt.Sprintf("%dh", h)
+	}
+	if m := d % time.Hour / time.Minute; m > 0 {
+		text += fmt.Sprintf("%dm", m)
+	}
+	if sec := d % time.Minute / time.Second; sec > 0 {
+		text += fmt.Sprintf("%ds", sec)
+	}
+	return text
+}
+
+// unitCount names a single unit, or counts several.
+func unitCount(units []string) string {
+	if len(units) == 1 {
+		return units[0]
+	}
+	return fmt.Sprintf("%d units", len(units))
 }
 
 func joinHosts(hosts []string) string {

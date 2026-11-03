@@ -9,6 +9,17 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.28.1 (2026-11-03)
+
+- `nixfleet status`, `nixfleet runners` and `nixfleet reboot` color each
+  host's name as deploy does (the inventory's `hostColors`), in their tables
+  and on their notes; status and runners notes start with `[host]`.
+- `nixfleet status` counts the units that need a restart instead of listing
+  them on one line, and `nixfleet runners restart` lists them one per line
+  under each host, so long lists no longer wrap. A restart's outcome names
+  a single unit and counts several, its progress shows only the status and
+  reason, and durations read `1h`, not `1h0m0s`.
+
 ## 0.28.0 (2026-11-02)
 
 - `nixfleet runners [status]` lists every CI runner unit of the selected

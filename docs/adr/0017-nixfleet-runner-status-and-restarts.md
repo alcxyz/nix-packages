@@ -71,7 +71,7 @@ provides, readable without root:
 
 - `nixfleet status` runs the status command where it exists. The runner
   column counts the `runner` units; notes explain each runner that does not
-  run, name the units that need a restart, and report a restart under way,
+  run, say how many units need a restart, and report a restart under way,
   busy or failed. `--json` carries every field. Without the command it
   lists units named `gitea-runner-*`, `gitea-*runner`, `forgejo-*runner` and
   `forgejo-*-runner-*`, with their states only. `nixfleet reboot` stops and

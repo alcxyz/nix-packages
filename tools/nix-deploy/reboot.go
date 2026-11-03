@@ -691,14 +691,14 @@ func (f *fleetReboot) run(ctx context.Context, hosts []string) int {
 			}
 		}
 		if t := p.selfTarget(); t != nil && t.skip == "" && t.fail == "" && !p.failsBeforeStart() {
-			fmt.Fprintf(f.out, "==> sudo for the reboot of %s at the end\n", t.host)
+			fmt.Fprintf(f.out, "==> sudo for the reboot of %s at the end\n", f.ui.hostName(t.host, t.host))
 			if err := f.sudo(ctx, "-v"); err != nil {
 				if ctx.Err() != nil {
 					fmt.Fprintln(f.errOut, "nixfleet reboot: interrupted; nothing was changed")
 					return 2
 				}
 				t.skip = "sudo did not take the password"
-				fmt.Fprintf(f.out, "==> %s is skipped: %s\n", t.host, t.skip)
+				fmt.Fprintf(f.out, "==> %s is skipped: %s\n", f.ui.hostName(t.host, t.host), t.skip)
 				count, groups = p.size()
 			} else {
 				defer f.keepSudo(ctx)()
@@ -1436,14 +1436,14 @@ func (f *fleetReboot) printPlan(p *rebootPlan) {
 		for _, t := range g.members {
 			switch {
 			case t.skip != "":
-				fmt.Fprintf(f.out, "  -  %s: skip: %s\n", t.host, t.skip)
+				fmt.Fprintf(f.out, "  -  %s: skip: %s\n", f.ui.hostName(t.host, t.host), t.skip)
 			case t.fail != "":
-				fmt.Fprintf(f.out, "  -  %s: fail: %s\n", t.host, t.fail)
+				fmt.Fprintf(f.out, "  -  %s: fail: %s\n", f.ui.hostName(t.host, t.host), t.fail)
 			case g.failed():
-				fmt.Fprintf(f.out, "  -  %s: not started: %s\n", t.host, t.policies(g))
+				fmt.Fprintf(f.out, "  -  %s: not started: %s\n", f.ui.hostName(t.host, t.host), t.policies(g))
 			default:
 				step++
-				fmt.Fprintf(f.out, "  %d. %s: %s\n", step, t.host, t.policies(g))
+				fmt.Fprintf(f.out, "  %d. %s: %s\n", step, f.ui.hostName(t.host, t.host), t.policies(g))
 			}
 			if t.guard != nil {
 				for _, line := range t.guard.lines() {
@@ -1457,7 +1457,7 @@ func (f *fleetReboot) printPlan(p *rebootPlan) {
 			strings.Join(pending, " "), k8snode.RebootPendingTaint)
 	}
 	for _, t := range p.notSelected {
-		fmt.Fprintf(f.out, "not selected: %s: %s\n", t.host, t.skip)
+		fmt.Fprintf(f.out, "not selected: %s: %s\n", f.ui.hostName(t.host, t.host), t.skip)
 	}
 	if p.cluster.Reachable {
 		fmt.Fprintf(f.out, "cluster: %d nodes\n", p.cluster.Nodes)
@@ -1549,9 +1549,9 @@ func (f *fleetReboot) runLast(ctx context.Context, p *rebootPlan, g *rebootGroup
 
 // printSummary prints every host's outcome and reports whether one failed.
 func (f *fleetReboot) printSummary(p *rebootPlan) bool {
-	format := "%-12s %-12s %-12s %s\n"
+	format := "%s %-12s %-12s %s\n"
 	fmt.Fprintln(f.out)
-	fmt.Fprintf(f.out, format, "host", "group", "outcome", "duration")
+	fmt.Fprintf(f.out, format, fmt.Sprintf("%-12s", "host"), "group", "outcome", "duration")
 	failed := false
 	var notes []string
 	for _, g := range p.groups {
@@ -1560,9 +1560,9 @@ func (f *fleetReboot) printSummary(p *rebootPlan) bool {
 			if t.duration > 0 {
 				duration = t.duration.Round(time.Second).String()
 			}
-			fmt.Fprintf(f.out, format, t.host, g.label(), t.outcome, duration)
+			fmt.Fprintf(f.out, format, f.ui.hostColumn(t.host, 12), g.label(), t.outcome, duration)
 			if t.reason != "" {
-				notes = append(notes, t.host+": "+t.outcome+": "+t.reason)
+				notes = append(notes, f.ui.hostName(t.host, t.host)+": "+t.outcome+": "+t.reason)
 			}
 			if t.outcome == outcomeFailed {
 				failed = true

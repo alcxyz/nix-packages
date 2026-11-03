@@ -1206,7 +1206,7 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert rows[1] == ["node", "ok", "switched", "yes", "-", "1/1", "-"], rows
     assert rows[2] == ["solo", "unreachable", "-", "-", "-", "-", "-"], rows
     assert rows[3] == ["mac", "ok", "darwin", "-", "-", "-", "-"], rows
-    assert "node: reboot needed: kernel differs" in result.stdout and "solo: unreachable: fixture endpoint unavailable" in result.stdout
+    assert "[node] reboot needed: kernel differs" in result.stdout and "[solo] unreachable: fixture endpoint unavailable" in result.stdout
     assert "cluster: not read: kubectl is not available" in result.stdout
     assert sorted(c[-2] for c in calls if c[0] == "ssh") == ["operator@solo.invalid", "root@mac", "root@node.invalid"]
     assert all(c[0] in {"hostname", "ssh"} for c in calls) and all("BatchMode=yes" in c for c in calls if c[0] == "ssh"), calls

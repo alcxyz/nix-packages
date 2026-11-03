@@ -233,6 +233,8 @@ type statusCheck struct {
 	self           string
 	sshArgs        []string
 	connectTimeout string
+	// ui colors the host names; nil prints them plain.
+	ui *ui
 	// run runs a command without input and returns its standard output,
 	// standard error and exit status; tests replace it.
 	run func(timeout time.Duration, argv ...string) (string, string, int)
@@ -339,7 +341,7 @@ func runStatus(args []string) int {
 		return 2
 	}
 	report := s.collect(hosts)
-	printStatus(os.Stdout, report)
+	printStatus(os.Stdout, s.ui, report)
 	if opts.jsonPath != "" {
 		if err := writeStatusJSON(opts.jsonPath, report); err != nil {
 			fmt.Fprintf(os.Stderr, "nixfleet status: cannot write %s: %v\n", opts.jsonPath, err)
@@ -373,6 +375,7 @@ func openStatusCheck(configFile string) (*statusCheck, int, error) {
 		self:           inv.canonical(strings.TrimSpace(hostname)),
 		sshArgs:        strings.Fields(sshOptions),
 		connectTimeout: envOr("DEPLOY_SSH_CHECK_TIMEOUT", "5"),
+		ui:             newUI(inv.HostColors),
 		run:            runCommand,
 	}, 0, nil
 }
@@ -666,9 +669,11 @@ func (s *statusCheck) readNodes() (map[string]nodeStatus, clusterStatus) {
 	return nodes, clusterStatus{Reachable: true, Nodes: len(list.Items)}
 }
 
-func printStatus(w io.Writer, report statusReport) {
-	format := "%-12s %-12s %-16s %-8s %-21s %-8s %s\n"
-	fmt.Fprintf(w, format, "host", "ssh", "system", "reboot", "node", "runners", "boot")
+// printStatus prints a line per host, then notes that explain them, each
+// labeled [host] in the host's color.
+func printStatus(w io.Writer, u *ui, report statusReport) {
+	format := "%s %-12s %-16s %-8s %-21s %-8s %s\n"
+	fmt.Fprintf(w, format, fmt.Sprintf("%-12s", "host"), "ssh", "system", "reboot", "node", "runners", "boot")
 	var notes []string
 	for _, h := range report.Hosts {
 		ssh, system, reboot, node, runners, boot := "unreachable", "-", "-", "-", "-", "-"
@@ -679,17 +684,17 @@ func printStatus(w io.Writer, report statusReport) {
 		switch {
 		case h.RebootNeeded != nil && *h.RebootNeeded:
 			reboot = "yes"
-			notes = append(notes, h.Host+": reboot needed: "+h.RebootReason)
+			notes = append(notes, u.host(h.Host)+" reboot needed: "+h.RebootReason)
 		case h.RebootNeeded != nil:
 			reboot = "no"
 		case !h.Reachable || h.OS != "" && h.OS != "Linux":
 			// Nothing to tell: unreachable, or not NixOS.
 		default:
 			reboot = "unknown"
-			notes = append(notes, h.Host+": reboot unknown: "+h.RebootReason)
+			notes = append(notes, u.host(h.Host)+" reboot unknown: "+h.RebootReason)
 		}
 		if !h.Reachable {
-			notes = append(notes, h.Host+": unreachable: "+h.Error)
+			notes = append(notes, u.host(h.Host)+" unreachable: "+h.Error)
 		}
 		if h.Node != nil {
 			node = "schedulable"
@@ -702,15 +707,15 @@ func printStatus(w io.Writer, report statusReport) {
 		}
 		if h.Runners != nil {
 			runners = fmt.Sprintf("%d/%d", h.Runners.Active, h.Runners.Total)
-			notes = append(notes, runnerNotes(h.Host, h.Runners)...)
+			notes = append(notes, runnerNotes(u, h.Host, h.Runners)...)
 		}
 		if h.BootCheck != nil {
 			boot = h.BootCheck.Status
 			if boot == "failed" {
-				notes = append(notes, h.Host+": boot check failed: "+strings.Join(h.BootCheck.Reasons, "; "))
+				notes = append(notes, u.host(h.Host)+" boot check failed: "+strings.Join(h.BootCheck.Reasons, "; "))
 			}
 		}
-		fmt.Fprintf(w, format, h.Host, ssh, system, reboot, node, runners, boot)
+		fmt.Fprintf(w, format, u.hostColumn(h.Host, 12), ssh, system, reboot, node, runners, boot)
 	}
 	for _, note := range notes {
 		fmt.Fprintln(w, note)
@@ -723,47 +728,57 @@ func printStatus(w io.Writer, report statusReport) {
 }
 
 // runnerNotes explains a host's runners: why each one that does not run is
-// down, which units need a restart, and a restart under way or that did not
-// finish.
-func runnerNotes(host string, r *runnerStatus) []string {
+// down, how many units need a restart, and a restart under way or that did
+// not finish. nixfleet runners lists the units.
+func runnerNotes(u *ui, host string, r *runnerStatus) []string {
+	label := u.host(host)
 	var notes []string
 	if r.Error != "" {
-		notes = append(notes, host+": runners unknown: "+r.Error)
+		notes = append(notes, label+" runners unknown: "+r.Error)
 	}
-	for _, u := range r.Units {
-		if u.State != "active" && u.Reason != "" {
-			notes = append(notes, fmt.Sprintf("%s: runner %s %s: %s", host, u.Unit, u.State, u.Reason))
+	for _, unit := range r.Units {
+		if unit.State != "active" && unit.Reason != "" {
+			notes = append(notes, fmt.Sprintf("%s %s %s: %s", label, unit.Unit, unit.State, unit.Reason))
 		}
 	}
 	if units := r.restartNeeded(); len(units) > 0 {
-		var parts []string
-		for _, u := range units {
-			parts = append(parts, u.Unit+" ("+u.RestartReason+")")
+		var names, reasons []string
+		for _, unit := range units {
+			names = append(names, unit.Unit)
+			if !slices.Contains(reasons, unit.RestartReason) {
+				reasons = append(reasons, unit.RestartReason)
+			}
 		}
-		notes = append(notes, host+": restart needed: "+strings.Join(parts, ", ")+"; nixfleet runners restart "+host)
+		verb := "needs"
+		if len(names) > 1 {
+			verb = "need"
+		}
+		notes = append(notes, fmt.Sprintf("%s %s %s a restart (%s): nixfleet runners restart %s",
+			label, unitCount(names), verb, strings.Join(reasons, ", "), host))
 	}
 	if last := r.LastRestart; last != nil {
 		switch {
 		case last.running():
-			notes = append(notes, host+": runner restart "+describeRestart(last))
+			notes = append(notes, label+" runner restart "+describeRestart(last))
 		case last.Status == "busy" || last.Status == "failed":
-			notes = append(notes, host+": last runner restart "+describeRestart(last))
+			notes = append(notes, label+" last runner restart "+describeRestart(last))
 		}
 	}
 	return notes
 }
 
-// describeRestart says what a restart run is doing or did.
+// describeRestart says what a restart run is doing or did, and when:
+// "busy at 2026-11-03 06:38 (5 units): job_running ...".
 func describeRestart(last *runnerRestart) string {
 	text := last.Status
+	if last.Time > 0 {
+		text += " at " + time.Unix(last.Time, 0).Format("2006-01-02 15:04")
+	}
 	if len(last.Units) > 0 {
-		text += " (" + strings.Join(last.Units, ", ") + ")"
+		text += " (" + unitCount(last.Units) + ")"
 	}
 	if last.Reason != "" {
 		text += ": " + last.Reason
-	}
-	if last.Time > 0 {
-		text += ", at " + time.Unix(last.Time, 0).Format("2006-01-02 15:04")
 	}
 	return text
 }

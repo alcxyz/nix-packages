@@ -153,7 +153,7 @@ func runRunners(args []string) int {
 	}
 	states := s.readHosts(hosts)
 	if opts.command == "status" {
-		printRunners(os.Stdout, states)
+		printRunners(os.Stdout, s.ui, states)
 		return 0
 	}
 	restarter := &fleetRestart{status: s, out: os.Stdout, poll: restartPollInterval, validateSudo: validateSudo}
@@ -164,15 +164,15 @@ func runRunners(args []string) int {
 }
 
 // printRunners lists every runner and tracked unit of the hosts, then each
-// host's hold reason and last restart run.
-func printRunners(w io.Writer, states []hostStatus) {
-	format := "%-12s %-40s %-18s %-8s %s\n"
-	fmt.Fprintf(w, format, "host", "unit", "state", "restart", "why")
+// host's hold reason and last restart run, labeled [host] in its color.
+func printRunners(w io.Writer, u *ui, states []hostStatus) {
+	format := "%s %-40s %-18s %-8s %s\n"
+	fmt.Fprintf(w, format, fmt.Sprintf("%-12s", "host"), "unit", "state", "restart", "why")
 	var notes []string
 	listed := false
 	for _, h := range states {
 		if !h.Reachable {
-			notes = append(notes, h.Host+": unreachable: "+h.Error)
+			notes = append(notes, u.host(h.Host)+" unreachable: "+h.Error)
 			continue
 		}
 		r := h.Runners
@@ -181,26 +181,27 @@ func printRunners(w io.Writer, states []hostStatus) {
 		}
 		listed = true
 		if r.Error != "" {
-			notes = append(notes, h.Host+": runners unknown: "+r.Error)
+			notes = append(notes, u.host(h.Host)+" runners unknown: "+r.Error)
 		}
-		for _, u := range append(append([]runnerUnit{}, r.Units...), r.Services...) {
-			state, restart, why := u.State, "-", u.Reason
-			if u.SubState != "" {
-				state += "/" + u.SubState
+		for _, unit := range append(append([]runnerUnit{}, r.Units...), r.Services...) {
+			state, restart, why := unit.State, "-", unit.Reason
+			if unit.SubState != "" {
+				state += "/" + unit.SubState
 			}
 			if r.RestartUnit != "" {
 				restart = "no"
 			}
-			if u.RestartNeeded {
-				restart, why = "yes", u.RestartReason
+			if unit.RestartNeeded {
+				restart, why = "yes", unit.RestartReason
 			}
-			fmt.Fprintf(w, format, h.Host, u.Unit, state, restart, why)
+			line := fmt.Sprintf(format, u.hostColumn(h.Host, 12), unit.Unit, state, restart, why)
+			fmt.Fprintln(w, strings.TrimRight(line, " \n"))
 		}
 		if r.Hold != nil && r.Hold.Reason != "none" {
-			notes = append(notes, fmt.Sprintf("%s: runner hold %s: %s", h.Host, r.Hold.State, r.Hold.Reason))
+			notes = append(notes, fmt.Sprintf("%s runner hold %s: %s", u.host(h.Host), r.Hold.State, r.Hold.Reason))
 		}
 		if r.LastRestart != nil {
-			notes = append(notes, h.Host+": last runner restart "+describeRestart(r.LastRestart))
+			notes = append(notes, u.host(h.Host)+" last runner restart "+describeRestart(r.LastRestart))
 		}
 	}
 	if !listed {
@@ -246,6 +247,11 @@ func (f *fleetRestart) log(format string, args ...any) {
 	fmt.Fprintf(f.out, format+"\n", args...)
 }
 
+// say prints a line about a host, labeled [host] in its color.
+func (f *fleetRestart) say(host, text string) {
+	f.log("%s %s", f.status.ui.host(host), text)
+}
+
 // plan decides, for each host, what it restarts or why it is skipped.
 func (f *fleetRestart) plan(states []hostStatus, all bool) []*restartTarget {
 	var targets []*restartTarget
@@ -280,18 +286,16 @@ func (f *fleetRestart) plan(states []hostStatus, all bool) []*restartTarget {
 	return targets
 }
 
+// describe says what the plan does on the host; the units it restarts
+// follow, one per line.
 func (t *restartTarget) describe() string {
-	if t.skip != "" {
+	switch {
+	case t.skip != "":
 		return t.skip
-	}
-	if t.joins {
+	case t.joins:
 		return "a restart already runs (" + describeRestart(t.before) + "); following it"
 	}
-	var parts []string
-	for _, u := range t.units {
-		parts = append(parts, u.Unit+" ("+u.RestartReason+")")
-	}
-	return fmt.Sprintf("restart once idle, waiting up to %s: %s", t.wait, strings.Join(parts, ", "))
+	return fmt.Sprintf("restart once idle, waiting up to %s:", formatWait(t.wait))
 }
 
 func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
@@ -299,7 +303,12 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 	exit := 0
 	var work []*restartTarget
 	for _, t := range targets {
-		f.log("%s: %s", t.host, t.describe())
+		f.say(t.host, t.describe())
+		if t.skip == "" && !t.joins {
+			for _, u := range t.units {
+				f.log("    %-40s %s", u.Unit, u.RestartReason)
+			}
+		}
 		if t.failed {
 			exit = 1
 		}
@@ -318,7 +327,11 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 			fmt.Fprintln(os.Stderr, "nixfleet runners restart: no terminal to confirm on; pass --yes")
 			return 2
 		}
-		if !f.ask(fmt.Sprintf("restart the runner units of %d hosts once idle? [y/N] ", len(work))) {
+		hosts := "1 host"
+		if len(work) > 1 {
+			hosts = fmt.Sprintf("%d hosts", len(work))
+		}
+		if !f.ask("restart the runner units of " + hosts + " once idle? [y/N] ") {
 			f.log("nothing restarted")
 			return 1
 		}
@@ -326,7 +339,7 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 	for _, t := range work {
 		if t.host == f.status.self && f.ask != nil && f.validateSudo != nil {
 			if err := f.validateSudo(); err != nil {
-				f.log("%s: sudo: %v", t.host, err)
+				f.say(t.host, "sudo: "+err.Error())
 			}
 		}
 	}
@@ -343,7 +356,7 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 	}
 	wait.Wait()
 	for i, t := range work {
-		f.log("%s: %s", t.host, outcomes[i])
+		f.say(t.host, outcomes[i])
 		if failed[i] {
 			exit = 1
 		}
@@ -368,7 +381,7 @@ func (f *fleetRestart) startCommand(t *restartTarget) []string {
 // restart runs the host's restart unit, reports its progress, and returns
 // its outcome and whether it failed.
 func (f *fleetRestart) restart(t *restartTarget) (string, bool) {
-	f.log("%s: starting %s", t.host, t.unit)
+	f.say(t.host, "starting "+t.unit)
 	done := make(chan struct{})
 	var follow sync.WaitGroup
 	if f.poll > 0 {
@@ -391,7 +404,7 @@ func (f *fleetRestart) restart(t *restartTarget) (string, bool) {
 	fresh := last != nil && (t.before == nil || t.joins || last.Time > t.before.Time)
 	switch {
 	case status == exitTimedOut:
-		return fmt.Sprintf("no result within %s; the restart goes on on the host", limit), true
+		return fmt.Sprintf("no result within %s; the restart goes on on the host", formatWait(limit)), true
 	case !fresh && status != 0:
 		message := oneLine(stderr)
 		if message == "" {
@@ -420,11 +433,14 @@ func (f *fleetRestart) restart(t *restartTarget) (string, bool) {
 func describeOutcome(t *restartTarget, last *runnerRestart) (string, bool) {
 	switch last.Status {
 	case "done":
-		return "restarted " + strings.Join(last.Units, ", "), false
+		if len(last.Units) == 0 {
+			return "done", false
+		}
+		return "restarted " + unitCount(last.Units), false
 	case "nothing":
 		return "nothing needed a restart", false
 	case "busy":
-		return "busy for " + t.wait.String() + ", nothing restarted: " + last.Reason, true
+		return "busy for " + formatWait(t.wait) + ", nothing restarted: " + last.Reason, true
 	}
 	return describeRestart(last), true
 }
@@ -448,10 +464,13 @@ func (f *fleetRestart) follow(t *restartTarget, done <-chan struct{}) {
 		if t.before != nil && !t.joins && last.Time <= t.before.Time {
 			continue
 		}
-		now := last.Status + ": " + last.Reason
+		now := last.Status
+		if last.Reason != "" {
+			now += ": " + last.Reason
+		}
 		if now != seen {
 			seen = now
-			f.log("%s: %s", t.host, describeRestart(last))
+			f.say(t.host, now)
 		}
 	}
 }
