@@ -63,6 +63,10 @@ jobs:
           python3 tools/nix-deploy/test-deploy.py "$binary"
 
   nix-validation:
+    # The shared runners run cheap checks only: tests, lint, and Nix evaluation
+    # without builds. Native builds run locally on the development host, by the
+    # author before pushing and by the local promoter before hosts follow a
+    # revision (ADR-0003).
     name: Package validation prerequisites
     runs-on: forgejo-podman
     container:
@@ -90,7 +94,7 @@ jobs:
       - name: Install runner prerequisites
         run: |
           apt-get update
-          apt-get install -y jq python3 sudo
+          apt-get install -y jq python3 sudo shellcheck gawk ripgrep
 
       - name: Test package update automation
         run: |
@@ -99,325 +103,70 @@ jobs:
           scripts/ci/test-ephemeral-nix-home.sh
           scripts/ci/test-t3code-nix-home.sh
           scripts/ci/test-verify-t3code-providers.sh
-          scripts/ci/test-nix-build-cache.sh
-          scripts/ci/test-run-current-pr.sh
           scripts/ci/test-upsert-update-pr.sh
           scripts/ci/test-require-package-validation.sh
+          scripts/ci/test-no-ci-builds.sh
           python3 scripts/ci/test-probe-ai-updates.py
           scripts/ci/test-ai-tools-updater.sh
           python3 scripts/ci/test-t3code-updater.py
 
-      - uses: https://github.com/cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
-            sandbox = false
+      - name: Test Nix GC maintenance
+        # The same script contract as checks.nix-gc-maintenance-contract, run
+        # directly instead of building the check.
+        run: |
+          shellcheck tools/nix-gc-maintenance/nix-gc-maintenance.sh tools/nix-gc-maintenance/test
+          bash tools/nix-gc-maintenance/test
+
+      - name: Test the Kubernetes node network audit
+        # The same script contract as checks.k8s-node-network-audit-contract.
+        working-directory: tools/k8s-node-reboot
+        run: |
+          shellcheck scripts/ops/*.sh scripts/checks/*.sh
+          bash scripts/checks/test-k8s-node-network-audit.sh
 
       - name: Validate package hashes
         run: scripts/ci/validate-package-hashes.sh
 
+      - uses: https://github.com/cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
+            sandbox = false
+
+      - name: Fetch the T3 Code source that evaluation imports
+        # T3 Code's preview browser pin is read from its source during
+        # evaluation (import from derivation). Fetch that fixed-output source
+        # through the fetch-only helper so the evaluation below builds nothing.
+        run: |
+          source scripts/update-packages/fod-hash.sh
+          realise_fetch_only .#t3code.resourceMonitor.src
+
       - name: Evaluate all exported package platforms
+        env:
+          # No local builds: an evaluation that would build through import
+          # from derivation fails instead (ADR-0003).
+          NIX_CONFIG: max-jobs = 0
         run: scripts/ci/validate-package-platforms.sh
 
-      - name: Test Nix GC maintenance
-        run: nix build .#checks.x86_64-linux.nix-gc-maintenance-contract
-
-      - name: Test the Kubernetes node network audit
-        run: nix build .#checks.x86_64-linux.k8s-node-network-audit-contract
-
-  package-builds:
-    name: Package builds and provider verification
-    runs-on: forgejo-podman
-    container:
-      image: docker.io/library/node:20-bookworm
-    outputs:
-      full: ${{ steps.plan.outputs.full }}
-    env:
-      NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
-      CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
-      CI_PULL_REQUEST_HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
-    steps:
-      - name: Prepare action copy paths
-        run: |
-          # Podman's archive API rejects action paths through this absolute symlink.
-          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
-            rm /var/run
-            mkdir -m 0755 /var/run
-            if [ -d /run/act ]; then
-              cp -a /run/act /var/run/act
-            fi
-            if [ -S /run/docker.sock ]; then
-              ln -s /run/docker.sock /var/run/docker.sock
-            fi
-          fi
-
-      - uses: https://data.forgejo.org/actions/checkout@v4
-        with:
-          fetch-depth: 0
-          github-server-url: https://git.alc.xyz
-
-      - name: Plan affected packages
-        id: plan
-        run: |
-          PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=/tmp/package-plan \
-            scripts/ci/build-changed-packages.sh
-          full=false
-          build=false
-          cache=false
-          if grep -Fqx '*' /tmp/package-plan; then
-            full=true
-            echo 'Complete export matrix selected; serialized shard jobs will build it.'
-          elif test -s /tmp/package-plan; then
-            build=true
-            cat /tmp/package-plan
-            while IFS= read -r attr; do
-              case "$attr" in t3code) cache=true ;; esac
-            done < /tmp/package-plan
-          else
-            echo 'No package builds needed; validation prerequisites still run.'
-          fi
-          {
-            echo "full=$full"
-            echo "build=$build"
-            echo "cache=$cache"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Install runner prerequisites
-        if: steps.plan.outputs.build == 'true'
-        run: |
-          apt-get update
-          apt-get install -y jq sudo zstd
-
-      - uses: https://github.com/cachix/install-nix-action@v30
-        if: steps.plan.outputs.build == 'true'
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
-            sandbox = false
-
-      - name: Restore package dependency cache
-        continue-on-error: true
-        if: steps.plan.outputs.cache == 'true'
-        id: cache
-        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
-          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-
-      - name: Enable local build cache
-        continue-on-error: true
-        if: steps.plan.outputs.cache == 'true'
-        run: scripts/ci/nix-build-cache.sh prepare
-
-      - name: Build affected packages
-        if: steps.plan.outputs.build == 'true'
+      - name: Evaluate the T3 Code provider contract
         env:
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-        run: scripts/ci/run-current-pr.sh scripts/ci/build-changed-packages.sh
+          NIX_CONFIG: max-jobs = 0
+        run: scripts/ci/check-t3code-provider-versions.sh
 
-      - name: Verify T3 Code provider wiring
-        if: steps.plan.outputs.build == 'true'
+      - name: Evaluate flake outputs without building
         env:
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-          T3CODE_CI_CLEAN_HOME: "true"
-        run: scripts/ci/run-current-pr.sh scripts/ci/verify-t3code-providers.sh
-
-      - name: Prepare bounded build cache
-        continue-on-error: true
-        if: steps.plan.outputs.cache == 'true' && steps.cache.outputs.cache-hit != 'true'
-        id: export-cache
-        run: scripts/ci/nix-build-cache.sh save
-
-      - name: Save package dependency cache
-        continue-on-error: true
-        if: steps.export-cache.outputs.save == 'true'
-        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-
-  package-builds-full-0:
-    name: Full export builds, shard 0
-    needs: package-builds
-    if: needs.package-builds.outputs.full == 'true'
-    runs-on: forgejo-podman
-    container:
-      image: docker.io/library/node:20-bookworm
-    env:
-      NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
-      CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
-      CI_PULL_REQUEST_HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
-      PACKAGE_BUILD_SHARD_COUNT: "2"
-      PACKAGE_BUILD_SHARD_INDEX: "0"
-      PACKAGE_BUILD_SELECTED_FILE: /tmp/package-shard-selected
-    steps:
-      - name: Prepare action copy paths
-        run: |
-          # Podman's archive API rejects action paths through this absolute symlink.
-          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
-            rm /var/run
-            mkdir -m 0755 /var/run
-            if [ -d /run/act ]; then
-              cp -a /run/act /var/run/act
-            fi
-            if [ -S /run/docker.sock ]; then
-              ln -s /run/docker.sock /var/run/docker.sock
-            fi
-          fi
-
-      - uses: https://data.forgejo.org/actions/checkout@v4
-        with:
-          fetch-depth: 0
-          github-server-url: https://git.alc.xyz
-
-      - name: Install runner prerequisites
-        run: |
-          apt-get update
-          apt-get install -y jq sudo zstd
-
-      - uses: https://github.com/cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
-            sandbox = false
-
-      - name: Restore package dependency cache
-        continue-on-error: true
-        id: cache
-        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}-shard-0
-          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-
-      - name: Enable local build cache
-        continue-on-error: true
-        run: scripts/ci/nix-build-cache.sh prepare
-
-      - name: Build full export shard
-        env:
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-        run: scripts/ci/run-current-pr.sh scripts/ci/build-changed-packages.sh
-
-      - name: Verify shard T3 Code provider wiring
-        env:
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-          T3CODE_CI_CLEAN_HOME: "true"
-        run: scripts/ci/run-current-pr.sh scripts/ci/verify-t3code-providers.sh
-
-      - name: Prepare bounded build cache
-        continue-on-error: true
-        if: steps.cache.outputs.cache-hit != 'true'
-        id: export-cache
-        run: scripts/ci/nix-build-cache.sh save
-
-      - name: Save package dependency cache
-        continue-on-error: true
-        if: steps.export-cache.outputs.save == 'true'
-        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-
-  package-builds-full-1:
-    name: Full export builds, shard 1
-    needs:
-      - package-builds
-      - package-builds-full-0
-    if: needs.package-builds.outputs.full == 'true'
-    runs-on: forgejo-podman
-    container:
-      image: docker.io/library/node:20-bookworm
-    env:
-      NIX_CI_CACHE_DIR: /tmp/nix-packages-cache
-      CI_PULL_REQUEST_NUMBER: ${{ forgejo.event.pull_request.number }}
-      CI_PULL_REQUEST_HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
-      PACKAGE_BUILD_SHARD_COUNT: "2"
-      PACKAGE_BUILD_SHARD_INDEX: "1"
-      PACKAGE_BUILD_SELECTED_FILE: /tmp/package-shard-selected
-    steps:
-      - name: Prepare action copy paths
-        run: |
-          # Podman's archive API rejects action paths through this absolute symlink.
-          if [ -L /var/run ] && [ "$(readlink -f /var/run)" = /run ]; then
-            rm /var/run
-            mkdir -m 0755 /var/run
-            if [ -d /run/act ]; then
-              cp -a /run/act /var/run/act
-            fi
-            if [ -S /run/docker.sock ]; then
-              ln -s /run/docker.sock /var/run/docker.sock
-            fi
-          fi
-
-      - uses: https://data.forgejo.org/actions/checkout@v4
-        with:
-          fetch-depth: 0
-          github-server-url: https://git.alc.xyz
-
-      - name: Install runner prerequisites
-        run: |
-          apt-get update
-          apt-get install -y jq sudo zstd
-
-      - uses: https://github.com/cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
-            sandbox = false
-
-      - name: Restore package dependency cache
-        continue-on-error: true
-        id: cache
-        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}-shard-1
-          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-
-      - name: Enable local build cache
-        continue-on-error: true
-        run: scripts/ci/nix-build-cache.sh prepare
-
-      - name: Build full export shard
-        env:
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-        run: scripts/ci/run-current-pr.sh scripts/ci/build-changed-packages.sh
-
-      - name: Verify shard T3 Code provider wiring
-        env:
-          NIX_CI_EPHEMERAL_CONTAINER: "1"
-          T3CODE_CI_CLEAN_HOME: "true"
-        run: scripts/ci/run-current-pr.sh scripts/ci/verify-t3code-providers.sh
-
-      - name: Prepare bounded build cache
-        continue-on-error: true
-        if: steps.cache.outputs.cache-hit != 'true'
-        id: export-cache
-        run: scripts/ci/nix-build-cache.sh save
-
-      - name: Save package dependency cache
-        continue-on-error: true
-        if: steps.export-cache.outputs.save == 'true'
-        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          key: ${{ steps.cache.outputs.cache-primary-key }}
+          NIX_CONFIG: max-jobs = 0
+        run: nix flake check --no-build --all-systems
 
   package-build:
+    # Keep this job's name: update auto-merge requires the
+    # "Package build validation" status context.
     name: Package build validation
     if: always()
     needs:
       - go-test
       - nix-validation
-      - package-builds
-      - package-builds-full-0
-      - package-builds-full-1
     runs-on: forgejo-podman
     container:
       image: docker.io/library/node:20-bookworm
@@ -441,12 +190,8 @@ jobs:
           fetch-depth: 1
           github-server-url: https://git.alc.xyz
 
-      - name: Require every package validation job
+      - name: Require every validation job
         env:
           GO_TEST_RESULT: ${{ needs.go-test.result }}
           PACKAGE_PREREQUISITES_RESULT: ${{ needs.nix-validation.result }}
-          PACKAGE_BUILDS_RESULT: ${{ needs.package-builds.result }}
-          PACKAGE_FULL_MATRIX: ${{ needs.package-builds.outputs.full }}
-          PACKAGE_FULL_SHARD_0_RESULT: ${{ needs.package-builds-full-0.result }}
-          PACKAGE_FULL_SHARD_1_RESULT: ${{ needs.package-builds-full-1.result }}
         run: scripts/ci/require-package-validation.sh

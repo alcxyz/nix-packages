@@ -136,8 +136,9 @@ let
           ln -s ${previewBrowser} "$out/libexec/t3code/preview-browser"
         '';
 
-      # The wrapper passes these through; the updater and CI build
-      # .#t3code.pnpmDeps and .#t3code.resourceMonitor.
+      # The wrapper passes these through. The updater fetches .#t3code.pnpmDeps
+      # and .#t3code.resourceMonitor.cargoDeps.vendorStaging to collect their
+      # hashes; local runs build them (ADR-0003).
       passthru = (previousAttrs.passthru or { }) // {
         inherit (finalAttrs) pnpmDeps;
         inherit previewBrowser resourceMonitor sourceRevision;
