@@ -24,7 +24,7 @@ in
 buildGoModule (finalAttrs: {
   pname = "nixfleet";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.28.1";
+  version = "0.29.0";
 
   src = ./.;
 
@@ -67,11 +67,11 @@ buildGoModule (finalAttrs: {
   # Each name is a wrapper that sets argv[0], so the program knows which
   # command it is wherever a consumer links or wraps it. deploy gets its
   # runtime commands. k8s-node-power and nixfleet, which serves both, also
-  # get the network audit helper that the k8s-node-reboot package ships on
-  # every node over SSH and kubectl-cnpg; kubectl comes from the operator's
-  # environment, as for kreboot. All three use deploy's search path, so they
-  # run the same ssh. kreboot, koff and kon
-  # stay with the k8s-node-reboot package until the Go port replaces it.
+  # get the network audit helper, which they ship to every node over SSH,
+  # and kubectl-cnpg; kubectl comes from the operator's environment. All
+  # three use deploy's search path, so they run the same ssh. The
+  # k8s-node-reboot package names k8s-node-power reboot, off and on kreboot,
+  # koff and kon.
   postInstall = ''
     mkdir -p $out/libexec
     mv $out/bin/nix-deploy $out/libexec/nixfleet

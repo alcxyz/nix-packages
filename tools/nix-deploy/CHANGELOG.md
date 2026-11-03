@@ -9,6 +9,21 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.29.0 (2026-11-03)
+
+- The Go node power command replaces the Bash tool (#552): the
+  `k8s-node-reboot` package's `kreboot`, `koff` and `kon` now run
+  `k8s-node-power reboot|off|on`, and the Bash script and its tests are gone.
+- Four gate behaviours kept from the Bash tool are fixed: a
+  PodDisruptionBudget blocks only Pods in its own namespace; the Longhorn
+  instance-manager, which the drain leaves, no longer counts as displaced or
+  as a workload; when the agent's stop leaves no API-server time, a
+  baseline is written so only a later heartbeat passes the return gate,
+  which now always requires one; and `on --check-only` checks the power-on
+  gates once without changing anything, instead of failing on the cordon.
+- `k8s-node-power <action> --version` (so `kreboot --version`) prints the
+  version.
+
 ## 0.28.1 (2026-11-03)
 
 - `nixfleet status`, `nixfleet runners` and `nixfleet reboot` color each

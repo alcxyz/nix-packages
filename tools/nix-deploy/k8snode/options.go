@@ -90,10 +90,12 @@ audits, and K8S_NODE_NETWORK_AUDIT_SCRIPT names the audit helper.
 `
 
 // ErrHelp asks for the help text on standard output; ErrUsage for the help
-// text on standard error and exit status 2.
+// text on standard error and exit status 2; ErrVersion for the version, so
+// that kreboot --version, which names the action first, works too.
 var (
-	ErrHelp  = errors.New("help requested")
-	ErrUsage = errors.New("no host given")
+	ErrHelp    = errors.New("help requested")
+	ErrUsage   = errors.New("no host given")
+	ErrVersion = errors.New("version requested")
 )
 
 // Options are a validated command line.
@@ -252,6 +254,8 @@ func ParseArgs(action string, args []string) (Options, error) {
 			}
 		case "-h", "--help":
 			return opts, ErrHelp
+		case "--version":
+			return opts, ErrVersion
 		default:
 			// A host cannot start with a dash: ssh would read it as an
 			// option.

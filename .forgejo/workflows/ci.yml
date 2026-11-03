@@ -123,8 +123,8 @@ jobs:
       - name: Test Nix GC maintenance
         run: nix build .#checks.x86_64-linux.nix-gc-maintenance-contract
 
-      - name: Test Kubernetes node lifecycle helpers
-        run: nix build .#checks.x86_64-linux.k8s-node-reboot-contract
+      - name: Test the Kubernetes node network audit
+        run: nix build .#checks.x86_64-linux.k8s-node-network-audit-contract
 
   package-builds:
     name: Package builds and provider verification

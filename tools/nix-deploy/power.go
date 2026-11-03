@@ -46,6 +46,9 @@ func runPower(name string, args []string) int {
 	case errors.Is(err, k8snode.ErrHelp):
 		fmt.Print(usage)
 		return 0
+	case errors.Is(err, k8snode.ErrVersion):
+		fmt.Println(name + " " + version)
+		return 0
 	case errors.Is(err, k8snode.ErrUsage):
 		fmt.Fprint(os.Stderr, usage)
 		return 2

@@ -1,7 +1,8 @@
 // Package k8snode cordons, drains, powers off or reboots, and returns a
 // Kubernetes node behind the cluster, storage, database and self-fence gates
-// of nix-config ADR-0068 and ADR-0082. It is a port of the k8s-node-reboot
-// Bash tool (kreboot, koff, kon) at behavioural parity.
+// of nix-config ADR-0068 and ADR-0082. It was ported from the Bash tool
+// behind kreboot, koff and kon, and replaced it (nix-packages#552); comments
+// that name the Bash tool say where a behaviour came from.
 package k8snode
 
 import (

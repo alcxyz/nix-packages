@@ -57,7 +57,9 @@
           claude-code = pkgs.callPackage ./pkgs/claude-code { };
           codex-app-server = pkgs.callPackage ./pkgs/codex-app-server { };
           codex-cli = pkgs.callPackage ./pkgs/codex-cli { };
-          k8s-node-reboot = pkgs.callPackage ./tools/k8s-node-reboot { };
+          k8s-node-reboot = pkgs.callPackage ./tools/k8s-node-reboot {
+            inherit (allPackages) nixfleet;
+          };
           nixfleet = pkgs.callPackage ./tools/nix-deploy { };
           # The same package under its earlier name, whose main program stays
           # deploy, so `nix run .#nix-deploy` keeps its command line.
@@ -153,8 +155,8 @@
               MAINTENANCE="$source/nix-gc-maintenance.sh" bash "$source/test"
               touch "$out"
             '';
-        checks.k8s-node-reboot-contract =
-          pkgs.runCommand "k8s-node-reboot-contract"
+        checks.k8s-node-network-audit-contract =
+          pkgs.runCommand "k8s-node-network-audit-contract"
             {
               nativeBuildInputs = [
                 pkgs.bash
@@ -170,9 +172,6 @@
             ''
               cd "$source"
               shellcheck scripts/ops/*.sh scripts/checks/*.sh
-              bash scripts/checks/test-k8s-node-reboot-workload-phases.sh
-              bash scripts/checks/test-k8s-node-reboot-fence-gates.sh
-              bash scripts/checks/test-k8s-node-reboot-network-audits.sh
               bash scripts/checks/test-k8s-node-network-audit.sh
               touch "$out"
             '';

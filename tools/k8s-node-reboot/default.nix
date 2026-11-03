@@ -1,57 +1,43 @@
 {
-  jq,
-  kubectl-cnpg,
   lib,
   makeWrapper,
-  stdenv,
+  nixfleet,
+  stdenvNoCC,
 }:
-stdenv.mkDerivation {
+# kreboot, koff and kon are the names of nixfleet's Go node power command,
+# k8s-node-power reboot, off and on (nix-packages#552). The package keeps
+# the network audit helper, at libexec/k8s-node-network-audit and as
+# passthru.networkAuditScript, which nix-config installs on each k3s node.
+stdenvNoCC.mkDerivation {
   pname = "k8s-node-reboot";
-  version = "0.8.0";
+  version = "1.0.0";
 
-  src = ./scripts/ops;
-
-  dontBuild = true;
+  dontUnpack = true;
 
   nativeBuildInputs = [ makeWrapper ];
 
   installPhase = ''
-    install -Dm755 k8s-node-reboot.sh $out/libexec/k8s-node-reboot
-    install -Dm755 k8s-node-network-audit.sh $out/libexec/k8s-node-network-audit
-    makeWrapper $out/libexec/k8s-node-reboot $out/bin/kreboot \
-      --set K8S_NODE_POWER_ACTION reboot \
-      --set K8S_NODE_NETWORK_AUDIT_SCRIPT $out/libexec/k8s-node-network-audit \
-      --prefix PATH : ${
-        lib.makeBinPath [
-          jq
-          kubectl-cnpg
-        ]
-      }
-    makeWrapper $out/libexec/k8s-node-reboot $out/bin/koff \
-      --set K8S_NODE_POWER_ACTION off \
-      --set K8S_NODE_NETWORK_AUDIT_SCRIPT $out/libexec/k8s-node-network-audit \
-      --prefix PATH : ${
-        lib.makeBinPath [
-          jq
-          kubectl-cnpg
-        ]
-      }
-    makeWrapper $out/libexec/k8s-node-reboot $out/bin/kon \
-      --set K8S_NODE_POWER_ACTION on \
-      --set K8S_NODE_NETWORK_AUDIT_SCRIPT $out/libexec/k8s-node-network-audit \
-      --prefix PATH : ${
-        lib.makeBinPath [
-          jq
-          kubectl-cnpg
-        ]
-      }
+    install -Dm755 ${./scripts/ops/k8s-node-network-audit.sh} $out/libexec/k8s-node-network-audit
+    for command in kreboot:reboot koff:off kon:on; do
+      makeWrapper ${lib.getExe' nixfleet "k8s-node-power"} "$out/bin/''${command%%:*}" \
+        --add-flags "''${command#*:}"
+    done
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    for command in kreboot koff kon; do
+      "$out/bin/$command" --help | grep -q '^Usage: k8s-node-power reboot'
+      "$out/bin/$command" --version | grep -q '^k8s-node-power '
+    done
+    test -x "$out/libexec/k8s-node-network-audit"
   '';
 
   passthru.networkAuditScript = ./scripts/ops/k8s-node-network-audit.sh;
 
-  meta = with lib; {
-    description = "Cordon, drain, reboot, and uncordon a Kubernetes node";
+  meta = {
+    description = "kreboot, koff and kon: nixfleet's guarded Kubernetes node reboot, power off and power on";
     mainProgram = "kreboot";
-    platforms = platforms.unix;
+    platforms = lib.platforms.unix;
   };
 }

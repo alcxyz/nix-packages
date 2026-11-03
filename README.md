@@ -42,7 +42,7 @@ Internal tools built from source, tracked in this repo.
 | [forgejo-deploy-key](tools/forgejo-deploy-key/README.md) | Creates a write deploy key for one Forgejo repository and stores its private half straight into a new SOPS file | all |
 | gh-app | Routes gh and Git through a GitHub App's installation token for the App's installed repositories, registers new Apps from a manifest (`gh-app register`) and runs a command with a read-only token (`gh-app read-only`) | all |
 | gh-app-gh | A `gh` that runs through gh-app, and is plain gh until the App is configured; used by t3code | all |
-| k8s-node-reboot | Guarded Kubernetes node reboot, power, and network-path lifecycle helpers | all |
+| k8s-node-reboot | `kreboot`, `koff` and `kon`: nixfleet's guarded Kubernetes node reboot, power off and power on (`k8s-node-power reboot\|off\|on`), and the node network audit helper | all |
 | nix-gc-maintenance | Guarded Nix profile retention and garbage collection | all |
 | revkit | Agent reviews of whole repositories with sandboxed reviewers of both AI clients | all |
 | zfs-auto-unlock | Automatic ZFS dataset unlocking | all |
@@ -130,11 +130,12 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   kernel modules and kernel parameters match their current and next-boot
   system are skipped (unless the node is cordoned); when that cannot be told,
   they reboot.
-- `nixfleet off|on <host>` and `k8s-node-power reboot|off|on <host>`: the Go
-  port of the `k8s-node-reboot` helpers under qualification for one node;
-  `kreboot`, `koff` and `kon` remain the supported commands until it replaces
-  them. `k8s-node-power reboot --needed <host>` skips a reboot the host does
-  not need, as above.
+- `nixfleet off|on <host>` and `k8s-node-power reboot|off|on <host>`: one
+  node's reboot, power off or power on behind every gate; `kreboot`, `koff`
+  and `kon` (package `k8s-node-reboot`) are the same commands.
+  `k8s-node-power reboot --needed <host>` skips a reboot the host does not
+  need, as above, and `on --check-only` checks a returned node's power-on
+  gates once.
 - `nixfleet status [--all | <host>...] [--json FILE]`: reads, without changing
   anything, each host's booted and current system, whether it needs a reboot,
   its Kubernetes cordon state and its Forgejo or Gitea runner units, and prints

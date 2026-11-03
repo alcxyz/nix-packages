@@ -93,6 +93,9 @@ func TestParseArgsErrors(t *testing.T) {
 	if _, err := ParseArgs("reboot", []string{"--help"}); !errors.Is(err, ErrHelp) {
 		t.Fatalf("help: %v", err)
 	}
+	if _, err := ParseArgs("off", []string{"--version"}); !errors.Is(err, ErrVersion) {
+		t.Fatalf("version: %v", err)
+	}
 }
 
 func TestParseDuration(t *testing.T) {

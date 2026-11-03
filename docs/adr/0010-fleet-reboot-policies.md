@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-16
-**Amended:** 2026-10-16 (core singletons and reboot marks; interactive hosts, this machine and the boot check), 2026-10-17 (every question before the start; only streaming, caught-up replicas take over; room before the drain; a hook around planned reboots), 2026-10-27 (replica spread before the drain)
+**Amended:** 2026-10-16 (core singletons and reboot marks; interactive hosts, this machine and the boot check), 2026-10-17 (every question before the start; only streaming, caught-up replicas take over; room before the drain; a hook around planned reboots), 2026-10-27 (replica spread before the drain), 2026-11-03 (the single-node command replaces the Bash `kreboot`, `koff` and `kon`)
 **History:** [replaced text](archive/0010-fleet-reboot-policies-history.md)
 **Applies to:** `tools/nix-deploy/` (`nixfleet reboot`)
 
@@ -34,7 +34,10 @@ policies its inventory entries give it:
   node names equal the host names): the `k8snode` reboot with every gate.
   The node options of the single-node command (`--check-only`, the
   timeouts, `--min-free-pod-slots` and the rest) apply to each node;
-  `--resume-maintenance` needs exactly one host. A host the cluster lists
+  `--resume-maintenance` needs exactly one host. The single-node command,
+  `k8s-node-power reboot|off|on` (also `nixfleet off|on`), runs the same
+  package; `kreboot`, `koff` and `kon` are its names, and the Bash tool it
+  was ported from is retired (#552). A host the cluster lists
   as a node but the inventory does not is refused, so a missing inventory
   entry cannot turn a node reboot into a plain one. That cross-check needs
   the cluster's node list, so when it cannot be read no host is rebooted.
