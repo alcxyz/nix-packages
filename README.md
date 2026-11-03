@@ -52,7 +52,7 @@ Internal tools built from source, tracked in this repo.
 Stable Claude Code, Codex CLI, and Codex app-server releases are checked every
 six hours by `.forgejo/workflows/update-ai-tools.yml`. A lightweight probe
 compares upstream releases with `dev` and any pending `update/ai-tools` PR before
-installing Nix. Unchanged candidates skip builds; new provider releases update
+installing Nix. Unchanged candidates skip Nix entirely; new provider releases update
 one combined PR so T3 validates their versions together. Failed unchanged
 candidates remain visible for diagnosis or explicit CI retry.
 
@@ -83,6 +83,40 @@ auto-merge workflow.
 Updater scripts must fail before committing invalid generated state. Empty SRI
 hashes such as `hash = "sha256-";` are rejected by both the updater scripts and
 CI; see [ADR-0003](docs/adr/0003-fail-loud-automated-package-updates.md).
+
+CI on the shared runners runs cheap checks only: Go and script tests, lint,
+hash checks and Nix evaluation of every export on all four systems, without
+building. The only realisations are fixed-output fetches: updaters fetch to
+compute or check hashes, and validation fetches the T3 Code source its
+evaluation imports, then evaluates with local builds disabled. Nothing on CI
+builds a package.
+Native builds run on the development host, where deployments reuse them: the
+nix-config local package promoter builds each new `dev` revision before moving
+`promoted`, so a broken `dev` never reaches hosts, and authors build their
+changes before pushing.
+
+## Local builds before pushing
+
+Before pushing a package change, build it on the development host from the
+repository root:
+
+```sh
+# Build the changed exports and their wrapper consumers on x86_64-linux, and
+# evaluate their other systems. Root flake or shared input changes select
+# every export.
+GITHUB_BASE_REF=dev scripts/ci/build-changed-packages.sh
+
+# When T3 Code, Claude Code, Codex CLI or the provider scripts changed: build
+# T3 Code with its providers and check the runtime version and closure.
+GITHUB_BASE_REF=dev scripts/ci/verify-t3code-providers.sh
+```
+
+Both fetch `origin/dev` and compare the branch with it. Set
+`PACKAGE_BUILD_MODE=all` to add the fixed baseline exports, or
+`PACKAGE_BUILD_SHARD_COUNT` and `PACKAGE_BUILD_SHARD_INDEX` to split a large
+selection. The cheap CI checks can also run locally, for example
+`scripts/ci/validate-package-platforms.sh`, `nix flake check --no-build
+--all-systems` and the `scripts/ci/test-*` regression tests.
 
 ### Runtime-configured deployment
 

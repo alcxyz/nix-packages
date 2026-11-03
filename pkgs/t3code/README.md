@@ -14,9 +14,14 @@ nix eval --raw .#t3code.version
 ```
 
 The updater selects only published, non-draft nightly releases, resolves the
-release tag to its commit, computes the dependency hashes, then builds and
-verifies runtime provider versions. A failure restores the previous pin. Review
-the generated pin before publication.
+release tag to its commit, fetches the Cargo and pnpm dependencies to compute
+their hashes, then evaluates T3 Code and its provider derivations. It does not
+build T3 Code, so whether the built application embeds the packaged providers
+is checked by the local build and the package promoter. A failure restores the previous
+pin. Review the generated pin before publication, and build it locally with
+`T3CODE_VERIFY_ALWAYS=true GITHUB_BASE_REF=dev scripts/ci/verify-t3code-providers.sh`
+before pushing a manual update, so the build runs even before the pin is
+committed; the local package promoter builds unattended ones.
 
 ## Preview browser
 
@@ -28,7 +33,8 @@ being built, fetches the same archive and links its libraries from the store,
 so source updates need no extra pin and a changed pin layout fails evaluation
 of `t3code`. Reading the pin is import from derivation: evaluating `t3code`
 fetches the T3 source, and evaluators that disable import from derivation
-cannot evaluate it.
+cannot evaluate it. CI fetches that fixed-output source first and then
+evaluates with local builds disabled, so evaluation builds nothing (ADR-0003).
 
 The package exposes it as `t3code.previewBrowser` and links it at
 `libexec/t3code/preview-browser/<platform>/<version>`. T3 does not look there:

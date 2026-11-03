@@ -1,4 +1,4 @@
-**History of** [ADR-0007](../0007-continuous-provider-updates.md): text replaced on 2026-10-28.
+**History of** [ADR-0007](../0007-continuous-provider-updates.md): text replaced on 2026-10-28, with later replacements at the end.
 
 # ADR-0007: Continuous grouped provider updates
 
@@ -69,3 +69,24 @@ authenticated upstream token. Since #442 provider scans run every six hours,
 and the T3 source scan workflow matches the six-hourly cadence ADR-0005
 already recorded; the merge queue stays hourly. Revisit hourly provider scans
 once `UPSTREAM_GITHUB_TOKEN` exists (#443).
+
+## Text replaced on 2026-11-03: provider builds off the shared runners
+
+The date line read:
+
+**Amended:** 2026-09-30 (provider scans every six hours until an upstream token exists)
+
+In the decision, the provider validation paragraph read:
+
+> Publish provider changes together on `update/ai-tools`. Serialize discovery and
+> publication for that branch. Reuse the existing individual updater validation
+> and ordinary PR checks, including the T3 package and provider contracts.
+> A newer release may supersede an outstanding candidate; the existing stale-head
+> watcher stops obsolete PR builds. Unchanged failed candidates remain visible
+> for diagnosis or explicit CI retry rather than endlessly regenerating them.
+
+and the last decision paragraph ended:
+
+> Provider releases do not
+> require discovering a new T3 source revision, although their PR checks still
+> build and verify the pinned T3 wrappers.

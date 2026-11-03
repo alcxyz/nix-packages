@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-09-30
-**Amended:** 2026-09-30 (provider scans every six hours until an upstream token exists)
+**Amended:** 2026-09-30 (provider scans every six hours until an upstream token exists); 2026-11-03 (provider builds moved from PR checks to the local promoter, per ADR-0003)
 **History:** [replaced text](archive/0007-continuous-provider-updates-history.md)
 **Applies to:** AI provider update and merge workflows
 
@@ -27,9 +27,10 @@ metadata, prereleases, and version regressions must fail loudly.
 
 Publish provider changes together on `update/ai-tools`. Serialize discovery and
 publication for that branch. Reuse the existing individual updater validation
-and ordinary PR checks, including the T3 package and provider contracts.
-A newer release may supersede an outstanding candidate; the existing stale-head
-watcher stops obsolete PR builds. Unchanged failed candidates remain visible
+and ordinary PR checks, including the evaluated T3 provider contract; the
+local package promoter builds the combination before hosts follow it
+(ADR-0003). A newer release may supersede an outstanding candidate. Unchanged
+failed candidates remain visible
 for diagnosis or explicit CI retry rather than endlessly regenerating them.
 
 Keep the existing non-waiting merge queue hourly, at half past the hour, so a
@@ -42,8 +43,8 @@ branch on the next scan.
 
 Keep other package scans daily. T3 has a separate six-hourly source scan under
 ADR-0005, with a lightweight probe before Nix setup. Provider releases do not
-require discovering a new T3 source revision, although their PR checks still
-build and verify the pinned T3 wrappers.
+require discovering a new T3 source revision, although the local package
+promoter still builds and verifies the pinned T3 wrappers with them.
 
 ## Alternatives
 

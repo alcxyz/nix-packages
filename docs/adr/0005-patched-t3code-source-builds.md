@@ -10,6 +10,8 @@
 **Amended:** 2026-09-30
 **Amended:** 2026-10-01
 **Amended:** 2026-10-08
+**Amended:** 2026-11-03 (the updater evaluates instead of building, per ADR-0003)
+**History:** [replaced text](archive/0005-patched-t3code-source-builds-history.md)
 **Applies to:** `pkgs/t3code/`, `pkgs/codex-cli/`, package update automation
 
 ## Context
@@ -126,9 +128,10 @@ not a successful GUI launch and must fail runtime verification.
   of encrypted connection metadata, while project data remains independent.
 - The six-hourly updater selects the latest published upstream nightly. A
   lightweight check compares its identity with `dev` and any open update PR
-  before Nix setup. A changed candidate triggers source, dependency,
-  full-build, and embedded-provider validation before opening an update PR. A
-  failed build leaves the last package pin in place.
+  before Nix setup. A changed candidate triggers source and dependency hash
+  collection and evaluation of the embedded provider versions before opening
+  an update PR; the local package promoter builds it before hosts follow it
+  (ADR-0003). A failed check leaves the last package pin in place.
 - Nightly selection applies to T3 Code only. It does not opt Codex into a
   prerelease channel. Linux retains source builds; macOS app versions follow
   the cask or upstream updater rather than the Nix lock file.
