@@ -1099,11 +1099,12 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     ]:
         reject_inventory({**SERIAL_DATA, **invalid}, "does not satisfy schemaVersion 1")
 
-    # One program under three names (#548): deploy and k8s-node-power keep
-    # their command lines, and nixfleet names a subcommand.
+    # One program under four names (#548): deploy and k8s-node-power keep
+    # their command lines, runners is nixfleet runners, and nixfleet names a
+    # subcommand.
     names = root / "names"
     names.mkdir()
-    for name in ["nixfleet", "deploy", "k8s-node-power"]:
+    for name in ["nixfleet", "deploy", "k8s-node-power", "runners"]:
         (names / name).symlink_to(deploy.resolve())
 
     def invoke(name, *args, status=0, **settings):
@@ -1147,6 +1148,12 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     _, result = invoke("k8s-node-power", "reboot", "--help")
     assert result.stdout.startswith("Usage: k8s-node-power reboot [options] <host>")
     assert "Defaults to the\n                           current context." in result.stdout and "kubernetesContext" not in result.stdout
+    _, result = invoke("k8s-node-power", "off", "--version")
+    assert result.stdout == f"k8s-node-power {version}\n", result.stdout
+    _, result = invoke("runners", "--help")
+    assert result.stdout.startswith("Usage: runners [status] [--config FILE]") and "nixfleet's runners subcommand and the runners command are the same." in result.stdout, result.stdout
+    _, result = invoke("runners", "restart", "--bogus", status=2)
+    assert result.stderr.startswith("runners: unknown option '--bogus'"), result.stderr
     # nixfleet off and on take the inventory's context and stop when it
     # cannot be read, rather than use the current context.
     calls, result = invoke("nixfleet", "off", "node", status=1, NIX_DEPLOY_CONFIG=str(root / "missing.json"))

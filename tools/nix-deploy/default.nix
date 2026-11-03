@@ -49,13 +49,13 @@ buildGoModule (finalAttrs: {
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [ acl ];
 
-  # One program answers to nixfleet, deploy and k8s-node-power, by the name it
-  # is invoked as. The black-box contract mocks deployment commands, so it
+  # One program answers to nixfleet, deploy, k8s-node-power and runners, by
+  # the name it is invoked as. The black-box contract mocks deployment commands, so it
   # runs against the unwrapped binary, under those names, before the runtime
   # PATH is added (ADR-0006).
   postCheck = ''
     names=$(mktemp -d)
-    for name in nixfleet deploy k8s-node-power; do
+    for name in nixfleet deploy k8s-node-power runners; do
       ln -s "$GOPATH/bin/nix-deploy" "$names/$name"
     done
     python3 ${./test-deploy.py} "$names/deploy"
@@ -87,6 +87,9 @@ buildGoModule (finalAttrs: {
       --set K8S_NODE_NETWORK_AUDIT_SCRIPT $out/libexec/k8s-node-network-audit \
       --prefix PATH : ${deployPath} \
       --prefix PATH : ${lib.makeBinPath [ kubectl-cnpg ]}
+    makeWrapper $out/libexec/nixfleet $out/bin/runners \
+      --argv0 runners \
+      --prefix PATH : ${deployPath}
     makeWrapper $out/libexec/nixfleet $out/bin/nixfleet \
       --argv0 nixfleet \
       --set K8S_NODE_NETWORK_AUDIT_SCRIPT $out/libexec/k8s-node-network-audit \

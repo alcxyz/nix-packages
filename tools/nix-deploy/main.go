@@ -116,7 +116,8 @@ Options:
   -h, --help   Show this help.
   --version    Print the version.
 
-Installed as deploy or k8s-node-power, this program is that command.
+Installed as deploy, k8s-node-power or runners, this program is that
+command; runners is nixfleet runners.
 `
 
 func main() {
@@ -124,7 +125,8 @@ func main() {
 }
 
 // dispatch runs the command the program was invoked as: deploy and
-// k8s-node-power keep their own command lines, and any other name is
+// k8s-node-power keep their own command lines, runners is nixfleet runners,
+// and any other name is
 // nixfleet, whose first argument names the subcommand.
 func dispatch(name string, args []string) int {
 	switch name {
@@ -132,6 +134,8 @@ func dispatch(name string, args []string) int {
 		return runDeploy(args)
 	case "k8s-node-power":
 		return runPower(name, args)
+	case "runners":
+		return runRunners(name, args)
 	}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, nixfleetUsage)
@@ -153,7 +157,7 @@ func dispatch(name string, args []string) int {
 	case "status":
 		return runStatus(args[1:])
 	case "runners":
-		return runRunners(args[1:])
+		return runRunners("nixfleet runners", args[1:])
 	case "triage":
 		return runTriage(args[1:])
 	}

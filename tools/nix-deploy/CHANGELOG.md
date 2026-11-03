@@ -23,6 +23,8 @@ with every change to the tool and add an entry here:
   gates once without changing anything, instead of failing on the cordon.
 - `k8s-node-power <action> --version` (so `kreboot --version`) prints the
   version.
+- A `runners` command is `nixfleet runners`: `runners`, `runners restart
+  --all`.
 
 ## 0.28.1 (2026-11-03)
 

@@ -16,6 +16,7 @@ const runnersUsage = `Usage: nixfleet runners [status] [--config FILE] [--all | 
        nixfleet runners restart [--config FILE] [--all | <host>...] [--dry-run] [--yes]
 
 Reads and restarts the CI runner units of the selected hosts (ADR-0017).
+nixfleet's runners subcommand and the runners command are the same.
 With no host it works on this machine; --all selects the hosts deploy --all
 would; hosts may be named by alias. Hosts are read as nixfleet status reads
 them. Runner hosts report through nixfleet-runner-status, which nix-config's
@@ -129,26 +130,28 @@ func parseRunnersArgs(args []string) (runnersOptions, error) {
 	return opts, nil
 }
 
-// runRunners is nixfleet runners.
-func runRunners(args []string) int {
+// runRunners is nixfleet runners, or the runners command; name is the one
+// the operator typed.
+func runRunners(name string, args []string) int {
+	usage := strings.ReplaceAll(runnersUsage, "nixfleet runners", name)
 	opts, err := parseRunnersArgs(args)
 	if errors.Is(err, errStatusHelp) {
-		fmt.Print(runnersUsage)
+		fmt.Print(usage)
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nixfleet runners: %v\n", err)
-		fmt.Fprint(os.Stderr, runnersUsage)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
 	s, code, err := openStatusCheck(opts.configFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nixfleet runners: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
 		return code
 	}
 	hosts, err := selectHosts(s.inv, s.self, statusOptions{all: opts.all, hosts: opts.hosts})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nixfleet runners: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
 		return 2
 	}
 	states := s.readHosts(hosts)
@@ -156,7 +159,7 @@ func runRunners(args []string) int {
 		printRunners(os.Stdout, s.ui, states)
 		return 0
 	}
-	restarter := &fleetRestart{status: s, out: os.Stdout, poll: restartPollInterval, validateSudo: validateSudo}
+	restarter := &fleetRestart{name: name, status: s, out: os.Stdout, poll: restartPollInterval, validateSudo: validateSudo}
 	if isTerminal(os.Stdin) {
 		restarter.ask = askLine(os.Stdin, os.Stdout)
 	}
@@ -214,6 +217,8 @@ func printRunners(w io.Writer, u *ui, states []hostStatus) {
 
 // fleetRestart is one nixfleet runners restart run.
 type fleetRestart struct {
+	// name is the command the operator typed: nixfleet runners or runners.
+	name   string
 	status *statusCheck
 	out    io.Writer
 	// ask puts a question to the operator; nil without a terminal.
@@ -324,7 +329,7 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 	}
 	if !opts.yes {
 		if f.ask == nil {
-			fmt.Fprintln(os.Stderr, "nixfleet runners restart: no terminal to confirm on; pass --yes")
+			fmt.Fprintf(os.Stderr, "%s restart: no terminal to confirm on; pass --yes\n", f.name)
 			return 2
 		}
 		hosts := "1 host"
