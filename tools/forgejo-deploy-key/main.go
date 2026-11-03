@@ -21,7 +21,7 @@ import (
 	"sopsstore"
 )
 
-const usage = `usage: forgejo-deploy-key --repo OWNER/NAME --forgejo URL --sops-file PATH --sops-key NAME [options]
+const usage = `usage: forgejo-deploy-key --repo OWNER/NAME --forgejo URL --sops-file PATH --sops-key NAME [--k8s-secret NAME --namespace NS] [options]
 
 Creates an ed25519 key in memory, waits until it is a deploy key with write
 access on the repository, and then writes its private half to a new SOPS
@@ -32,7 +32,13 @@ relative to it.
   --repo OWNER/NAME   the Forgejo repository the key may push to
   --forgejo URL       Forgejo's web address, for the settings link
   --sops-file PATH    the new SOPS file (.yaml or .yml); it must not exist
-  --sops-key NAME     the key's name in the file (letters, digits, _)
+  --sops-key NAME     the key's name in the file (letters, digits, _; with
+                      --k8s-secret, a Secret data key: letters, digits,
+                      -, _ and .)
+  --k8s-secret NAME   write a Kubernetes Secret manifest (type Opaque) of
+                      this name, with the key under stringData.<--sops-key>;
+                      needs --namespace
+  --namespace NS      the Secret's namespace, with --k8s-secret
   --title TITLE       the deploy key's title and comment (default: the
                       SOPS file's name without its extension)
   --ssh-host HOST     Forgejo's SSH host (default: the host of --forgejo)
@@ -48,6 +54,9 @@ The operator adds the printed public key in the repository's settings
 with only that key and a known host key, that Forgejo accepts it as a
 deploy key and grants it write access (git-receive-pack, without pushing
 anything), and only then encrypts the private key with sops encrypt.
+With --k8s-secret, sops must encrypt only stringData (an encrypted_regex
+such as ^(data|stringData)$): the command refuses a rule that leaves the
+key in plaintext or encrypts the Secret's metadata.
 `
 
 // Injectable for tests.
@@ -65,6 +74,8 @@ type options struct {
 	forgejo    string
 	sopsFile   string
 	sopsKey    string
+	secret     string
+	namespace  string
 	title      string
 	sshHost    string
 	sshPort    int
@@ -81,6 +92,8 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&opts.forgejo, "forgejo", "", "")
 	fs.StringVar(&opts.sopsFile, "sops-file", "", "")
 	fs.StringVar(&opts.sopsKey, "sops-key", "", "")
+	fs.StringVar(&opts.secret, "k8s-secret", "", "")
+	fs.StringVar(&opts.namespace, "namespace", "", "")
 	fs.StringVar(&opts.title, "title", "", "")
 	fs.StringVar(&opts.sshHost, "ssh-host", "", "")
 	fs.IntVar(&opts.sshPort, "ssh-port", 0, "")
@@ -107,7 +120,20 @@ func parseArgs(args []string) (options, error) {
 	if opts.sopsFile == "" || opts.sopsKey == "" {
 		return opts, errors.New("--sops-file and --sops-key are required")
 	}
-	if !sopsstore.KeyPattern.MatchString(opts.sopsKey) {
+	if (opts.secret == "") != (opts.namespace == "") {
+		return opts, errors.New("--k8s-secret and --namespace must be given together")
+	}
+	if opts.secret != "" {
+		if err := sopsstore.ValidSecretName(opts.secret); err != nil {
+			return opts, fmt.Errorf("--k8s-secret %v", err)
+		}
+		if err := sopsstore.ValidNamespace(opts.namespace); err != nil {
+			return opts, fmt.Errorf("--namespace %v", err)
+		}
+		if err := sopsstore.ValidSecretKey(opts.sopsKey); err != nil {
+			return opts, fmt.Errorf("--sops-key %v", err)
+		}
+	} else if !sopsstore.KeyPattern.MatchString(opts.sopsKey) {
 		return opts, errors.New("--sops-key may only contain letters, digits and underscores")
 	}
 	if err := sopsstore.ValidPath(opts.sopsFile); err != nil {
@@ -170,7 +196,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 // provision checks everything it can before the key exists, then creates
 // it, waits for it to be registered with write access, and stores it.
 func provision(ctx context.Context, opts options, stdout io.Writer) error {
-	store := sopsstore.File{Path: opts.sopsFile, Key: opts.sopsKey}
+	store := sopsstore.File{
+		Path:   opts.sopsFile,
+		Key:    opts.sopsKey,
+		Secret: sopsstore.Secret{Name: opts.secret, Namespace: opts.namespace},
+	}
 	if err := store.Check(ctx); err != nil {
 		return err
 	}

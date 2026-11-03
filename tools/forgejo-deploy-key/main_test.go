@@ -98,7 +98,10 @@ cat > "$FAKE_STATE/agent-key"
 
 // fakeSops encrypts like gh-app's fake: it replaces the key's value with an
 // ENC[...] value. With $state/sops-fails-real it fails on any input but the
-// preflight's synthetic key.
+// preflight's synthetic key. A Secret manifest is encrypted as an
+// encrypted_regex of ^(data|stringData)$ would: only the block under
+// stringData becomes an ENC[...] value. With $state/sops-regex-other the
+// rule matches nothing in it, and sops leaves the whole manifest readable.
 const fakeSops = `#!/bin/sh
 state=$FAKE_STATE
 printf '%s\n' "$@" >> "$state/sops-args"
@@ -106,6 +109,15 @@ cat > "$state/sops-stdin"
 if [ -f "$state/sops-fails" ]; then exit 1; fi
 if [ -f "$state/sops-plaintext" ]; then cat "$state/sops-stdin"; exit 0; fi
 if [ -f "$state/sops-fails-real" ] && ! grep -q PREFLIGHT "$state/sops-stdin"; then exit 1; fi
+if head -n 1 "$state/sops-stdin" | grep -q '^apiVersion: '; then
+	if [ -f "$state/sops-regex-other" ]; then
+		sed 's/"//g' "$state/sops-stdin"
+	else
+		awk '/^        / { next } /^    .*: \|$/ { sub(/: \|$/, ""); print $0 ": ENC[AES256_GCM,data:Zm9vYmFy,iv:aXY=,tag:dGFn,type:str]"; next } { print }' "$state/sops-stdin" | sed 's/"//g'
+	fi
+	printf 'sops:\n    encrypted_regex: ^(data|stringData)$\n    version: 3.9.0\n'
+	exit 0
+fi
 key=$(head -n 1 "$state/sops-stdin" | sed 's/: |$//')
 printf '%s: ENC[AES256_GCM,data:Zm9vYmFy,iv:aXY=,tag:dGFn,type:str]\nsops:\n    version: 3.9.0\n' "$key"
 `
@@ -643,5 +655,91 @@ func TestDeployKeyOfAnotherRepositoryKeepsWaiting(t *testing.T) {
 	want := "waiting:      Forgejo refused git-receive-pack: Forgejo: Public (Deploy) Key: 7:publisher is not authorized to write owner/site.\n"
 	if !strings.Contains(stdout, want) || strings.Contains(stdout, "has no write access") {
 		t.Errorf("stdout lacks %q or calls it read-only:\n%s", want, stdout)
+	}
+}
+
+func secretArgs(extra ...string) []string {
+	return append([]string{
+		"--repo", "owner/site",
+		"--forgejo", "https://forgejo.example.org",
+		"--sops-file", "keys/site-deploy-key.sops.yaml",
+		"--sops-key", "deploy-key",
+		"--k8s-secret", "site-deploy-key",
+		"--namespace", "apps",
+	}, extra...)
+}
+
+func TestProvisionStoresSecret(t *testing.T) {
+	f := setup(t, "denied\nwrite\n")
+	code, stdout, stderr := runTool(t, secretArgs())
+	if code != 0 {
+		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	private := f.read("agent-key")
+	assertKeyHidden(t, f, private, stdout, stderr)
+
+	document := f.read("sops-stdin")
+	head := "apiVersion: v1\nkind: Secret\nmetadata:\n    name: \"site-deploy-key\"\n    namespace: \"apps\"\n" +
+		"type: Opaque\nstringData:\n    \"deploy-key\": |\n"
+	if !strings.HasPrefix(document, head) {
+		t.Errorf("sops document starts %q", strings.SplitN(document, "|", 2)[0])
+	}
+	for _, line := range strings.Split(strings.TrimSpace(private), "\n") {
+		if !strings.Contains(document, "        "+line+"\n") {
+			t.Fatal("sops did not get the agent's key under stringData")
+		}
+	}
+	written, err := os.ReadFile(filepath.Join(f.work, "keys", "site-deploy-key.sops.yaml"))
+	want := "apiVersion: v1\nkind: Secret\nmetadata:\n    name: site-deploy-key\n    namespace: apps\n" +
+		"type: Opaque\nstringData:\n    deploy-key: ENC[AES256_GCM,"
+	if err != nil || !strings.HasPrefix(string(written), want) {
+		t.Errorf("target = %q, %v", written, err)
+	}
+	if !strings.Contains(stdout, "key:          stored in keys/site-deploy-key.sops.yaml (Secret apps/site-deploy-key, stringData key deploy-key)") {
+		t.Errorf("stdout:\n%s", stdout)
+	}
+}
+
+// A creation rule whose encrypted_regex leaves stringData readable is
+// refused before the key exists.
+func TestRefusesSecretLeftUnencrypted(t *testing.T) {
+	f := setup(t, "denied\nwrite\n")
+	os.WriteFile(filepath.Join(f.state, "sops-regex-other"), nil, 0o644)
+	code, stdout, stderr := runTool(t, secretArgs())
+	want := "sops would not encrypt deploy-key in keys/site-deploy-key.sops.yaml; check .sops.yaml creation rules (output contains the synthetic key)"
+	if code != 1 || !strings.Contains(stderr, want) || stdout != "" {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if f.exists("agent-key") {
+		t.Error("a key was created")
+	}
+	if _, err := os.Stat(filepath.Join(f.work, "keys", "site-deploy-key.sops.yaml")); err == nil {
+		t.Error("the target was written")
+	}
+}
+
+func TestParseSecretArgs(t *testing.T) {
+	opts, err := parseArgs(secretArgs())
+	if err != nil || opts.secret != "site-deploy-key" || opts.namespace != "apps" || opts.sopsKey != "deploy-key" {
+		t.Fatalf("opts = %+v, %v", opts, err)
+	}
+	if _, err := parseArgs(secretArgs("--sops-key", "a.b_c-D")); err != nil {
+		t.Errorf("data key refused: %v", err)
+	}
+	for _, args := range [][]string{
+		baseArgs("--k8s-secret", "site"),
+		baseArgs("--namespace", "apps"),
+		secretArgs("--k8s-secret", "Site"),
+		secretArgs("--k8s-secret", "-site"),
+		secretArgs("--k8s-secret", "site_key"),
+		secretArgs("--namespace", "a.b"),
+		secretArgs("--namespace", strings.Repeat("a", 64)),
+		secretArgs("--sops-key", "a/b"),
+		secretArgs("--sops-key", ".."),
+		secretArgs("--sops-key", "a: b"),
+	} {
+		if _, err := parseArgs(args); err == nil {
+			t.Errorf("accepted %q", args)
+		}
 	}
 }

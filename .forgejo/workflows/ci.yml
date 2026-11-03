@@ -52,7 +52,7 @@ jobs:
             echo "::group::go test ${dir}"
             (cd "$dir" && go test -v ./...)
             echo "::endgroup::"
-          done < <(find tools -maxdepth 2 -name go.mod | sort)
+          done < <(find tools lib -maxdepth 2 -name go.mod | sort)
 
       - name: Test the nix-deploy contract
         run: |

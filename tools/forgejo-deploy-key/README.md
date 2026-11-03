@@ -14,6 +14,36 @@ Run it from the repository holding `.sops.yaml`, with a path relative to it.
 `--help` lists the other options (`--title`, `--ssh-host`, `--ssh-port`,
 `--ssh-user`, `--known-hosts`, `--wait`).
 
+### As a Kubernetes Secret
+
+With `--k8s-secret NAME --namespace NS`, the file is a Secret manifest for a
+GitOps repository, and the key goes under `stringData.<--sops-key>`, which
+here takes a Secret data key (letters, digits, `-`, `_` and `.`):
+
+```sh
+forgejo-deploy-key --repo OWNER/NAME --forgejo https://forgejo.example.org \
+  --sops-file k8s/apps/site/deploy-key.sops.yaml --sops-key deploy-key \
+  --k8s-secret site-deploy-key --namespace apps
+```
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+    name: site-deploy-key
+    namespace: apps
+type: Opaque
+stringData:
+    deploy-key: ENC[AES256_GCM,...]
+sops: ...
+```
+
+The name must be a DNS-1123 subdomain and the namespace a DNS-1123 label.
+The creation rule for the path must encrypt only `stringData` and `data`
+(`encrypted_regex: "^(data|stringData)$"`): the command refuses a rule that
+leaves the key readable, or one that encrypts `apiVersion`, `kind`, `type`
+or the metadata, which Kubernetes tools need to read.
+
 ## What it does
 
 1. Refuses before creating anything if the SOPS file exists, its directory is
@@ -48,7 +78,8 @@ Run it from the repository holding `.sops.yaml`, with a path relative to it.
    deploy key of another repository.
 7. Writes the private key to the SOPS file with `sops encrypt`, checking that
    the output holds it encrypted and never in plaintext, and prints the file
-   written.
+   written. For a Secret, it also checks that the only encrypted value is
+   the key under `stringData` and that the rest of the manifest is readable.
 
 The private key is passed only on standard input, to `ssh-add` and `sops`;
 it never appears in output, arguments or an unencrypted file. `sops
