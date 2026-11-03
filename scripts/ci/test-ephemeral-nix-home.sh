@@ -67,21 +67,25 @@ run_case opt-in-only 1 none false
 run_case docker-marker-opted-in 1 docker true
 run_case podman-marker-opted-in 1 podman true
 
-# The literal source expression is the contract under test.
+# The literal source expression is the contract under test: the provider
+# updaters realise their sources through fod-hash.sh, which clears the dummy
+# home with this opt-in cleanup.
 # shellcheck disable=SC2016
 expected_source='source "$(dirname "${BASH_SOURCE[0]}")/../ci/ephemeral-nix-home.sh"'
 for updater in update-codex-cli.sh update-codex-app-server.sh update-claude-code.sh; do
   grep -Fq "$expected_source" \
     "$repo_root/scripts/update-packages/$updater"
-  grep -Fq 'clean_ephemeral_nix_home' "$repo_root/scripts/update-packages/$updater"
+  grep -Fq 'realise_fetch_only' "$repo_root/scripts/update-packages/$updater"
 done
+grep -Fq 'clean_ephemeral_nix_home' "$repo_root/scripts/update-packages/fod-hash.sh"
+provider_step=$(grep -A6 -F 'name: Update and evaluate providers together' \
+  "$repo_root/.forgejo/workflows/update-ai-tools.yml")
+grep -Fq 'NIX_CI_EPHEMERAL_CONTAINER: "1"' <<<"$provider_step"
 grep -Fq 'NIX_CI_EPHEMERAL_CONTAINER: "1"' \
   "$repo_root/.forgejo/workflows/update-packages.yml"
 grep -Fq 'source scripts/ci/ephemeral-nix-home.sh' \
   "$repo_root/.forgejo/workflows/update-packages.yml"
 grep -Fq 'clean_ephemeral_nix_home' "$repo_root/.forgejo/workflows/update-packages.yml"
-grep -A3 -F 'name: Verify T3 Code provider wiring' "$repo_root/.forgejo/workflows/ci.yml" |
-  grep -Fq 'NIX_CI_EPHEMERAL_CONTAINER: "1"'
 
 if grep -Eq 'rm[[:space:]]+-[^[:space:]]*r[^[:space:]]*f[^[:space:]]*[[:space:]]+/homeless-shelter' \
   "$repo_root/.forgejo/workflows/update-packages.yml" \

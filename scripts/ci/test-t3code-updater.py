@@ -169,6 +169,7 @@ class UpdaterTests(unittest.TestCase):
                 (root / folder).mkdir(parents=True, exist_ok=True)
             for path in (
                 "scripts/update-packages/update-t3code.sh",
+                "scripts/update-packages/fod-hash.sh",
                 "scripts/ci/t3code-nix-home.sh",
                 "scripts/ci/ephemeral-nix-home.sh",
             ):
@@ -200,15 +201,38 @@ with pathlib.Path("nix-calls").open("a") as calls:
     calls.write(" ".join(args) + "\\n")
 if args[:2] == ["store", "prefetch-file"]:
     print(json.dumps({"hash": "''' + GOT_HASH + '''"}))
+elif args[:2] == ["build", "--dry-run"]:
+    # Mirror the real structure: cargoDeps is an ordinary derivation that
+    # links its fixed-output vendorStaging dependency.
+    target = args[-1]
+    if target.endswith(".cargoDeps"):
+        drvs = ["mock-vendor-staging.drv", "mock-vendor.drv"]
+    elif target.endswith(".vendorStaging"):
+        drvs = ["mock-vendor-staging.drv"]
+    else:
+        drvs = ["mock-deps.drv"]
+    if os.environ.get("FAILURE") == "compile":
+        drvs.append("mock-compiled.drv")
+    print("these %d derivations will be built:" % len(drvs), file=sys.stderr)
+    for drv in drvs:
+        print("  /nix/store/" + drv, file=sys.stderr)
+elif args[:2] == ["derivation", "show"]:
+    fixed = {"hash": "sha256-mock", "method": "nar"}
+    derivations = {}
+    for path in args[2:]:
+        name = path.rsplit("/", 1)[-1]
+        compiled = name in ("mock-vendor.drv", "mock-compiled.drv")
+        derivations[name] = {"outputs": {"out": {"path": "mock"} if compiled else fixed}}
+    print(json.dumps({"derivations": derivations, "version": 4}))
 else:
-    if os.environ.get("FAILURE") == "hash" and "resourceMonitor" in args[2]:
+    if os.environ.get("FAILURE") == "hash" and "resourceMonitor" in " ".join(args):
         print("hash unavailable", file=sys.stderr)
         sys.exit(1)
     print("error: hash mismatch\\n  got: ''' + GOT_HASH + '''", file=sys.stderr)
     sys.exit(1)
 ''')
             nix.chmod(0o755)
-            verify = root / "scripts/ci/verify-t3code-providers.sh"
+            verify = root / "scripts/ci/check-t3code-provider-versions.sh"
             verify.write_text('''#!/usr/bin/env bash
 touch verified
 [[ ${FAILURE:-} != verify ]]
@@ -238,10 +262,13 @@ touch verified
                     self.assertFalse((root / "nix-calls").exists())
                     return
                 calls = (root / "nix-calls").read_text()
-                if failure == "hash":
-                    self.assertIn(".#t3code.resourceMonitor", calls)
+                if failure in ("hash", "compile"):
+                    self.assertIn(".#t3code.resourceMonitor.cargoDeps.vendorStaging", calls)
                     self.assertNotIn("pnpmDeps", calls)
                     self.assertFalse((root / "verified").exists())
+                if failure == "compile":
+                    self.assertIn("not fixed-output", result.stderr)
+                    self.assertNotIn("build -L", calls)
                 elif failure == "verify":
                     self.assertTrue((root / "verified").exists())
                 return
@@ -254,6 +281,7 @@ touch verified
             calls = (root / "nix-calls").read_text()
             self.assertIn("pingdotgg/t3code/archive/" + candidate["revision"], calls)
             self.assertNotIn("alcxyz", calls)
+            self.assertNotIn("build -L --no-link .#t3code\n", calls)
             self.assertLess(calls.index(".#t3code.resourceMonitor"), calls.index(".#t3code.pnpmDeps"))
             self.assertEqual(output.read_text().splitlines(),
                              ["updated=true", "version=" + candidate["version"]])
@@ -267,7 +295,10 @@ touch verified
     def test_missing_dependency_hash_restores_previous_pin(self):
         self.run_updater(failure="hash")
 
-    def test_runtime_validation_failure_restores_previous_pin(self):
+    def test_compiling_dependency_is_refused(self):
+        self.run_updater(failure="compile")
+
+    def test_provider_evaluation_failure_restores_previous_pin(self):
         self.run_updater(failure="verify")
 
     def test_discovery_failure_leaves_pin_untouched(self):

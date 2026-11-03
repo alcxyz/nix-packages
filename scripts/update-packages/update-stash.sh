@@ -4,8 +4,11 @@
 # pkgs/stash/version.json.
 # Sets GITHUB_OUTPUT: updated, version.
 set -euo pipefail
+# shellcheck source=scripts/update-packages/fod-hash.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/fod-hash.sh"
 
 VERSION_FILE="pkgs/stash/version.json"
+FAKE_HASH=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 
 current_version=$(python3 -c 'import json; print(json.load(open("'"$VERSION_FILE"'"))["version"])')
 echo "Current: $current_version"
@@ -35,55 +38,57 @@ src_hash=$(nix-prefetch-url --unpack \
   "https://github.com/stashapp/stash/archive/refs/tags/v${latest_version}.tar.gz")
 src_hash=$(nix hash convert --hash-algo sha256 --to sri "$src_hash")
 
-python3 - "$VERSION_FILE" "$latest_version" "$git_hash" "$src_hash" <<'PYEOF'
+# The package reads pnpmHash with nixpkgs' version 2 pnpm fetcher and
+# pnpmHashV3 with the top-level version 3 fetcher; refresh the field the pinned
+# nixpkgs actually uses, found by matching the current fixed-output hash.
+current_pnpm_hash=$(nix eval --raw .#stash.frontend.pnpmDeps.outputHash)
+pnpm_field=$(python3 - "$VERSION_FILE" "$current_pnpm_hash" <<'PYEOF'
 import json
 import sys
 
-path, version, git_hash, src_hash = sys.argv[1:]
+path, current = sys.argv[1:]
+data = json.load(open(path))
+fields = [name for name in ("pnpmHash", "pnpmHashV3") if data.get(name) == current]
+if len(fields) != 1:
+    sys.exit("cannot tell which pnpm hash field the package uses")
+print(fields[0])
+PYEOF
+)
+
+python3 - "$VERSION_FILE" "$latest_version" "$git_hash" "$src_hash" "$FAKE_HASH" "$pnpm_field" <<'PYEOF'
+import json
+import sys
+
+path, version, git_hash, src_hash, fake_hash, pnpm_field = sys.argv[1:]
 data = json.load(open(path))
 data.update({
     "version": version,
     "gitHash": git_hash,
     "srcHash": src_hash,
-    "pnpmHash": "",
-    "vendorHash": "",
+    pnpm_field: fake_hash,
+    "vendorHash": fake_hash,
 })
 open(path, "w").write(json.dumps(data, indent=2) + "\n")
 PYEOF
 
-collect_hash() {
-  local needle="$1"
-  local log
-  log=$(mktemp)
-  if nix build .#stash --no-link --keep-going 2>"$log"; then
-    cat "$log" >&2
-    rm -f "$log"
-    echo "Expected nix build to fail while collecting ${needle}" >&2
-    exit 1
-  fi
-  local hash
-  hash=$(grep -E 'got:[[:space:]]+sha256-' "$log" | tail -n1 | sed -E 's/.*got:[[:space:]]+(sha256-[^[:space:]]+).*/\1/')
-  cat "$log" >&2
-  rm -f "$log"
-  if [[ -z "$hash" ]]; then
-    echo "Unable to collect ${needle}" >&2
-    exit 1
-  fi
-  printf '%s\n' "$hash"
-}
-
-pnpm_hash=$(collect_hash pnpmHash)
-python3 - "$VERSION_FILE" "$pnpm_hash" <<'PYEOF'
+# Only the fixed-output dependency fetches run here. The Go module fetch does
+# not depend on the compiled UI (overrideModAttrs in the package), so neither
+# collection compiles anything; the native build runs locally (ADR-0003).
+# Fetch the source first, so a wrong source hash fails here instead of being
+# reported by the dependency fetches below.
+realise_fetch_only .#stash.src "$src_hash"
+pnpm_hash=$(collect_fod_hash .#stash.frontend.pnpmDeps "$pnpm_field")
+python3 - "$VERSION_FILE" "$pnpm_hash" "$pnpm_field" <<'PYEOF'
 import json
 import sys
 
-path, pnpm_hash = sys.argv[1:]
+path, pnpm_hash, pnpm_field = sys.argv[1:]
 data = json.load(open(path))
-data["pnpmHash"] = pnpm_hash
+data[pnpm_field] = pnpm_hash
 open(path, "w").write(json.dumps(data, indent=2) + "\n")
 PYEOF
 
-vendor_hash=$(collect_hash vendorHash)
+vendor_hash=$(collect_fod_hash .#stash.goModules vendorHash)
 python3 - "$VERSION_FILE" "$vendor_hash" <<'PYEOF'
 import json
 import sys
@@ -94,7 +99,7 @@ data["vendorHash"] = vendor_hash
 open(path, "w").write(json.dumps(data, indent=2) + "\n")
 PYEOF
 
-nix build .#stash --no-link
+nix eval --raw .#stash.drvPath >/dev/null
 
 echo "updated=true" >> "$GITHUB_OUTPUT"
 echo "version=$latest_version" >> "$GITHUB_OUTPUT"

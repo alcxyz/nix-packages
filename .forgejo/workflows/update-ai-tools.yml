@@ -71,7 +71,7 @@ jobs:
             # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
             sandbox = false
 
-      - name: Update and build providers together
+      - name: Update and evaluate providers together
         if: steps.probe.outputs.should_run == 'true'
         id: update
         env:

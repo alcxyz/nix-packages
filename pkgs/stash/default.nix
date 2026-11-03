@@ -131,7 +131,10 @@ buildGoModule (
 
     # Upstream ships a stale vendor tree. Remove it only in buildGoModule's
     # dependency fetcher; the final build needs the freshly generated tree.
+    # The fetcher skips the UI copy so it stays a fetch that never needs the
+    # compiled frontend, which keeps the updater's hash collection cheap.
     overrideModAttrs = _: {
+      postPatch = "";
       preBuild = ''
         rm -rf vendor
       '';

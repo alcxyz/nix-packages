@@ -4,8 +4,10 @@
 # computes Nix SRI hashes, and patches pkgs/claude-code/default.nix.
 # Sets GITHUB_OUTPUT: updated, version.
 set -euo pipefail
-# shellcheck source=scripts/ci/ephemeral-nix-home.sh
+# shellcheck source=scripts/ci/ephemeral-nix-home.sh disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../ci/ephemeral-nix-home.sh"
+# shellcheck source=scripts/update-packages/fod-hash.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/fod-hash.sh"
 
 PKG_DIR="pkgs/claude-code"
 PKG_FILE="$PKG_DIR/default.nix"
@@ -67,7 +69,7 @@ echo "Regenerated package-lock.json"
 
 # ── compute npmDepsHash ───────────────────────────────────────────────────────
 echo "Computing npm deps hash..."
-npm_deps_hash=$(nix shell github:NixOS/nixpkgs/nixos-25.05#prefetch-npm-deps -c prefetch-npm-deps "$PKG_DIR/package-lock.json" 2>/dev/null)
+npm_deps_hash=$(nix shell --option max-jobs 0 github:NixOS/nixpkgs/nixos-25.05#prefetch-npm-deps -c prefetch-npm-deps "$PKG_DIR/package-lock.json" 2>/dev/null)
 echo "npm deps hash: $npm_deps_hash"
 
 # ── patch default.nix ────────────────────────────────────────────────────────
@@ -101,19 +103,15 @@ open(path, 'w').write(content)
 print(f"Patched {path} → {version}")
 PYEOF
 
-echo "Validating claude-code derivation build..."
-clean_ephemeral_nix_home
-out_path=$(nix build .#claude-code --no-link --print-out-paths)
-
-echo "Validating claude-code runtime..."
-tmp_home=$(mktemp -d)
-trap 'rm -rf "$tmp" "$tmp_home"' EXIT
-HOME="$tmp_home" \
-  XDG_CONFIG_HOME="$tmp_home/.config" \
-  XDG_CACHE_HOME="$tmp_home/.cache" \
-  XDG_DATA_HOME="$tmp_home/.local/share" \
-  "$out_path/bin/claude" --version
-rm -rf "$tmp_home"
+# Fetch only the pinned source so a wrong or stale hash fails here, before the
+# update is committed. The native build and the runtime check run locally
+# before hosts follow the revision; the shared CI runners never compile
+# (ADR-0003).
+echo "Fetching the claude-code source to check its hash..."
+realise_fetch_only .#claude-code.src "$src_hash"
+realise_fetch_only .#claude-code.npmDeps "$npm_deps_hash"
+# The whole package must still evaluate, not only its source.
+nix eval --raw .#claude-code.drvPath >/dev/null
 
 echo "updated=true"                >> "$GITHUB_OUTPUT"
 echo "version=$latest_version"     >> "$GITHUB_OUTPUT"

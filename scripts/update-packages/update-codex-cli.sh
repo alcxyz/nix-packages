@@ -4,8 +4,10 @@
 # computes Nix SRI hashes, and patches pkgs/codex-cli/default.nix.
 # Sets GITHUB_OUTPUT: updated, version.
 set -euo pipefail
-# shellcheck source=scripts/ci/ephemeral-nix-home.sh
+# shellcheck source=scripts/ci/ephemeral-nix-home.sh disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../ci/ephemeral-nix-home.sh"
+# shellcheck source=scripts/update-packages/fod-hash.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/fod-hash.sh"
 
 PKG_DIR="pkgs/codex-cli"
 PKG_FILE="$PKG_DIR/default.nix"
@@ -86,7 +88,7 @@ echo "Regenerated package-lock.json"
 
 # ── compute npmDepsHash ───────────────────────────────────────────────────────
 echo "Computing npm deps hash..."
-npm_deps_hash=$(nix shell github:NixOS/nixpkgs/nixos-25.05#prefetch-npm-deps -c prefetch-npm-deps "$PKG_DIR/package-lock.json" 2>/dev/null)
+npm_deps_hash=$(nix shell --option max-jobs 0 github:NixOS/nixpkgs/nixos-25.05#prefetch-npm-deps -c prefetch-npm-deps "$PKG_DIR/package-lock.json" 2>/dev/null)
 echo "npm deps hash: $npm_deps_hash"
 
 # ── patch default.nix ────────────────────────────────────────────────────────
@@ -120,9 +122,15 @@ open(path, 'w').write(content)
 print(f"Patched {path} → {version}")
 PYEOF
 
-echo "Validating codex-cli derivation build..."
-clean_ephemeral_nix_home
-nix build .#codex-cli --no-link
+# Fetch only the pinned source so a wrong or stale hash fails here, before the
+# update is committed. The native build and the runtime check run locally
+# before hosts follow the revision; the shared CI runners never compile
+# (ADR-0003).
+echo "Fetching the codex-cli source to check its hash..."
+realise_fetch_only .#codex-cli.src "$src_hash"
+realise_fetch_only .#codex-cli.npmDeps "$npm_deps_hash"
+# The whole package must still evaluate, not only its source.
+nix eval --raw .#codex-cli.drvPath >/dev/null
 
 echo "updated=true"                >> "$GITHUB_OUTPUT"
 echo "version=$latest_version"     >> "$GITHUB_OUTPUT"

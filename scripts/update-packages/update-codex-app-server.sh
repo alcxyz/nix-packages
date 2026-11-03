@@ -4,8 +4,10 @@
 # and patches pkgs/codex-app-server/default.nix.
 # Sets GITHUB_OUTPUT: updated, version.
 set -euo pipefail
-# shellcheck source=scripts/ci/ephemeral-nix-home.sh
+# shellcheck source=scripts/ci/ephemeral-nix-home.sh disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../ci/ephemeral-nix-home.sh"
+# shellcheck source=scripts/update-packages/fod-hash.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/fod-hash.sh"
 
 PKG_FILE="pkgs/codex-app-server/default.nix"
 
@@ -117,9 +119,23 @@ open(path, "w").write(content)
 print(f"Patched {path} -> {os.environ['NEW_VERSION']}")
 PYEOF
 
-echo "Validating codex-app-server derivation build..."
-clean_ephemeral_nix_home
-nix build .#codex-app-server --no-link
+# Fetch only the pinned source so a wrong or stale hash fails here, before the
+# update is committed. The native build and the runtime check run locally
+# before hosts follow the revision; the shared CI runners never compile
+# (ADR-0003).
+echo "Fetching the codex-app-server source to check its hash..."
+for system_target in x86_64-linux:x86_64-unknown-linux-musl \
+  aarch64-linux:aarch64-unknown-linux-musl x86_64-darwin:x86_64-apple-darwin \
+  aarch64-darwin:aarch64-apple-darwin; do
+  pinned=$(nix eval --raw ".#packages.${system_target%%:*}.codex-app-server.src.outputHash")
+  if [[ "$pinned" != "${target_hashes[${system_target#*:}]}" ]]; then
+    echo "codex-app-server pins ${pinned} for ${system_target%%:*}, expected ${target_hashes[${system_target#*:}]}." >&2
+    exit 1
+  fi
+done
+realise_fetch_only .#codex-app-server.src
+# The whole package must still evaluate, not only its source.
+nix eval --raw .#codex-app-server.drvPath >/dev/null
 
 echo "updated=true" >> "$GITHUB_OUTPUT"
 echo "version=$latest_version" >> "$GITHUB_OUTPUT"

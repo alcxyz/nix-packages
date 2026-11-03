@@ -3,6 +3,8 @@
 set -euo pipefail
 # shellcheck source=scripts/ci/t3code-nix-home.sh disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../ci/t3code-nix-home.sh"
+# shellcheck source=scripts/update-packages/fod-hash.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/fod-hash.sh"
 
 PIN_FILE=pkgs/t3code/source.json
 HELPER=scripts/update-packages/t3code-source.py
@@ -45,30 +47,16 @@ set_hash() {
   mv "$work/hashes.next" "$work/hashes.json"
   stage
 }
-collect_hash() {
-  local attr=$1 label=$2 log hash
-  log=$(mktemp)
-  clean_homeless_shelter
-  if nix build -L "$attr" --no-link 2>"$log"; then
-    cat "$log" >&2
-    rm -f "$log"
-    echo "Expected ${label} build to fail with the placeholder hash" >&2
-    return 1
-  fi
-  cat "$log" >&2
-  hash=$(sed -nE 's/^[[:space:]]*got:[[:space:]]+(sha256-[^[:space:]]+).*/\1/p' "$log" | tail -n1)
-  rm -f "$log"
-  if [[ ! "$hash" =~ ^sha256-.+ ]]; then
-    echo "Unable to collect ${label} hash" >&2
-    return 1
-  fi
-  printf '%s\n' "$hash"
-}
-
 stage
-set_hash cargoHash "$(collect_hash .#t3code.resourceMonitor cargoHash)"
-set_hash pnpmDepsHash "$(collect_hash .#t3code.pnpmDeps pnpmDepsHash)"
-T3CODE_VERIFY_ALWAYS=true scripts/ci/verify-t3code-providers.sh
+# Only the fixed-output dependency fetches run here; the native build and
+# runtime checks run locally before hosts follow the revision (ADR-0003).
+# cargoDeps itself is an ordinary derivation that links the vendored crates;
+# its vendorStaging dependency is the fixed-output fetch that cargoHash pins.
+cargo_hash=$(collect_fod_hash .#t3code.resourceMonitor.cargoDeps.vendorStaging cargoHash)
+set_hash cargoHash "$cargo_hash"
+pnpm_deps_hash=$(collect_fod_hash .#t3code.pnpmDeps pnpmDepsHash)
+set_hash pnpmDepsHash "$pnpm_deps_hash"
+scripts/ci/check-t3code-provider-versions.sh
 success=true
 version=$(jq -r .version "$work/target.json")
 printf 'updated=true\nversion=%s\n' "$version" >>"${GITHUB_OUTPUT:-/dev/null}"

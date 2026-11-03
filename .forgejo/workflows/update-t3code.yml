@@ -60,7 +60,7 @@ jobs:
         if: steps.probe.outputs.should_run == 'true'
         run: |
           apt-get update
-          apt-get install -y sudo xxd jq zstd
+          apt-get install -y sudo xxd jq
 
       - uses: https://github.com/cachix/install-nix-action@v30
         if: steps.probe.outputs.should_run == 'true'
@@ -69,20 +69,6 @@ jobs:
             experimental-features = nix-command flakes
             # Rootless Podman cannot mount a sandbox /proc; skip the failing attempt.
             sandbox = false
-
-      - name: Restore T3 dependency cache
-        if: steps.probe.outputs.should_run == 'true'
-        continue-on-error: true
-        uses: https://data.forgejo.org/actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
-          restore-keys: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-
-
-      - name: Enable T3 dependency cache
-        if: steps.probe.outputs.should_run == 'true'
-        continue-on-error: true
-        run: scripts/ci/nix-build-cache.sh prepare
 
       - name: Check and update t3code
         if: steps.probe.outputs.should_run == 'true'
@@ -96,21 +82,6 @@ jobs:
           clean_ephemeral_nix_home
           bash scripts/update-packages/update-t3code.sh
 
-      - name: Export validated T3 dependencies
-        if: steps.update.outputs.updated == 'true'
-        continue-on-error: true
-        id: export-cache
-        run: scripts/ci/nix-build-cache.sh save
-
-      - name: Save updated T3 dependency cache
-        if: steps.export-cache.outputs.save == 'true'
-        continue-on-error: true
-        uses: https://data.forgejo.org/actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: /tmp/nix-packages-cache
-          # Recompute after the updater changes package inputs.
-          key: nix-packages-deps-v1-${{ runner.os }}-${{ hashFiles('flake.lock') }}-${{ hashFiles('flake.nix', 'pkgs/**', 'tools/**') }}
-
       - name: Open or refresh Forgejo PR
         if: steps.update.outputs.updated == 'true'
         env:
@@ -122,7 +93,7 @@ jobs:
           COMMIT_MESSAGE: |
             chore(t3code): refresh published source pin
 
-            Refresh the upstream nightly after full build and runtime checks.
+            Refresh the upstream nightly; CI computed its fetch hashes and evaluated it.
           PR_TITLE: "chore(t3code): refresh published source pin"
           BODY_NAME: T3 Code
           VERSION: ${{ steps.update.outputs.version }}
