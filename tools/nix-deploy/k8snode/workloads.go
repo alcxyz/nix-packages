@@ -51,7 +51,7 @@ func uniqueWorkloads(workloads []workload) []workload {
 }
 
 // collectDisplacedWorkloads lists the controllers of the Pods on the node
-// before the drain.
+// before the drain, leaving out the instance-manager, which stays.
 func (o *Operation) collectDisplacedWorkloads() ([]workload, error) {
 	pods, err := o.listNodePods()
 	if err != nil {
@@ -59,7 +59,7 @@ func (o *Operation) collectDisplacedWorkloads() ([]workload, error) {
 	}
 	var workloads []workload
 	for _, p := range pods {
-		if p.Metadata.Namespace == "" || p.Metadata.Name == "" {
+		if p.Metadata.Namespace == "" || p.Metadata.Name == "" || isInstanceManager(p) {
 			continue
 		}
 		w, ok, err := o.workloadForPod(p)
@@ -416,6 +416,9 @@ func (o *Operation) verifyNodeIsCordoned() error {
 		return err
 	}
 	if !cordoned {
+		if o.opts.Action == "on" {
+			return fmt.Errorf("%s is not cordoned; on finishes a maintenance that off, or a reboot that stopped, left cordoned", o.opts.Node)
+		}
 		return fmt.Errorf("%s is not cordoned; --resume-maintenance requires an existing maintenance cordon", o.opts.Node)
 	}
 	return nil
@@ -437,7 +440,7 @@ func (o *Operation) verifyNodeHasOnlyMaintenancePods() error {
 		if owner == "DaemonSet" {
 			continue
 		}
-		if p.Metadata.Namespace == "longhorn-system" && p.Metadata.Labels["longhorn.io/component"] == "instance-manager" {
+		if p.Metadata.Namespace == "longhorn-system" && isInstanceManager(p) {
 			continue
 		}
 		if owner == "" {

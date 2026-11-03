@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -352,6 +354,32 @@ func (o *Operation) managerTime(manager string) (int64, bool) {
 	return slices.Max(times), true
 }
 
+// establishBaseline records an API-server time on the Node, through a
+// unique annotation write that is removed again, so a returned agent's
+// heartbeat can be compared with it even after an unplanned outage.
+func (o *Operation) establishBaseline() error {
+	node := o.opts.Node
+	value := fmt.Sprintf("%d-%d-%d", o.now().UnixNano(), os.Getpid(), rand.IntN(32768))
+	o.log("establishing self-fence heartbeat baseline for %s", node)
+	write := o.kubectl(Command{Argv: []string{"annotate", "node", node,
+		baselineAnnotation + "=" + value,
+		"--overwrite", "--field-manager=" + baselineManager, "--request-timeout=5s"}})
+	if write.Status != 0 {
+		return fmt.Errorf("%s: could not establish self-fence heartbeat baseline (annotation write failed)", node)
+	}
+	baseline, ok := o.managerTime(baselineManager)
+	remove := o.kubectl(Command{Argv: []string{"annotate", "node", node,
+		baselineAnnotation + "-", "--request-timeout=5s"}})
+	if remove.Status != 0 {
+		return fmt.Errorf("%s: could not establish self-fence heartbeat baseline (annotation cleanup failed)", node)
+	}
+	if !ok {
+		return fmt.Errorf("%s: could not establish self-fence heartbeat baseline (API-server timestamp unavailable)", node)
+	}
+	o.fence.baseline, o.fence.hasBaseline = baseline, true
+	return nil
+}
+
 // stopFenceAgent rechecks the preflight, stops the target's agent and waits
 // for its Node to show mode=stopped, so the fence controller does not count
 // the power action as a failure. Failures leave the node cordoned.
@@ -379,8 +407,17 @@ func (o *Operation) stopFenceAgent() error {
 			current.Metadata.Annotations[agentModeAnnotation] == "stopped" {
 			o.fence.agentStopped = true
 			// The API-server time of the stop write; a returned heartbeat
-			// must be later.
+			// must be later. When it cannot be read (the managed fields do
+			// not answer, or name no node-self-fence entry), a baseline of
+			// our own takes its place: the agent is stopped, so no
+			// heartbeat can come between.
 			o.fence.baseline, o.fence.hasBaseline = o.managerTime(agentManager)
+			if !o.fence.hasBaseline {
+				o.log("the agent's stop on %s has no API-server time", target)
+				if err := o.establishBaseline(); err != nil {
+					return fmt.Errorf("%w; %s", err, recovery)
+				}
+			}
 			return nil
 		}
 		if o.expired(deadline) {
@@ -420,18 +457,27 @@ func (o *Operation) waitForReturnedFenceAgent() error {
 	}
 }
 
+// ownAgentHealthy checks that the own state of a status report is healthy
+// and unfenced in enforce or observe mode, setting fence.failure when not.
+func (o *Operation) ownAgentHealthy() bool {
+	own := o.ownFenceState()
+	if own["ok"] == true && own["classification"] == "healthy" && own["fenced"] == false &&
+		(own["mode"] == "enforce" || own["mode"] == "observe") {
+		return true
+	}
+	o.fence.failure = fmt.Sprintf("%s: own agent is not healthy and unfenced (mode=%s, ok=%s, classification=%s, fenced=%s, error=%s)",
+		o.opts.Node, jqText(orElse(own["mode"], "missing")), jqText(own["ok"]), jqText(orElse(own["classification"], "missing")), jqText(own["fenced"]), jqText(orElse(own["error"], "none")))
+	return false
+}
+
 // ownAgentReturned checks the own state of a status report, setting
 // fence.failure when the agent has not returned.
 func (o *Operation) ownAgentReturned() bool {
 	node := o.opts.Node
-	own := o.ownFenceState()
-	mode := jqText(orElse(own["mode"], "missing"))
-	if own["ok"] != true || own["classification"] != "healthy" || own["fenced"] != false ||
-		(own["mode"] != "enforce" && own["mode"] != "observe") {
-		o.fence.failure = fmt.Sprintf("%s: own agent is not healthy and unfenced (mode=%s, ok=%s, classification=%s, fenced=%s, error=%s)",
-			node, mode, jqText(own["ok"]), jqText(orElse(own["classification"], "missing")), jqText(own["fenced"]), jqText(orElse(own["error"], "none")))
+	if !o.ownAgentHealthy() {
 		return false
 	}
+	mode := jqText(o.ownFenceState()["mode"])
 	if o.opts.Action != "on" && mode != o.fence.previousMode {
 		o.fence.failure = fmt.Sprintf("%s: agent mode %s differs from pre-maintenance mode %s", node, mode, o.fence.previousMode)
 		return false
@@ -441,7 +487,7 @@ func (o *Operation) ownAgentReturned() bool {
 	// clock and is not compared.
 	if n, ok := o.readManagedFields(); ok && n.Metadata.Annotations[agentModeAnnotation] == mode {
 		heartbeats, ok := n.managerTimes(agentManager)
-		if ok && len(heartbeats) > 0 && (!o.fence.hasBaseline || slices.Max(heartbeats) > o.fence.baseline) {
+		if ok && len(heartbeats) > 0 && o.fence.hasBaseline && slices.Max(heartbeats) > o.fence.baseline {
 			o.log("%s self-fence agent recovered in %s mode with a fresh heartbeat", node, mode)
 			return true
 		}

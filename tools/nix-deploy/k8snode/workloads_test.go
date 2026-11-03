@@ -430,9 +430,9 @@ func TestCollectDisplacedWorkloads(t *testing.T) {
 	for _, w := range workloads {
 		got = append(got, w.String())
 	}
-	// The instance-manager's owner is collected like any other controller,
-	// as in the Bash tool, and gets its dedicated availability gate.
-	want := "default/cluster/pg default/deployment/web default/replicaset/orphan-1 default/statefulset/db longhorn-system/instancemanager/instance-manager-a"
+	// The instance-manager stays on the node and has its own availability
+	// gate, so its owner is not a displaced workload.
+	want := "default/cluster/pg default/deployment/web default/replicaset/orphan-1 default/statefulset/db"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("got %v", got)
 	}

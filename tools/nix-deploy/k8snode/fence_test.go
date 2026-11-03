@@ -18,6 +18,7 @@ func TestFencePreflightRecordsModeAndRecoveryPasses(t *testing.T) {
 	if !o.fence.hasAgent || o.fence.previousMode != "enforce" {
 		t.Fatalf("hasAgent=%v previousMode=%q", o.fence.hasAgent, o.fence.previousMode)
 	}
+	o.fence.baseline, o.fence.hasBaseline = unix(t, "2026-01-01T00:02:30Z"), true
 	if err := o.waitForReturnedFenceAgent(); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +167,46 @@ func TestStopFenceAgentRecordsStopTime(t *testing.T) {
 	}
 }
 
+// When the agent's stop carries no API-server time, the stop writes its own
+// baseline, so the agent's old heartbeat cannot pass the return gate.
+func TestStopFenceAgentWithoutStopTimeWritesBaseline(t *testing.T) {
+	f := newFenceCluster(t)
+	o, _ := fenceOperation(t, f, "reboot")
+	if err := o.verifyFencePreflight(); err != nil {
+		t.Fatal(err)
+	}
+	set(f.targetNode(), "stopped", "metadata", "annotations", agentModeAnnotation)
+	set(f.targetNode(), "other-manager", "metadata", "managedFields", 0, "manager")
+	if err := o.stopFenceAgent(); err != nil {
+		t.Fatal(err)
+	}
+	mustCall(t, f, `^kubectl annotate node server-a fence.alc.xyz/maintenance-baseline=`)
+	mustCall(t, f, `^kubectl annotate node server-a fence.alc.xyz/maintenance-baseline-`)
+	// The fixture's heartbeat is at 00:03; the baseline is written later.
+	if !o.fence.hasBaseline || o.fence.baseline <= unix(t, "2026-01-01T00:03:00Z") {
+		t.Fatalf("baseline %d (%v)", o.fence.baseline, o.fence.hasBaseline)
+	}
+	// The agent returns with only its heartbeat from before the stop.
+	set(f.targetNode(), agentManager, "metadata", "managedFields", 0, "manager")
+	set(f.targetNode(), "enforce", "metadata", "annotations", agentModeAnnotation)
+	expectFailure(t, o.waitForReturnedFenceAgent(), "no node-self-fence heartbeat after the maintenance baseline")
+}
+
+// A failed baseline write stops before the power action.
+func TestStopFenceAgentBaselineFailureStops(t *testing.T) {
+	f := newFenceCluster(t)
+	o, _ := fenceOperation(t, f, "reboot")
+	if err := o.verifyFencePreflight(); err != nil {
+		t.Fatal(err)
+	}
+	set(f.targetNode(), "stopped", "metadata", "annotations", agentModeAnnotation)
+	set(f.targetNode(), "other-manager", "metadata", "managedFields", 0, "manager")
+	f.baselineWriteExit = 1
+	err := o.stopFenceAgent()
+	expectFailure(t, err, "could not establish self-fence heartbeat baseline")
+	expectFailure(t, err, "start node-self-fence")
+}
+
 // A peer that fences while the target drains blocks the power action.
 func TestStopFenceAgentRechecksPeers(t *testing.T) {
 	f := newFenceCluster(t)
@@ -250,6 +291,7 @@ func TestReturnedFenceAgentOnAcceptsEitherMode(t *testing.T) {
 	set(f.status, "observe", "states", 0, "mode")
 	o.opts.Action = "on"
 	set(f.targetNode(), "observe", "metadata", "annotations", agentModeAnnotation)
+	o.fence.baseline, o.fence.hasBaseline = unix(t, "2026-01-01T00:02:30Z"), true
 	if err := o.waitForReturnedFenceAgent(); err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +309,7 @@ func TestReturnedFenceAgentIgnoresUnverifiedPeer(t *testing.T) {
 	set(f.status, false, "states", 1, "ok")
 	set(f.status, "no answer", "states", 1, "error")
 	f.statusExit = 1
+	o.fence.baseline, o.fence.hasBaseline = unix(t, "2026-01-01T00:02:30Z"), true
 	if err := o.waitForReturnedFenceAgent(); err != nil {
 		t.Fatal(err)
 	}

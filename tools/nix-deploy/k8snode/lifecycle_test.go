@@ -170,6 +170,63 @@ func TestCheckOnlyDoesNotRaiseRebuildLimit(t *testing.T) {
 	mustNotCall(t, f, `patch`)
 }
 
+// on --check-only checks the power-on gates of a returned, cordoned node
+// once: no uncordon, no baseline write, no other change.
+func TestPowerOnCheckOnlyMakesNoChanges(t *testing.T) {
+	f := newFenceCluster(t)
+	o, output := fenceOperation(t, f, "on")
+	o.opts.CheckOnly = true
+	if status := o.Run(); status != 0 {
+		t.Fatalf("status %d:\n%s\ncalls:\n%s", status, output, f.callLog())
+	}
+	requireOrder(t, f, `ConnectTimeout=5 server-admin@maintenance-target true$`, `^kubectl wait node/server-a --for=condition=Ready --timeout=0s$`, `ip link show dev flannel.1`)
+	mustContain(t, output.String(), "power-on checks passed; no changes were made")
+	if mutations := f.mutations(); len(mutations) > 0 {
+		t.Fatalf("check-only changed state: %v", mutations)
+	}
+	mustNotCall(t, f, `maintenance-baseline`)
+}
+
+// A node that is not cordoned is not in maintenance; an unhealthy agent
+// fails the check, which still changes nothing.
+func TestPowerOnCheckOnlyFailures(t *testing.T) {
+	f := newFenceCluster(t)
+	set(f.targetNode(), false, "spec", "unschedulable")
+	o, output := fenceOperation(t, f, "on")
+	o.opts.CheckOnly = true
+	expectRunFailure(t, o, output, "server-a is not cordoned")
+
+	f = newFenceCluster(t)
+	set(f.status, true, "states", 0, "fenced")
+	o, output = fenceOperation(t, f, "on")
+	o.opts.CheckOnly = true
+	expectRunFailure(t, o, output, "own agent is not healthy and unfenced")
+	if mutations := f.mutations(); len(mutations) > 0 {
+		t.Fatalf("check-only changed state: %v", mutations)
+	}
+}
+
+// The gates before the drain follow its label selector; after it, only
+// Longhorn's own instance-manager may remain on the node.
+func TestInstanceManagerMatchesTheDrain(t *testing.T) {
+	var p pod
+	p.Metadata.Namespace = "default"
+	p.Metadata.Labels = map[string]string{"longhorn.io/component": "instance-manager"}
+	if !isInstanceManager(p) {
+		t.Fatal("a Pod the drain leaves counts as evicted")
+	}
+}
+
+// on explains a missing cordon without pointing at --resume-maintenance,
+// which it rejects.
+func TestPowerOnCheckOnlyNotCordonedMessage(t *testing.T) {
+	f := newHealthyCluster(t)
+	output := runFailure(t, f, "on", []string{"--check-only"}, "server-a is not cordoned; on finishes a maintenance")
+	if strings.Contains(output, "--resume-maintenance") {
+		t.Fatalf("points at --resume-maintenance:\n%s", output)
+	}
+}
+
 func TestCheckOnlyRejectsCordonedNode(t *testing.T) {
 	f := newHealthyCluster(t)
 	set(f.targetNode(), true, "spec", "unschedulable")
@@ -338,6 +395,16 @@ func TestResumeMaintenanceRebootsDrainedNode(t *testing.T) {
 	requireOrder(t, f, `cleanup_sessions=true`, regexp.QuoteMeta(rebootCommand), `^kubectl uncordon server-a$`)
 }
 
+// Only Longhorn's own instance-manager may stay on a node in maintenance;
+// the label alone elsewhere is a non-maintenance Pod.
+func TestResumeMaintenanceRejectsLabelledPodOutsideLonghorn(t *testing.T) {
+	f := drained(t, newHealthyCluster(t))
+	f.pods = append(f.pods, readyPod(t, "default", "lookalike", "server-a", "ReplicaSet", "lookalike-1",
+		`{"longhorn.io/component": "instance-manager"}`))
+	runFailure(t, f, "reboot", []string{"--resume-maintenance"}, "default/lookalike", "non-maintenance Pods remain on server-a")
+	mustNotCall(t, f, regexp.QuoteMeta(rebootCommand))
+}
+
 func TestResumeMaintenanceRejectsWorkloadPods(t *testing.T) {
 	f := newHealthyCluster(t)
 	set(f.targetNode(), true, "spec", "unschedulable")
@@ -484,11 +551,21 @@ func TestPDBBlockerStopsBeforeCordon(t *testing.T) {
 	mustNotCall(t, f, `^kubectl cordon`)
 }
 
+// A budget covers only its own namespace: one elsewhere whose selector
+// matches the node's Pods does not block.
+func TestPDBInAnotherNamespaceDoesNotBlock(t *testing.T) {
+	f := newHealthyCluster(t)
+	set(f.pdbs[0], 0.0, "status", "disruptionsAllowed")
+	set(f.pdbs[0], "other", "metadata", "namespace")
+	run(t, f, "reboot")
+}
+
 func TestPodSlotCapacityStopsBeforeCordon(t *testing.T) {
 	f := newHealthyCluster(t)
 	output := runFailure(t, f, "reboot", []string{"--min-free-pod-slots", "300"}, "remaining stable nodes do not have enough aggregate Pod slots")
-	// server-b and server-c: 220 slots, one Pod scheduled, two displaced (the instance-manager counts, as in the Bash tool).
-	mustContain(t, output, "server-b,server-c\t1\t2\t220\t217\tinsufficient")
+	// server-b and server-c: 220 slots, one Pod scheduled, one displaced:
+	// the instance-manager stays on the node, so it does not count.
+	mustContain(t, output, "server-b,server-c\t1\t1\t220\t218\tinsufficient")
 	mustNotCall(t, f, `^kubectl cordon`)
 }
 

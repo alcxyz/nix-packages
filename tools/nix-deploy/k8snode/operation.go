@@ -10,8 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
-	"os"
 	"strings"
 	"time"
 )
@@ -287,28 +285,10 @@ func (o *Operation) powerOn() error {
 	o.workloads = workloads
 
 	if o.fence.hasAgent {
-		// This process has no stop timestamp from a previous one. A unique
-		// annotation write establishes an API-clock baseline even after an
-		// unplanned outage.
-		baselineValue := fmt.Sprintf("%d-%d-%d", o.now().UnixNano(), os.Getpid(), rand.IntN(32768))
-		o.log("establishing self-fence heartbeat baseline for %s", node)
-		write := o.kubectl(Command{Argv: []string{"annotate", "node", node,
-			"fence.alc.xyz/maintenance-baseline=" + baselineValue,
-			"--overwrite", "--field-manager=k8s-node-reboot", "--request-timeout=5s"}})
-		if write.Status != 0 {
-			return fmt.Errorf("%s: could not establish self-fence heartbeat baseline (annotation write failed); %s remains cordoned", node, node)
+		// This process has no stop timestamp from a previous one.
+		if err := o.establishBaseline(); err != nil {
+			return fmt.Errorf("%w; %s remains cordoned", err, node)
 		}
-		baseline, ok := o.managerTime("k8s-node-reboot")
-		remove := o.kubectl(Command{Argv: []string{"annotate", "node", node,
-			"fence.alc.xyz/maintenance-baseline-", "--request-timeout=5s"}})
-		if remove.Status != 0 {
-			return fmt.Errorf("%s: could not establish self-fence heartbeat baseline (annotation cleanup failed); %s remains cordoned", node, node)
-		}
-		if !ok {
-			return fmt.Errorf("%s: could not establish self-fence heartbeat baseline (API-server timestamp unavailable); %s remains cordoned", node, node)
-		}
-		o.fence.baseline = baseline
-		o.fence.hasBaseline = true
 	}
 
 	if err := o.waitForReturnedFenceAgent(); err != nil {
@@ -333,9 +313,12 @@ func (o *Operation) powerOn() error {
 	return nil
 }
 
-// checkOnly runs the fresh or resumed preflight without changing cluster or
-// host state.
+// checkOnly runs the fresh or resumed preflight, or for on the power-on
+// gates, without changing cluster or host state.
 func (o *Operation) checkOnly() error {
+	if o.opts.Action == "on" {
+		return o.checkOnlyOn()
+	}
 	node := o.opts.Node
 	o.log("checking Kubernetes node %s without changing cluster or host state", node)
 	if err := o.checkNodeAccess(); err != nil {
@@ -374,6 +357,58 @@ func (o *Operation) checkOnly() error {
 		}
 	}
 	o.log("checks passed; no changes were made")
+	return nil
+}
+
+// checkOnlyOn checks once, without waiting or changing anything, the gates
+// a power-on passes before its uncordon: the node exists and is cordoned,
+// its host answers SSH, it is Ready, its network checks pass, Longhorn and
+// CloudNativePG can lose it again, and its self-fence agent is healthy.
+// Whether the agent's heartbeat is fresh needs a baseline write, so it is
+// left to the power-on.
+func (o *Operation) checkOnlyOn() error {
+	node := o.opts.Node
+	o.log("checking the power-on of %s once, without changing cluster or host state", node)
+	// A zero timeout checks each gate once.
+	o.opts.SSHTimeoutSeconds = 0
+	o.opts.ReadyTimeout = "0s"
+	o.opts.SettleTimeout = "0s"
+	if err := o.checkNodeExists(); err != nil {
+		return err
+	}
+	if err := o.verifyNodeIsCordoned(); err != nil {
+		return err
+	}
+	if err := o.waitForSSHUp(); err != nil {
+		return err
+	}
+	if err := o.initializeFenceGate(); err != nil {
+		return err
+	}
+	if err := o.waitForNodeReady(); err != nil {
+		return err
+	}
+	if err := o.waitForReturnedNodeNetwork(); err != nil {
+		return err
+	}
+	if err := o.waitForLonghornSurvivability(); err != nil {
+		return err
+	}
+	if err := o.waitForCNPGSurvivability(); err != nil {
+		return err
+	}
+	if o.fence.hasAgent {
+		if !o.readFenceStatus() {
+			return fmt.Errorf("%s", o.fence.failure)
+		}
+		if o.fence.statusExit > 1 {
+			return fmt.Errorf("%s: node-self-fence-status failed (exit %d)", node, o.fence.statusExit)
+		}
+		if !o.ownAgentHealthy() {
+			return fmt.Errorf("%s", o.fence.failure)
+		}
+	}
+	o.log("power-on checks passed; no changes were made")
 	return nil
 }
 
@@ -554,8 +589,7 @@ func (o *Operation) drainTimeout() (string, error) {
 	slowest := ""
 	for _, p := range pods {
 		// kubectl drain skips DaemonSet and mirror Pods.
-		if !p.active() || p.Metadata.hasOwner("DaemonSet") || isMirror(p) ||
-			p.Metadata.Labels["longhorn.io/component"] == "instance-manager" {
+		if !p.active() || p.Metadata.hasOwner("DaemonSet") || isMirror(p) || isInstanceManager(p) {
 			continue
 		}
 		grace := int64(30)

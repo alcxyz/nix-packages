@@ -337,6 +337,15 @@ func isMirror(p pod) bool {
 	return ok
 }
 
+// isInstanceManager tells whether the drain leaves p on the node: its
+// --pod-selector keeps Pods labelled as a Longhorn instance-manager, in any
+// namespace, so attached volumes can detach. Such a Pod is neither displaced
+// nor a workload to wait for. After the drain, only Longhorn's own
+// (verifyNodeHasOnlyMaintenancePods) may remain.
+func isInstanceManager(p pod) bool {
+	return p.Metadata.Labels["longhorn.io/component"] == "instance-manager"
+}
+
 // listNodePods lists the Pods bound to the target node.
 func (o *Operation) listNodePods() ([]pod, error) {
 	var pods podList

@@ -74,13 +74,12 @@ func (o *Operation) checkPDBEvictionBlockers(ignoreCNPGPrimaries bool) error {
 		if pdb.Status.DisruptionsAllowed >= 1 {
 			continue
 		}
-		// As in the Bash tool, the budget's namespace is not compared: a
-		// matching Pod anywhere on the node blocks.
+		// A budget covers only the Pods of its own namespace.
 		for _, p := range pods {
-			if p.Spec.NodeName != node || !p.active() || p.Metadata.hasOwner("DaemonSet") {
+			if p.Spec.NodeName != node || p.Metadata.Namespace != pdb.Metadata.Namespace || !p.active() || p.Metadata.hasOwner("DaemonSet") {
 				continue
 			}
-			if p.Metadata.Labels["longhorn.io/component"] == "instance-manager" {
+			if isInstanceManager(p) {
 				continue
 			}
 			if !pdbSelectorMatches(p.Metadata.Labels, pdb.Spec.Selector) {
@@ -141,7 +140,7 @@ func (o *Operation) checkStableNodePodSlots() error {
 		if slices.Contains(remaining, p.Spec.NodeName) {
 			scheduled++
 		}
-		if p.Spec.NodeName == target && !p.Metadata.hasOwner("DaemonSet") && p.Metadata.Annotations["kubernetes.io/config.mirror"] == "" {
+		if p.Spec.NodeName == target && !p.Metadata.hasOwner("DaemonSet") && !isMirror(p) && !isInstanceManager(p) {
 			displaced++
 		}
 	}
@@ -1106,8 +1105,7 @@ func (o *Operation) displacedPodsToPlace(nodes []node, pods []pod) (needed, othe
 	var order []workload
 	for _, p := range pods {
 		if p.Spec.NodeName != target || !p.active() || p.Metadata.hasOwner("DaemonSet") ||
-			isMirror(p) ||
-			p.Metadata.Labels["longhorn.io/component"] == "instance-manager" {
+			isMirror(p) || isInstanceManager(p) {
 			continue
 		}
 		w, ok, err := o.workloadForPod(p)

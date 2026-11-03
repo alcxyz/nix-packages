@@ -39,6 +39,10 @@ Options:
                            maintenance-state gates do not pass.
   --check-only             Validate preflight or resumed-maintenance gates and
                            report planned database switchovers without changes.
+                           With on, check the power-on gates once: the node
+                           is cordoned, SSH answers, the node is Ready, its
+                           network, Longhorn, CloudNativePG and fence agent
+                           pass; the heartbeat is left to the power-on.
   --needed                 reboot only: first read whether the host needs a
                            reboot (its booted kernel, initrd, kernel modules or
                            kernel parameters differ from the current or
@@ -77,7 +81,8 @@ its healthy agent must return in the original mode (on accepts either mode)
 and publish a heartbeat recorded by the API server after the agent was stopped
 or, for on, after a new maintenance baseline established once the node is Ready.
 Fence failures after cordon leave the node cordoned. Targets without an agent
-annotation skip these gates. --check-only also checks fence preflight.
+annotation skip these gates. --check-only also checks fence preflight; with
+on, it reads only the target agent's own state, as the power-on does.
 
 Requires kubectl access to the target cluster and SSH sudo rights on the host.
 K8S_NODE_SSH_USER (default root) is the SSH user for the other nodes' network
