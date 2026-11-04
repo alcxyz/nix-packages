@@ -14,6 +14,7 @@ credential-approval wait \
   --title "Short title" --reason "Why it is needed" \
   --impact "What it will do" --operation "label; SHA-256 ..." \
   --requester "Who asked" \
+  --requester-url https://t3.example.com/thread \
   --notify /path/to/program
 ```
 

@@ -83,6 +83,13 @@
       document.getElementById("consent-impact").textContent = request.impact;
       document.getElementById("consent-operation").textContent = request.operation;
       document.getElementById("consent-requester").textContent = request.requester;
+      // credential-approval accepts only https, and this page checks it again,
+      // since the spool's copy is what it reads.
+      if (typeof request.requesterUrl === "string" && request.requesterUrl.startsWith("https://")) {
+        const link = document.getElementById("consent-requester-link");
+        link.href = request.requesterUrl;
+        link.hidden = false;
+      }
       document.getElementById("consent-expires").textContent = new Date(request.expiresAt * 1000).toLocaleTimeString();
       document.getElementById("consent-facts").hidden = false;
       actions.hidden = false;

@@ -40,9 +40,12 @@ type Request struct {
 	Impact       string `json:"impact"`
 	Operation    string `json:"operation"`
 	Requester    string `json:"requester"`
+	// RequesterURL opens the requester, for a person to look at; empty when
+	// there is none. It is signed like the rest, and proves no more.
+	RequesterURL string `json:"requesterUrl,omitempty"`
 }
 
-func newRequest(now, deadline time.Time, rpID, credentialID, title, reason, impact, operation, requester string) (Request, error) {
+func newRequest(now, deadline time.Time, rpID, credentialID, title, reason, impact, operation, requester, requesterURL string) (Request, error) {
 	id := make([]byte, 16)
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(id); err != nil {
@@ -64,6 +67,7 @@ func newRequest(now, deadline time.Time, rpID, credentialID, title, reason, impa
 		Impact:       impact,
 		Operation:    operation,
 		Requester:    requester,
+		RequesterURL: requesterURL,
 	}, nil
 }
 

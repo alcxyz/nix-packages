@@ -99,7 +99,7 @@ func (a authenticator) sign(t *testing.T, requestBytes []byte) Assertion {
 func testRequest(t *testing.T) ([]byte, Request) {
 	t.Helper()
 	now := time.Now()
-	request, err := newRequest(now, now.Add(time.Minute), testRP, "credential", "Title", "Reason", "Impact", "op; SHA-256 0123", "Requested by T3 thread abc")
+	request, err := newRequest(now, now.Add(time.Minute), testRP, "credential", "Title", "Reason", "Impact", "op; SHA-256 0123", "Requested by T3 thread abc", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestWaitIsNotHeldUpByAFIFO(t *testing.T) {
 
 func TestShortTimeoutIsStillOpenWhenItStarts(t *testing.T) {
 	now := time.Unix(100, 100_000_000)
-	request, err := newRequest(now, now.Add(500*time.Millisecond), testRP, "c", "t", "r", "i", "o", "q")
+	request, err := newRequest(now, now.Add(500*time.Millisecond), testRP, "c", "t", "r", "i", "o", "q", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,6 +496,34 @@ func TestNewVerifierRefusesAnOriginThatCouldNeverMatch(t *testing.T) {
 func TestWaitRefusesAnOversizedRequest(t *testing.T) {
 	args := waitArgs(t, t.TempDir(), newKey(t), "1s")
 	args = append(args, "--reason", strings.Repeat("r", maxRequestBytes))
+	if code := run(args); code != exitUsage {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+func TestRequesterURLIsSignedAndOnlyHTTPS(t *testing.T) {
+	now := time.Now()
+	request, err := newRequest(now, now.Add(time.Minute), testRP, "c", "t", "r", "i", "o", "q", "https://t3.example.com/e/thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"requesterUrl":"https://t3.example.com/e/thread"`) {
+		t.Fatalf("not in the signed bytes: %s", data)
+	}
+	withoutURL := request
+	withoutURL.RequesterURL = ""
+	data, err = json.Marshal(withoutURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "requesterUrl") {
+		t.Fatalf("an empty URL was published: %s", data)
+	}
+	args := append(waitArgs(t, t.TempDir(), newKey(t), "1s"), "--requester-url", "javascript:alert(1)")
 	if code := run(args); code != exitUsage {
 		t.Fatalf("exit %d", code)
 	}

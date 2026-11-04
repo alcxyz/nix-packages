@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -45,7 +46,7 @@ func run(args []string) int {
 		return exitApproved
 	}
 	if len(args) == 0 || args[0] != "wait" {
-		fmt.Fprintln(os.Stderr, "usage: credential-approval wait --spool DIR --origin URL --rp-id ID --public-key KEY --credential-id ID --timeout DURATION --title T --reason R --impact I --operation O --requester Q [--notify PROGRAM]")
+		fmt.Fprintln(os.Stderr, "usage: credential-approval wait --spool DIR --origin URL --rp-id ID --public-key KEY --credential-id ID --timeout DURATION --title T --reason R --impact I --operation O --requester Q [--requester-url URL] [--notify PROGRAM]")
 		return exitUsage
 	}
 	flags := flag.NewFlagSet("wait", flag.ContinueOnError)
@@ -60,6 +61,7 @@ func run(args []string) int {
 	impact := flags.String("impact", "", "what it will do")
 	operation := flags.String("operation", "", "operation label with its digest")
 	requester := flags.String("requester", "", "who asked")
+	requesterURL := flags.String("requester-url", "", "https link to the requester, for the person")
 	notify := flags.String("notify", "", "program run once as PROGRAM URL TITLE REQUESTER")
 	if err := flags.Parse(args[1:]); err != nil {
 		return exitUsage
@@ -67,6 +69,10 @@ func run(args []string) int {
 	if flags.NArg() != 0 || *spoolDir == "" || *credentialID == "" || *timeout <= 0 ||
 		*title == "" || *reason == "" || *impact == "" || *operation == "" || *requester == "" {
 		flags.Usage()
+		return exitUsage
+	}
+	if *requesterURL != "" && !strings.HasPrefix(*requesterURL, "https://") {
+		fmt.Fprintln(os.Stderr, "credential-approval: --requester-url must be https")
 		return exitUsage
 	}
 	verifier, err := newVerifier(*publicKey, *rpID, *origin)
@@ -77,7 +83,7 @@ func run(args []string) int {
 
 	now := time.Now()
 	deadline := now.Add(*timeout)
-	request, err := newRequest(now, deadline, *rpID, *credentialID, *title, *reason, *impact, *operation, *requester)
+	request, err := newRequest(now, deadline, *rpID, *credentialID, *title, *reason, *impact, *operation, *requester, *requesterURL)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "credential-approval:", err)
 		return exitError
