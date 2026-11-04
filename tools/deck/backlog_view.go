@@ -58,7 +58,10 @@ type LinkView struct {
 }
 
 type BacklogRowView struct {
-	Key        string
+	Key string
+	// Cards names the count cards that count this row, space separated, for
+	// the page's card filters.
+	Cards      string
 	Kind       string
 	Ref        string
 	Title      string
@@ -196,6 +199,7 @@ func laneLabel(labels map[string]string, lane string) string {
 func issueRow(issue BacklogIssue, related map[string]BacklogRelated, suggestion string) BacklogRowView {
 	row := BacklogRowView{
 		Key:        "issue:" + issue.Ref,
+		Cards:      "issues",
 		Kind:       "issue",
 		Ref:        issue.Ref,
 		Title:      issue.Title,
@@ -241,6 +245,7 @@ func issueRow(issue BacklogIssue, related map[string]BacklogRelated, suggestion 
 func prRow(pr BacklogPR) BacklogRowView {
 	row := BacklogRowView{
 		Key:        "pr:" + pr.Ref,
+		Cards:      "prs",
 		Kind:       "pr",
 		Ref:        pr.Ref,
 		Title:      pr.Title,
@@ -254,6 +259,9 @@ func prRow(pr BacklogPR) BacklogRowView {
 		UpdatedAt:  pr.UpdatedAt,
 		Author:     pr.Author,
 		Suggestion: prSuggestions[pr.Lane],
+	}
+	if pr.Lane == "ready" {
+		row.Cards += " ready"
 	}
 	if pr.CI != "" && pr.CI != "none" {
 		row.Checks = "CI " + pr.CI
@@ -327,11 +335,15 @@ func (b *Backlog) view(basePath string) BacklogPageView {
 		if issue.Lane == "close" {
 			suggestion = "Close?"
 		}
-		doneRows = append(doneRows, b.withVerdict(issueRow(issue, related, suggestion), issue, queued))
+		row := issueRow(issue, related, suggestion)
+		row.Cards += " maybe"
+		doneRows = append(doneRows, b.withVerdict(row, issue, queued))
 	}
 	for _, issue := range stale {
 		shortlisted[issue.Ref] = true
-		staleRows = append(staleRows, b.withVerdict(issueRow(issue, related, "Drop, refresh or dispatch?"), issue, queued))
+		row := issueRow(issue, related, "Drop, refresh or dispatch?")
+		row.Cards += " stale"
+		staleRows = append(staleRows, b.withVerdict(row, issue, queued))
 	}
 	v.MaybeDone, v.Stale = len(doneRows), len(staleRows)
 	if len(doneRows) > 0 {
@@ -384,8 +396,10 @@ func (b *Backlog) view(basePath string) BacklogPageView {
 	if count > 0 {
 		v.Sections = append(v.Sections, other)
 	}
-	v.Issues, v.PRs = len(inv.Issues), len(inv.PRs)
-	v.Empty = v.Issues == 0 && v.PRs == 0
+	// Issues counts the rows shown, which leaves out a dashboard issue that
+	// the shortlist did not pick.
+	v.Issues, v.PRs = len(doneRows)+len(staleRows)+count, len(inv.PRs)
+	v.Empty = len(inv.Issues) == 0 && len(inv.PRs) == 0
 	return v
 }
 

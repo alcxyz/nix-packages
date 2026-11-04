@@ -1,5 +1,5 @@
 {{define "row"}}
-<li class="row" data-key="{{.Key}}" data-title="{{.Title}}" data-project="{{.Project}}" data-prefix="{{.Prefix}}" data-next="{{.NextAction}}" data-idle="{{if .HasIdle}}{{.IdleMinutes}}{{end}}" data-updated="{{.UpdatedAt}}">
+<li class="row" data-key="{{.Key}}" data-cards="{{.Cards}}"{{if .HasProgress}} data-progress="{{.Progress}}"{{end}} data-title="{{.Title}}" data-project="{{.Project}}" data-prefix="{{.Prefix}}" data-next="{{.NextAction}}" data-idle="{{if .HasIdle}}{{.IdleMinutes}}{{end}}" data-updated="{{.UpdatedAt}}">
 <details data-key="{{.Key}}">
   <summary>
     <a class="title" href="{{.Link}}" rel="noreferrer" target="_blank">{{.Title}}</a>

@@ -29,14 +29,19 @@ main { padding: 0.5rem 1rem 3rem; max-width: var(--deck-width); margin: 0 auto; 
 .overview { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.8rem; margin: 0.6rem 0 0; }
 .overview form { margin: 0; order: 2; }
 .counts { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; flex: 1; }
-.counts li {
+.counts button, .counts .stat {
+  display: block;
   background: var(--deck-surface);
   border: 1px solid var(--deck-line);
   border-radius: var(--deck-radius);
   padding: 0.2rem 0.6rem;
   color: var(--deck-text-2);
+  font: inherit;
   font-size: var(--deck-text-sm);
 }
+.counts .stat[hidden] { display: none; }
+.counts button:hover:not(:disabled) { background: var(--deck-surface-2); }
+.counts button[aria-pressed="true"] { background: var(--deck-accent-soft); border-color: var(--deck-accent); color: var(--deck-text); }
 .counts b { font-family: var(--deck-mono); font-variant-numeric: tabular-nums; color: var(--deck-text); margin-right: 0.2rem; }
 .counts li.you b, .counts li.unwatched b { color: var(--deck-attn); }
 .counts li.stalled b, .counts li.maybe b { color: var(--deck-danger); }
@@ -51,6 +56,7 @@ main { padding: 0.5rem 1rem 3rem; max-width: var(--deck-width); margin: 0 auto; 
 section.group { margin-top: 1.4rem; }
 section.group h2 { font-size: var(--deck-text-base); margin: 0 0 0.4rem; }
 section.group h3 { font-size: var(--deck-text-sm); margin: 0.8rem 0 0.3rem; color: var(--deck-text-2); display: inline-block; }
+section.group h3[hidden] { display: none; }
 .n { color: var(--deck-muted); font-weight: 400; font-family: var(--deck-mono); font-size: 0.9em; }
 details.sub > summary { cursor: pointer; margin: 0.8rem 0 0.3rem; color: var(--deck-text-2); }
 

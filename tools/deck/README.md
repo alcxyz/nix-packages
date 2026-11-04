@@ -17,6 +17,14 @@ its title and a `PR N: checks pending, unwatched` link per PR, and a
 `stopped, PR checks unwatched` count appears while any thread has one; the
 flag is informational and does not change the grouping.
 
+The count cards at the top of both views are filters. Pressing one shows only
+the rows it counts, and pressing it again clears that. It is kept in the URL
+fragment (`#card=you`), so it survives a refresh and a reload and can be
+linked to. Each card counts the rows that pass the page's search and selects,
+whichever card is active, and a card with nothing to show is disabled.
+Section headings count the rows on screen, and the average progress follows
+the unsettled threads on screen.
+
 deck holds no queries against T3's database. It runs five adapter commands,
 which the consumer installs, and parses their JSON:
 
@@ -148,7 +156,9 @@ The page lists the overview skill's shortlist first: up to 24 issues that may
 be done (in the close lane, or flagged `untouched-since-merge` or
 `related-closed` and not in the `inflight` lane), then up to 12
 other stale issues, idlest first. Pull requests follow by lane, then every
-other issue, collapsed. Suggested actions are shown, never performed.
+other issue, collapsed. Suggested actions are shown, never performed. The
+open issues count is of the rows shown, so it leaves out a dependency dashboard
+issue unless the shortlist picks it.
 
 With an item command, each shortlisted issue also gets a verdict, as the
 skill's readers give: `close`, `dispatch`, `refresh`, `keep`, `drop` or

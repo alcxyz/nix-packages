@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,9 @@ type RowView struct {
 	Project       string
 	Link          string
 	Group         string
+	// Cards names the count cards that count this row, space separated, for
+	// the page's card filters.
+	Cards         string
 	Owner         string
 	HasProgress   bool
 	Progress      int
@@ -263,6 +267,7 @@ func (d *Deck) view() PageView {
 			for _, gr := range sec.Threads {
 				row := d.rowLocked(in, env, gr, f.status[gr.ThreadID], f.summaries, queued)
 				row.ShowInstance = v.Multi
+				row.Cards = threadCards(gr)
 				// The average is the group command's rule over every
 				// instance's unsettled threads: progress, or 0 without one.
 				if gr.Bucket != "recently-settled" {
@@ -315,6 +320,32 @@ func (d *Deck) view() PageView {
 		v.SeenUpTo = time.Time{}
 	}
 	return v
+}
+
+// threadCards lists the count cards a thread belongs to, by the rules of the
+// group command's summary, so a card's number is the rows it shows.
+func threadCards(gr GroupRow) string {
+	var cards []string
+	unsettled := gr.Bucket != "recently-settled"
+	if unsettled {
+		cards = append(cards, "unsettled")
+	}
+	switch gr.Group {
+	case "user":
+		cards = append(cards, "you")
+	case "agent", "waiting":
+		cards = append(cards, "agent")
+	case "stalled":
+		cards = append(cards, "stalled")
+	case "settle":
+		cards = append(cards, "settle")
+	case "settled-open":
+		cards = append(cards, "maybe")
+	}
+	if unsettled && len(gr.UnwatchedChecks) > 0 {
+		cards = append(cards, "unwatched")
+	}
+	return strings.Join(cards, " ")
 }
 
 // subdivide splits "waiting on you" by kind of action and the settled

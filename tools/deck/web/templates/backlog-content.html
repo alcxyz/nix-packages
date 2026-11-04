@@ -4,11 +4,11 @@
     <button type="submit">Refresh now</button>
   </form>
   <ul class="counts">
-    <li><b>{{.Issues}}</b> open issues</li>
-    <li><b>{{.PRs}}</b> open pull requests</li>
-    <li class="maybe"><b>{{.MaybeDone}}</b> maybe done</li>
-    <li class="stalled"><b>{{.Stale}}</b> stale</li>
-    <li class="you"><b>{{.Ready}}</b> ready to merge</li>
+    <li><button type="button" data-card="issues" aria-pressed="false"{{if not .Issues}} disabled{{end}}><b>{{.Issues}}</b> open issues</button></li>
+    <li><button type="button" data-card="prs" aria-pressed="false"{{if not .PRs}} disabled{{end}}><b>{{.PRs}}</b> open pull requests</button></li>
+    <li class="maybe"><button type="button" data-card="maybe" aria-pressed="false"{{if not .MaybeDone}} disabled{{end}}><b>{{.MaybeDone}}</b> maybe done</button></li>
+    <li class="stalled"><button type="button" data-card="stale" aria-pressed="false"{{if not .Stale}} disabled{{end}}><b>{{.Stale}}</b> stale</button></li>
+    <li class="you"><button type="button" data-card="ready" aria-pressed="false"{{if not .Ready}} disabled{{end}}><b>{{.Ready}}</b> ready to merge</button></li>
   </ul>
   <p class="meta">
     <span class="asof{{if .Err}} error{{end}}">facts as of {{if .HasRun}}<time datetime="{{iso .AsOf}}">{{clock .AsOf}}</time>{{else}}never{{end}}{{if .Running}} (reading now){{end}}{{if .Err}} (last refresh failed at <time datetime="{{iso .ErrAt}}">{{clock .ErrAt}}</time>: {{.Err}}){{end}}</span>

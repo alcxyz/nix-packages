@@ -10,11 +10,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"path/filepath"
 )
 
 func newTestServer(t *testing.T) (*Deck, http.Handler, string) {
@@ -96,7 +99,7 @@ func TestUnwatchedChecks(t *testing.T) {
 	for _, want := range []string{
 		`<span class="deck-badge attn" title="Stopped while PR checks run, with no watch armed">checks unwatched</span>`,
 		`<a class="deck-badge attn" href="https://git.example.com/acme/gadgets/pulls/9?from=%3cb%3ex%3c/b%3e&amp;y=1" rel="noreferrer" target="_blank" title="https://git.example.com/acme/gadgets/pulls/9?from=&lt;b&gt;x&lt;/b&gt;&amp;y=1">PR 9: checks pending, unwatched</a>`,
-		`<li class="unwatched"><b>1</b> stopped, PR checks unwatched</li>`,
+		`<li class="unwatched" data-hide-empty><button type="button" data-card="unwatched" aria-pressed="false"><b>1</b> stopped, PR checks unwatched</button></li>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
@@ -122,7 +125,8 @@ func TestUnwatchedChecks(t *testing.T) {
 	d.mu.Lock()
 	d.facts["main"].grouped.Summary.UnwatchedChecks = 0
 	d.mu.Unlock()
-	if body := get(t, h, "/threads/").Body.String(); strings.Contains(body, "PR checks unwatched") {
+	// The card stays in the page for the script, hidden until it counts something.
+	if body := get(t, h, "/threads/").Body.String(); !strings.Contains(body, `<li class="unwatched" data-hide-empty hidden>`) {
 		t.Error("the KPI shows with a count of 0")
 	}
 }
@@ -734,5 +738,59 @@ func TestSummaryRolePickerAndAttribution(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// cardCounts reads what a rendered page says: each card's number, and how many
+// rows carry that card. The page's script filters by these, so they must agree.
+func cardCounts(t *testing.T, body string) (cards, rows map[string]int) {
+	t.Helper()
+	cards, rows = map[string]int{}, map[string]int{}
+	for _, m := range regexp.MustCompile(`data-card="([a-z-]+)"[^>]*><b>(\d+)</b>`).FindAllStringSubmatch(body, -1) {
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			t.Fatal(err)
+		}
+		cards[m[1]] = n
+	}
+	for _, m := range regexp.MustCompile(`<li class="row"[^>]* data-cards="([a-z -]*)"`).FindAllStringSubmatch(body, -1) {
+		for _, card := range strings.Fields(m[1]) {
+			rows[card]++
+		}
+	}
+	return cards, rows
+}
+
+func TestThreadCardsCountTheirRows(t *testing.T) {
+	_, h, _ := newTestServer(t)
+	body := get(t, h, "/threads/").Body.String()
+	cards, rows := cardCounts(t, body)
+	for _, card := range []string{"unsettled", "you", "stalled", "settle", "maybe", "agent", "unwatched"} {
+		if _, ok := cards[card]; !ok {
+			t.Errorf("no %s card", card)
+		}
+		if cards[card] != rows[card] {
+			t.Errorf("%s card says %d but %d rows carry it", card, cards[card], rows[card])
+		}
+	}
+	// A card with nothing to show cannot be pressed.
+	if !strings.Contains(body, `data-card="settle" aria-pressed="false" disabled`) {
+		t.Error("the empty settle card is not disabled")
+	}
+	if !strings.Contains(body, `<li class="stat" data-average>`) {
+		t.Error("the average is not marked for the script")
+	}
+}
+
+func TestBacklogCardsCountTheirRows(t *testing.T) {
+	_, h := newBacklogDeck(t)
+	cards, rows := cardCounts(t, get(t, h, "/backlog/").Body.String())
+	for _, card := range []string{"issues", "prs", "maybe", "stale", "ready"} {
+		if _, ok := cards[card]; !ok {
+			t.Errorf("no %s card", card)
+		}
+		if cards[card] != rows[card] {
+			t.Errorf("%s card says %d but %d rows carry it", card, cards[card], rows[card])
+		}
 	}
 }

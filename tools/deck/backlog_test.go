@@ -132,7 +132,7 @@ func TestBacklogPage(t *testing.T) {
 		"1 scoped repositories not found",
 		"read as example-agent",
 		`data-key="sub:prs:Renovate"`, `data-key="sub:issues:`,
-		"<b>7</b> open issues", "<b>2</b> maybe done", "<b>2</b> stale", "<b>1</b> ready to merge",
+		"<b>6</b> open issues", "<b>2</b> maybe done", "<b>2</b> stale", "<b>1</b> ready to merge",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)

@@ -1,5 +1,5 @@
 {{define "backlog-row"}}
-<li class="row" data-key="{{.Key}}" data-title="{{.Title}} {{.Ref}}" data-project="{{.Repo}}" data-prefix="{{.LaneLabel}}" data-next="{{.Next}}" data-idle="{{.IdleDays}}" data-updated="{{.UpdatedAt}}">
+<li class="row" data-key="{{.Key}}" data-cards="{{.Cards}}" data-title="{{.Title}} {{.Ref}}" data-project="{{.Repo}}" data-prefix="{{.LaneLabel}}" data-next="{{.Next}}" data-idle="{{.IdleDays}}" data-updated="{{.UpdatedAt}}">
 <details data-key="{{.Key}}">
   <summary>
     {{if .URL}}<a class="title" href="{{.URL}}" rel="noreferrer" target="_blank">{{.Title}}</a>{{else}}<span class="title">{{.Title}}</span>{{end}}
