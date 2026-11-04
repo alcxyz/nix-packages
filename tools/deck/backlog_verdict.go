@@ -20,10 +20,14 @@ import (
 
 // Verdicts (ADR-0014): one model call per shortlisted issue, with no tools,
 // on the issue's text the item command prints, cached against the issue's
-// updatedAt and merged pull requests.
+// updatedAt, merged pull requests and the body limit.
 
 const (
-	// itemChars cuts each text the item command prints.
+	// itemBodyChars cuts the issue's body, where its goal and done-when are;
+	// it is the limit asked of the item command. Of 171 open issues with a
+	// done-when, 27 lost it at 2000 and 3 at 8000.
+	itemBodyChars = 8000
+	// itemChars cuts each other text: titles, comments and pull requests.
 	itemChars = 2000
 	// itemPRs is how many of an issue's merged pull requests a verdict reads.
 	itemPRs            = 3
@@ -43,16 +47,18 @@ type Verdict struct {
 	Criteria *string `json:"criteria"`
 }
 
-// verdictBasis is what a verdict is valid for: the issue's updatedAt and
-// the merged pull requests that name it. A pull request can merge without
-// touching the issue it names, which is what makes an issue maybe done.
+// verdictBasis is what a verdict is valid for: the issue's updatedAt, the
+// merged pull requests that name it and how much of its body was read. A pull
+// request can merge without touching the issue it names, which is what makes
+// an issue maybe done. A stale issue never changes, so without the limit its
+// verdict would keep resting on a shorter cut.
 func verdictBasis(issue BacklogIssue) string {
 	refs := make([]string, 0, len(issue.MergedPRs))
 	for _, pr := range issue.MergedPRs {
 		refs = append(refs, pr.Ref)
 	}
 	sort.Strings(refs)
-	return issue.UpdatedAt + " " + strings.Join(refs, ",")
+	return issue.UpdatedAt + " " + strings.Join(refs, ",") + " " + strconv.Itoa(itemBodyChars)
 }
 
 // VerdictEntry is one issue's cached verdict and its last attempt, like a
@@ -195,7 +201,7 @@ func itemArgs(issue BacklogIssue) ([]string, error) {
 	if !validBacklogRef(issue.Ref) {
 		return nil, fmt.Errorf("invalid ref %q", issue.Ref)
 	}
-	args := []string{"--max-chars", strconv.Itoa(itemChars), issue.Ref}
+	args := []string{"--max-chars", strconv.Itoa(itemBodyChars), issue.Ref}
 	merged := append([]BacklogMergedPR(nil), issue.MergedPRs...)
 	sort.SliceStable(merged, func(i, j int) bool { return merged[i].MergedAt > merged[j].MergedAt })
 	for i, pr := range merged {
@@ -322,17 +328,22 @@ func buildVerdictPrompt(issue BacklogIssue, item ItemText, related map[string]Ba
 	if f.OpenPRs == nil {
 		f.OpenPRs = []string{}
 	}
-	data := issueData{Title: item.Title, Body: item.Body, Comments: item.Comments, MergedPRs: item.PRs, RelatedTitle: []string{}}
-	if data.Comments == nil {
-		data.Comments = []ItemComment{}
+	data := issueData{
+		Title: truncateRunes(item.Title, itemChars), Body: truncateRunes(item.Body, itemBodyChars),
+		Comments: []ItemComment{}, MergedPRs: []ItemPR{}, RelatedTitle: []string{},
 	}
-	if data.MergedPRs == nil {
-		data.MergedPRs = []ItemPR{}
+	for _, c := range item.Comments {
+		c.Body = truncateRunes(c.Body, itemChars)
+		data.Comments = append(data.Comments, c)
+	}
+	for _, pr := range item.PRs {
+		pr.Title, pr.Body = truncateRunes(pr.Title, itemChars), truncateRunes(pr.Body, itemChars)
+		data.MergedPRs = append(data.MergedPRs, pr)
 	}
 	if issue.Status != nil {
 		f.StatusDate, f.StatusAgeDays = issue.Status.Date, issue.Status.AgeDays
 		// The status line and related titles come from the inventory, not
-		// the item command, so they are cut here to the same limit.
+		// the item command.
 		data.StatusNext = truncateRunes(deref(issue.Status.Next), itemChars)
 		data.StatusOwner = truncateRunes(deref(issue.Status.Owner), itemChars)
 	}

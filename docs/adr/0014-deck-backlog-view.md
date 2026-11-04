@@ -64,10 +64,14 @@ to the dashboard process's view.
   the issue's text when the verdict is made), then
   the issue's own text (title, status line, body, comments, merged pull
   request text and related titles) as JSON between markers, marked untrusted.
+  The body keeps up to 8000 characters and each other text 2000: an issue's
+  goal and done-when are in its body, and at 2000 characters 27 of 171 open
+  issues with a done-when lost it, against 3 at 8000.
   Verdicts are cached in `$XDG_STATE_HOME/deck/backlog/verdicts.json` against
-  their basis, the issue's `updatedAt` and its merged pull request refs: a
-  pull request that names an issue can merge without touching it, and that is
-  exactly what moves an issue onto the shortlist. An issue is judged again only
+  their basis, the issue's `updatedAt`, its merged pull request refs and the
+  body limit: a pull request that names an issue can merge without touching
+  it, and that is exactly what moves an issue onto the shortlist, while a
+  stale issue never changes, so a new limit has to reach it this way. An issue is judged again only
   when its basis changes and its last attempt, failed or not, is at least
   `verdictIntervalMinutes` old (360, as thread summaries since ADR-0012's
   summary interval, so at most four automatic attempts a day at an issue that keeps

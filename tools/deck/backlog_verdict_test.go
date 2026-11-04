@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -73,7 +74,7 @@ func TestItemArgs(t *testing.T) {
 		{Ref: "o/r#3", MergedAt: "2026-10-03T00:00:00Z"}, {Ref: "o/r#4", MergedAt: "2026-10-04T00:00:00Z"},
 	}}
 	args, err := itemArgs(issue)
-	if err != nil || strings.Join(args, " ") != "--max-chars 2000 o/r#1 o/r#5 o/r#4 o/r#3" {
+	if err != nil || strings.Join(args, " ") != "--max-chars 8000 o/r#1 o/r#5 o/r#4 o/r#3" {
 		t.Fatalf("args %q, %v", args, err)
 	}
 	issue.MergedPRs = append(issue.MergedPRs, BacklogMergedPR{Ref: "-x/y#9", MergedAt: "2026-10-09T00:00:00Z"})
@@ -234,6 +235,39 @@ func TestStatusTextIsCut(t *testing.T) {
 	}
 	if strings.Contains(p, strings.Repeat("n", itemChars+1)) {
 		t.Error("the status line is longer than the item limit")
+	}
+}
+
+// The body keeps its done-when; the rest of the item text stays short.
+func TestItemTextLimits(t *testing.T) {
+	body := strings.Repeat("b", itemBodyChars-len("Done when: merged")) + "Done when: merged"
+	long := strings.Repeat("x", itemBodyChars)
+	item := ItemText{
+		Title: long, Body: body + "beyond the limit",
+		Comments: []ItemComment{{Body: long}},
+		PRs:      []ItemPR{{Title: long, Body: long}},
+	}
+	p, err := buildVerdictPrompt(BacklogIssue{Ref: "example/app#1"}, item, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, "Done when: merged") {
+		t.Error("the done-when at the end of the limit was cut")
+	}
+	if strings.Contains(p, "beyond the limit") {
+		t.Error("the body runs past its limit")
+	}
+	if strings.Contains(p, strings.Repeat("x", itemChars+1)) {
+		t.Error("a title, comment or pull request kept the body's limit")
+	}
+	if got := strings.Count(p, strings.Repeat("x", itemChars-1)); got != 4 {
+		t.Errorf("%d cut texts in the prompt, want the title, comment and both pull request texts", got)
+	}
+	if item.Comments[0].Body != long || item.PRs[0].Body != long {
+		t.Error("building the prompt changed the item")
+	}
+	if !strings.Contains(verdictBasis(BacklogIssue{UpdatedAt: "t"}), strconv.Itoa(itemBodyChars)) {
+		t.Error("the basis ignores the body limit, so a stale issue keeps its old verdict")
 	}
 }
 
