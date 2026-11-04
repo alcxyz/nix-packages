@@ -254,7 +254,9 @@ The metadata is deliberately small:
 ```
 
 The page appears at `/briefings/2026-01-15-example/`, with an index at
-`/briefings/`. Indexes escape metadata and list newer dates first. Collection
+`/briefings/`. Indexes escape metadata and list newer dates first. A page that
+stays current, such as a live report, can add `"pinned": true` to its metadata
+to stay ahead of the dated pages, under its own heading. Collection
 and page names use lowercase slug segments. The metadata and dotfiles are not
 download routes, and there are no directory listings. Assets sit beside
 `index.html`, not in subdirectories. Their names are lowercase letters and

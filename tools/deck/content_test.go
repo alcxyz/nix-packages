@@ -420,3 +420,31 @@ func TestContentBundleRevalidation(t *testing.T) {
 		})
 	}
 }
+
+func TestPinnedPagesComeFirst(t *testing.T) {
+	d, _ := newTestDeck(t)
+	d.cfg.ContentDir = t.TempDir()
+	writeContentPage(t, d.cfg.ContentDir, "notes/a", "Page a", "2026-01-01", "")
+	writeContentPage(t, d.cfg.ContentDir, "notes/b", "Page b", "2026-10-02", "")
+	writeContentPage(t, d.cfg.ContentDir, "notes/c", "Page c", "2026-10-03", "")
+	writeContentPage(t, d.cfg.ContentDir, "notes/d", "Page d", "2026-10-04", "")
+	writeContentFile(t, d.cfg.ContentDir, "notes/a/metadata.json", `{"title":"Page a","date":"2026-01-01","pinned":true}`)
+	h := contentTestHandler(t, d, nil)
+
+	body := get(t, h, "/notes/").Body.String()
+	pinned, october, latest, oldest := strings.Index(body, "<h2>Pinned</h2>"), strings.Index(body, "<h2>October 2026</h2>"), strings.Index(body, "Page d"), strings.Index(body, "Page a")
+	if pinned < 0 || oldest < pinned || october < oldest || latest < october {
+		t.Errorf("the pinned page is not in its own group ahead of the months:\n%s", body)
+	}
+	if !strings.Contains(body, "4 pages, pinned first, then newest first.") {
+		t.Errorf("the heading does not mention the pinned page:\n%s", body)
+	}
+	if strings.Contains(body, "January 2026") {
+		t.Errorf("the pinned page is listed under its month as well:\n%s", body)
+	}
+
+	library := get(t, h, "/").Body.String()
+	if !strings.Contains(library, "Page a") || strings.Contains(library, "Page b") {
+		t.Errorf("the root index should list the pinned page and then the newest two:\n%s", library)
+	}
+}

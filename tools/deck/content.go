@@ -25,7 +25,10 @@ type ContentPage struct {
 	Title   string `json:"title"`
 	Date    string `json:"date"`
 	Summary string `json:"summary"`
-	URL     string `json:"-"`
+	// Pinned keeps a page that stays current, such as a live report, ahead of
+	// the dated ones in its collection.
+	Pinned bool   `json:"pinned"`
+	URL    string `json:"-"`
 }
 
 type CollectionView struct {
@@ -49,7 +52,8 @@ type MonthGroup struct {
 	Pages []ContentPage
 }
 
-// recentPages is how many of a collection's newest pages the root index lists.
+// recentPages is how many of a collection's pages the root index lists, pinned
+// pages first.
 const recentPages = 3
 
 // parsedDate parses the validated metadata date; readContentPage rejects others.
@@ -74,7 +78,8 @@ func (c CollectionView) Title() string {
 	return strings.Join(words, " ")
 }
 
-// Recent returns the newest pages; Pages is already sorted newest first.
+// Recent returns the first pages; Pages is already sorted pinned first, then
+// newest first.
 func (c CollectionView) Recent() []ContentPage {
 	if len(c.Pages) > recentPages {
 		return c.Pages[:recentPages]
@@ -82,11 +87,20 @@ func (c CollectionView) Recent() []ContentPage {
 	return c.Pages
 }
 
-// Months groups the date-sorted pages by calendar month, newest first.
+// HasPinned reports whether the collection pins any page; they sort first.
+func (c CollectionView) HasPinned() bool {
+	return len(c.Pages) > 0 && c.Pages[0].Pinned
+}
+
+// Months groups the sorted pages under Pinned, then by calendar month, newest
+// first.
 func (c CollectionView) Months() []MonthGroup {
 	var groups []MonthGroup
 	for _, page := range c.Pages {
 		label := page.parsedDate().Format("January 2006")
+		if page.Pinned {
+			label = "Pinned"
+		}
 		if len(groups) == 0 || groups[len(groups)-1].Label != label {
 			groups = append(groups, MonthGroup{Label: label})
 		}
@@ -201,6 +215,9 @@ func (s *Server) collection(root *os.Root, name string) (CollectionView, error) 
 		view.Pages = append(view.Pages, page)
 	}
 	sort.Slice(view.Pages, func(i, j int) bool {
+		if view.Pages[i].Pinned != view.Pages[j].Pinned {
+			return view.Pages[i].Pinned
+		}
 		if view.Pages[i].Date != view.Pages[j].Date {
 			return view.Pages[i].Date > view.Pages[j].Date
 		}

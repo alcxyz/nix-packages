@@ -16,7 +16,7 @@
 <header class="lib-head">
   <nav class="lib-crumbs" aria-label="Breadcrumb"><a href="/">Deck</a><span aria-current="page">{{.Title}}</span></nav>
   <h1>{{.Title}}</h1>
-  <p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}, newest first.</p>
+  <p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}, {{if .HasPinned}}pinned first, then {{end}}newest first.</p>
 </header>
 {{range .Months}}
 <section class="lib-month">
