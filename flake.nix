@@ -50,6 +50,7 @@
           gh-app-gh = pkgs.callPackage ./tools/gh-app/gh.nix {
             inherit (allPackages) gh-app;
           };
+          credential-approval = pkgs.callPackage ./tools/credential-approval { };
           deck = pkgs.callPackage ./tools/deck { };
           desk = pkgs.callPackage ./tools/desk { };
           git-identity-guard = pkgs.callPackage ./tools/git-identity-guard { };
@@ -180,6 +181,8 @@
         checks.nix-deploy-contract = allPackages.nix-deploy;
         # The package build runs revkit's Go tests, with fake reviewer clients.
         checks.revkit = allPackages.revkit;
+        # The package build runs credential-approval's Go tests, with a software passkey.
+        checks.credential-approval = allPackages.credential-approval;
         # The package build runs deck's Go tests, with fake adapter commands.
         checks.deck = allPackages.deck;
         # The package build runs desk's Go tests, with a fake ssh and viewer.

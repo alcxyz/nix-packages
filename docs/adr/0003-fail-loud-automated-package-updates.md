@@ -1,7 +1,7 @@
 # ADR-0003: Fail-Loud Automated Package Updates
 
 **Status:** Accepted
-**Date:** 2026-05-05
+**Date:** 2026-05-05, updated 2026-11-04 (`credential-approval` exported on all four systems, per ADR-0018)
 **Amended:** 2026-09-30; 2026-10-28 (the September 2026 follow-through folded into the decision; the platform table updated to the flake's current exports); 2026-11-03 (CI runs cheap checks only; native builds and provider verification run locally)
 **History:** [replaced text](archive/0003-fail-loud-automated-package-updates-history.md)
 **Applies to:** `.forgejo/workflows/`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
@@ -167,7 +167,7 @@ The flake explicitly exports the following combinations. "All four" means
 
 | Packages | Exported systems |
 |----------|------------------|
-| `claude-code`, `codex-app-server`, `codex-cli`, `deck`, `desk`, `forge-mirror`, `forgejo-deploy-key`, `gh-app`, `gh-app-gh`, `git-identity-guard`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `nixfleet`, `revkit`, `workmux` | All four |
+| `claude-code`, `codex-app-server`, `codex-cli`, `credential-approval`, `deck`, `desk`, `forge-mirror`, `forgejo-deploy-key`, `gh-app`, `gh-app-gh`, `git-identity-guard`, `k8s-node-reboot`, `kdash`, `nix-deploy`, `nix-gc-maintenance`, `nixfleet`, `revkit`, `workmux` | All four |
 | `deck-image`, `devlog`, `forgejo-runner-cancellation`, `forgejo-runner-orphan-check`, `ndrop`, `openzfs_7_1`, `openzfs_7_3`, `stash`, `zfs-auto-unlock` | Both Linux systems |
 | `herdr` | Both Linux systems, `aarch64-darwin` |
 | `ghostty` | Both Darwin systems |
