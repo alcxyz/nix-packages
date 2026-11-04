@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Create the approval passkey</title>
+<link rel="stylesheet" href="{{.BasePath}}static/theme.css">
+<link rel="stylesheet" href="{{.BasePath}}static/base.css">
+<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+<script src="{{.BasePath}}static/theme.js"></script>
+<script src="{{.BasePath}}static/consent.js" defer></script>
+</head>
+<body data-deck="tool">
+<header class="top">
+  <a href="/consent/">Approvals</a>
+  <h1>Create the approval passkey</h1>
+  <span data-deck-theme></span>
+</header>
+<main id="consent-enroll">
+  <p>This creates a passkey for this site on the device or password manager you pick. deck keeps nothing. An approval counts only once its public key below is pinned in the host's configuration.</p>
+  <p class="consent-actions"><button type="button" id="consent-enroll-create">Create a passkey</button></p>
+  <p id="consent-state" role="status"></p>
+  <dl class="consent-facts" id="consent-enrolled" hidden>
+    <dt>Relying party</dt><dd id="consent-enrolled-rp" class="consent-mono"></dd>
+    <dt>Credential ID</dt><dd id="consent-enrolled-id" class="consent-mono"></dd>
+    <dt>Public key</dt><dd id="consent-enrolled-key" class="consent-mono"></dd>
+  </dl>
+</main>
+</body>
+</html>

@@ -29,6 +29,14 @@ type Config struct {
 	// Backlog is the optional backlog view (ADR-0014); nil leaves it off,
 	// with no route under its path.
 	Backlog *BacklogConfig `toml:"backlog"`
+	// Consent relays credential approvals (ADR-0018); nil leaves it off, with
+	// no route under its path.
+	Consent *ConsentConfig `toml:"consent"`
+}
+
+// ConsentConfig names the spool directory shared with credential-approval.
+type ConsentConfig struct {
+	SpoolDir string `toml:"spoolDir"`
 }
 
 // BacklogConfig configures the backlog view: where it is served, the
@@ -278,6 +286,21 @@ func (c *Config) normalize() error {
 		// command there are none, and the role does not matter.
 		if c.Backlog.Commands.Item != "" && !oneOf(c.Backlog.VerdictRole, c.Threads.SummaryRoles) {
 			return fmt.Errorf("backlog.verdictRole %q must be one of threads.summaryRoles", c.Backlog.VerdictRole)
+		}
+	}
+
+	if c.Consent != nil {
+		if pagesOnly {
+			return errors.New("consent needs thread instances: the pages-only mode relays no approvals")
+		}
+		if !filepath.IsAbs(c.Consent.SpoolDir) {
+			return fmt.Errorf("consent.spoolDir %q must be an absolute path", c.Consent.SpoolDir)
+		}
+		if strings.HasPrefix(c.BasePath, consentBase) || strings.HasPrefix(consentBase, c.BasePath) && c.BasePath != "/" {
+			return fmt.Errorf("basePath %q must not overlap %q", c.BasePath, consentBase)
+		}
+		if c.Backlog != nil && (strings.HasPrefix(c.Backlog.BasePath, consentBase) || strings.HasPrefix(consentBase, c.Backlog.BasePath)) {
+			return fmt.Errorf("backlog.basePath %q must not overlap %q", c.Backlog.BasePath, consentBase)
 		}
 	}
 

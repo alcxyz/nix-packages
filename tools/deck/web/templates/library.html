@@ -11,7 +11,7 @@
 <script src="/static/theme.js"></script>
 </head>
 <body class="lib" data-deck="index">
-<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a>{{if .BacklogPath}} <a href="{{.BacklogPath}}">Backlog</a>{{end}}<span data-deck-theme></span></nav></header>
+<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a>{{if .BacklogPath}} <a href="{{.BacklogPath}}">Backlog</a>{{end}}{{if .ConsentPath}} <a href="{{.ConsentPath}}">Approvals</a>{{end}}<span data-deck-theme></span></nav></header>
 <main class="lib-main">
 <header class="lib-head">
   <h1>Deck</h1>
@@ -24,6 +24,11 @@
 {{if .BacklogPath}}
   <li class="lib-card lib-dashboard">
     <a class="lib-cover" href="{{.BacklogPath}}"><span class="lib-kicker">Dashboard</span><h2>Backlog</h2><p>Which issues may be done or have gone stale, and which pull requests are ready.</p></a>
+  </li>
+{{end}}
+{{if .ConsentPath}}
+  <li class="lib-card lib-dashboard">
+    <a class="lib-cover" href="{{.ConsentPath}}"><span class="lib-kicker">Dashboard</span><h2>Approvals</h2><p>Credential requests waiting for your passkey.</p></a>
   </li>
 {{end}}
 {{range .Collections}}

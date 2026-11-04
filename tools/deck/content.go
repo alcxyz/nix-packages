@@ -38,6 +38,8 @@ type LibraryView struct {
 	BasePath string
 	// BacklogPath is the backlog view's path, empty when it is off.
 	BacklogPath string
+	// ConsentPath is the approvals page's path, empty when it is off.
+	ConsentPath string
 	Collections []CollectionView
 }
 
@@ -227,6 +229,9 @@ func (s *Server) contentCollectionAvailable(name string) bool {
 	if s.deck.cfg.Backlog != nil && strings.HasPrefix(s.deck.cfg.Backlog.BasePath, "/"+name+"/") {
 		return false
 	}
+	if s.deck.cfg.Consent != nil && "/"+name+"/" == consentBase {
+		return false
+	}
 	if base == "/" {
 		return name != "fragment" && name != "actions"
 	}
@@ -269,6 +274,9 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 		view := LibraryView{BasePath: s.deck.cfg.BasePath}
 		if s.deck.cfg.Backlog != nil {
 			view.BacklogPath = s.deck.cfg.Backlog.BasePath
+		}
+		if s.deck.cfg.Consent != nil {
+			view.ConsentPath = consentBase
 		}
 		if root != nil {
 			entries, err := osReadContentDir(root)

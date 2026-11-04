@@ -205,6 +205,25 @@ and HEAD requests; their other requests get 403. At least one group must be
 configured. POST requests also need an `Origin` header equal to
 `publicOrigin`.
 
+## Credential approvals
+
+With `[consent]`, deck relays credential approvals to a person
+([ADR-0018](../../docs/adr/0018-passkey-credential-approvals.md)): `/consent/`
+lists the requests waiting in `spoolDir`, `/consent/ID` shows one and asks for
+a passkey, and `/consent/enroll` creates that passkey. deck only passes files
+between the browser and
+[credential-approval](../credential-approval/README.md), which verifies the
+signature; deck holds no key. Read-only members can see the pages and answer
+nothing. Serve deck over HTTPS at its `publicOrigin`,
+since passkeys need a secure context and are bound to that host name. Only the
+dashboard process can relay, so a proxy in front of two processes routes
+`/consent/` to it.
+
+```toml
+[consent]
+spoolDir = "/run/user/1000/credential-consent"
+```
+
 ## Page collections
 
 Page content is runtime data, not part of Deck's public source or Nix package.

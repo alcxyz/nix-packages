@@ -92,6 +92,9 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 		backlogBase = d.cfg.Backlog.BasePath
 		app.Handle("GET "+backlogBase[:len(backlogBase)-1], http.RedirectHandler(backlogBase, http.StatusMovedPermanently))
 	}
+	if d.cfg.Consent != nil {
+		s.consentRoutes(app)
+	}
 	collections := *d.cfg.Collections
 
 	// Reserve the dashboard namespace, including its method errors. Content
@@ -103,7 +106,8 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 			return
 		}
 		_, pattern := app.Handler(r)
-		reserved := (base != "/" && inNamespace(r.URL.Path, base)) || (backlogBase != "" && inNamespace(r.URL.Path, backlogBase))
+		reserved := (base != "/" && inNamespace(r.URL.Path, base)) || (backlogBase != "" && inNamespace(r.URL.Path, backlogBase)) ||
+			(d.cfg.Consent != nil && inNamespace(r.URL.Path, consentBase))
 		if !collections || pattern != "" || reserved || (base == "/" && strings.HasPrefix(r.URL.Path, "/actions/")) {
 			app.ServeHTTP(w, r)
 			return

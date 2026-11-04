@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Approvals</title>
+<link rel="stylesheet" href="{{.BasePath}}static/theme.css">
+<link rel="stylesheet" href="{{.BasePath}}static/base.css">
+<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+<script src="{{.BasePath}}static/theme.js"></script>
+</head>
+<body data-deck="tool">
+<header class="top">
+  <a href="/">Deck</a>
+  <h1>Approvals</h1>
+  <span data-deck-theme></span>
+</header>
+<main>
+{{if .Requests}}
+<ul class="consent-list">
+{{range .Requests}}
+  <li><a href="/consent/{{.ID}}">{{.Title}}</a> <span class="meta">{{.Requester}}</span></li>
+{{end}}
+</ul>
+{{else}}
+<p class="empty">Nothing is waiting for an approval.</p>
+{{end}}
+</main>
+</body>
+</html>

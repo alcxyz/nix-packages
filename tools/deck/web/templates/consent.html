@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Approve a request</title>
+<link rel="stylesheet" href="{{.BasePath}}static/theme.css">
+<link rel="stylesheet" href="{{.BasePath}}static/base.css">
+<link rel="stylesheet" href="{{.BasePath}}static/deck.css">
+<script src="{{.BasePath}}static/theme.js"></script>
+<script src="{{.BasePath}}static/consent.js" defer></script>
+</head>
+<body data-deck="tool">
+<header class="top">
+  <a href="/consent/">Approvals</a>
+  <h1 id="consent-title">Approve a request</h1>
+  <span data-deck-theme></span>
+</header>
+<main id="consent" data-consent-id="{{.ID}}">
+  <noscript><p class="notice">Approving needs JavaScript, to sign the request with your passkey.</p></noscript>
+  <dl class="consent-facts" id="consent-facts" hidden>
+    <dt>Why</dt><dd id="consent-reason"></dd>
+    <dt>What it does</dt><dd id="consent-impact"></dd>
+    <dt>Operation</dt><dd id="consent-operation" class="consent-mono"></dd>
+    <dt>Who asked</dt><dd id="consent-requester"></dd>
+    <dt>Open until</dt><dd id="consent-expires"></dd>
+  </dl>
+  <p class="consent-actions" id="consent-actions" hidden>
+    <button type="button" id="consent-approve">Approve with passkey</button>
+    <button type="button" id="consent-deny">Deny</button>
+  </p>
+  <p id="consent-state" role="status">Loading the request.</p>
+</main>
+</body>
+</html>
