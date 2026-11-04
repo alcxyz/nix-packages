@@ -167,7 +167,9 @@ skill's readers give: `close`, `dispatch`, `refresh`, `keep`, `drop` or
 merged pull requests (each reference checked and passed as its own argument),
 then makes one model call with no tools through `verdictRole`, at
 `verdictEffort`. The prompt holds deck's facts, then the issue's text as
-untrusted data. Verdicts are cached in
+untrusted data. If the item command's output lists `linked` items (each with
+`ref`, `kind`, `state` and `title`), deck adds them to the items the inventory
+relates to the issue. Verdicts are cached in
 `$XDG_STATE_HOME/deck/backlog/verdicts.json` against the issue's `updatedAt`
 and merged pull requests. A changed issue is judged again once its last
 attempt is `verdictIntervalMinutes` old; failures back off as summaries do.

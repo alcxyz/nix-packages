@@ -1,7 +1,7 @@
 # ADR-0012: deck, a live T3 thread dashboard
 
 **Status:** Accepted
-**Date:** 2026-10-20, updated 2026-10-24 (summary interval, per #642)
+**Date:** 2026-10-20, updated 2026-10-24 (summary interval, per #642), 2026-11-04 (role choice, final message length)
 **Applies to:** `tools/deck/`
 
 ## Context
@@ -57,8 +57,9 @@ that runs T3 and reached through an authenticating proxy.
   keeps changing; retries of an unchanged thread follow the backoff below),
   and its facts do not
   already settle it (settled and done, or accepted). A
-  worker makes one model call per thread through the shared `light` role of
-  the LLM configuration devlog uses (ADR-0002), over the CLI transport,
+  worker makes one model call per thread through a shared role (`summaryRole`,
+  `light` by default) of the LLM configuration devlog uses (ADR-0002), over
+  the CLI transport,
   trying the role's backups in turn, under a concurrency cap and an hourly
   call budget. A queued thread that turns active again waits for the quiet
   period before its call. A failed command or model call is retried after
@@ -131,7 +132,21 @@ that runs T3 and reached through an authenticating proxy.
   six hours; Refresh summary and Refresh now are the way to get one sooner.
 - A role with no Claude CLI entry leaves summaries off; the page says so
   and the facts still work. Summaries for such a role would need an API
-  transport, which deck does not have yet.
+  transport or a Codex app server restricted to no tools, neither of which
+  deck has. In a blind comparison on 2026-11-04, Opus at medium effort was
+  the best on verdicts and level on summaries, so a Codex transport is not
+  worth building unless Opus use starts to show against the Claude limits.
+- The prompt keeps the first three messages to 1,500 characters and later ones
+  to 500, but the thread's final message and the agent's final message to
+  4,000, since those hold the outcome and what is asked of the owner. In 60
+  recent threads, 54 final agent messages were longer than 500 characters and
+  2 longer than 4,000.
+- The `light` default does not suit summaries that the owner acts on: in that
+  comparison Haiku at high effort scored 1.21 of 2 against Opus's 1.59. A host
+  sets `summaryRole` and `verdictRole` to `standard` for that, with
+  `verdictEffort` set to `""` so verdicts keep the role's medium effort rather
+  than the default `low`. That is about 20 times the list price, an estimated
+  $2 a day at about 54 summaries and 8 verdicts a day.
 - Accepting a settled thread as done names the settlement the page showed;
   if the thread settled again since, deck refuses with 409 and the user
   looks again.

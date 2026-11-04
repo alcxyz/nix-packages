@@ -1,7 +1,7 @@
 # ADR-0014: deck's backlog view, a live backlog overview
 
 **Status:** Accepted
-**Date:** 2026-10-24
+**Date:** 2026-10-24, updated 2026-11-04 (linked items, the role a host may choose)
 **Applies to:** `tools/deck/`, `tools/gh-app/`
 
 ## Context
@@ -42,7 +42,10 @@ to the dashboard process's view.
   - `item --max-chars N REF [PR_REF...]` prints the text a reader needs for
     one issue: its title, body, `updatedAt` and last five comments, and the
     title and description of each listed merged pull request (at most three,
-    the newest of the row's `mergedPrs`), each text cut to N characters.
+    the newest of the row's `mergedPrs`), each text cut to N characters. It
+    may also list the items in other repositories that the text links, with
+    their state, so a verdict sees them even when the repository is in scope;
+    without that list, the verdict has only the inventory's related items.
     deck checks every reference against the inventory's ref pattern
     (`OWNER/REPO#N`, or `gh:OWNER/REPO#N`), never starting with a dash, and
     passes each as its own argv entry.
@@ -56,7 +59,9 @@ to the dashboard process's view.
   returns the skill's reader answer, validated strictly:
   `{"verdict": "close|dispatch|refresh|keep|drop|unclear", "reason", "criteria"}`.
   The prompt carries deck's facts (lane, flags, idle days, checkbox progress,
-  open and merged pull request refs, and the state of related items), then
+  open and merged pull request refs, and the state of related items, both
+  those the inventory relates and any the item command reports as linked in
+  the issue's text when the verdict is made), then
   the issue's own text (title, status line, body, comments, merged pull
   request text and related titles) as JSON between markers, marked untrusted.
   Verdicts are cached in `$XDG_STATE_HOME/deck/backlog/verdicts.json` against
@@ -75,7 +80,8 @@ to the dashboard process's view.
 - **One budget, with a reserve for summaries.** Verdicts spend the same
   rolling `callsPerHour` budget as thread summaries and use the same no-tools
   model entries. Automatic verdicts run one at a time, through `verdictRole`
-  (`light`) at `verdictEffort` (`low`, as the skill's readers run; empty keeps
+  (`light` by default; a host may choose another, see ADR-0012) at
+  `verdictEffort` (`low` by default, as the skill's readers run; empty keeps
   the role's own), and start only while more than a quarter of the hour's
   budget is left, so a backlog change cannot starve thread summaries. Each
   shortlisted row has **Refresh verdict** with the role picker of

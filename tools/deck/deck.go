@@ -21,6 +21,7 @@ const (
 	headChars        = 1500
 	tailMessages     = 30
 	tailChars        = 500
+	lastChars        = 4000
 	retryFirst       = 15 * time.Minute
 	retryMax         = 6 * time.Hour
 )
@@ -952,7 +953,7 @@ func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t Invento
 		return d.recordFailure(ctx, key, t, seen, fmt.Errorf("summary role %q is unavailable", role), false)
 	}
 	seq := d.nextObservation()
-	m, err := d.cmds.messages(ctx, in, t.ThreadID, headMessages, tailMessages, headChars)
+	m, err := d.cmds.messages(ctx, in, t.ThreadID, headMessages, tailMessages, lastChars)
 	if err != nil {
 		return d.recordFailure(ctx, key, t, seen, err, true)
 	}
@@ -1002,7 +1003,7 @@ func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t Invento
 			facts.OpenPRs = append(facts.OpenPRs, pr.URL)
 		}
 	}
-	prompt, err := buildPrompt(facts, mergeMessages(m, headMessages, tailChars))
+	prompt, err := buildPrompt(facts, mergeMessages(m, headMessages, headChars, tailChars, lastChars))
 	if err != nil {
 		return d.recordFailure(ctx, key, t, seen, err, false)
 	}

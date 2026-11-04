@@ -130,12 +130,45 @@ func TestSummaryCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMergeMessagesKeepsTheLatestMessagesLonger(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	cases := []struct {
+		name string
+		msgs []Message
+		want []int
+	}{
+		{
+			"the agent spoke last",
+			[]Message{{Position: 1, Role: "user", Text: long}, {Position: 39, Role: "assistant", Text: long}, {Position: 40, Role: "assistant", Text: long}},
+			[]int{1501, 501, 4001},
+		},
+		{
+			"the owner answered after the agent",
+			[]Message{{Position: 38, Role: "assistant", Text: long}, {Position: 39, Role: "assistant", Text: long}, {Position: 40, Role: "user", Text: long}},
+			[]int{501, 4001, 4001},
+		},
+		{
+			"a thread short enough to be all head",
+			[]Message{{Position: 1, Role: "user", Text: long}, {Position: 2, Role: "assistant", Text: long}},
+			[]int{1501, 4001},
+		},
+	}
+	for _, c := range cases {
+		merged := mergeMessages(Messages{Messages: c.msgs}, 3, 1500, 500, 4000)
+		for i, msg := range merged {
+			if got := len([]rune(msg.Text)); got != c.want[i] {
+				t.Errorf("%s: message %d has %d characters, want %d", c.name, i, got, c.want[i])
+			}
+		}
+	}
+}
+
 func TestBuildPromptMarksUntrustedData(t *testing.T) {
 	msgs := []Message{
 		{Position: 1, Role: "user", Text: strings.Repeat("h", 1200)},
 		{Position: 40, Role: "assistant", Text: strings.Repeat("t", 800)},
 	}
-	merged := mergeMessages(Messages{Messages: append(msgs, msgs[1])}, 3, 500)
+	merged := mergeMessages(Messages{Messages: append(msgs, msgs[1])}, 3, 1500, 500, 500)
 	if len(merged) != 2 {
 		t.Fatalf("duplicates kept: %d", len(merged))
 	}

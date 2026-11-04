@@ -465,9 +465,21 @@ func buildPrompt(f promptFacts, msgs []Message) (string, error) {
 	return b.String(), nil
 }
 
-// mergeMessages joins the head and tail of a thread by position and cuts the
-// tail messages down to tailChars, as the command would with --max-chars.
-func mergeMessages(m Messages, headCount, tailChars int) []Message {
+// mergeMessages joins the head and tail of a thread by position and cuts each
+// message: the first headCount to headChars and the rest to tailChars. The
+// thread's final message and the agent's final message keep up to lastChars,
+// since that is where an agent reports the outcome and what it asks of the
+// owner. The command must be asked for at least lastChars.
+func mergeMessages(m Messages, headCount, headChars, tailChars, lastChars int) []Message {
+	final, finalAgent := -1, -1
+	for _, msg := range m.Messages {
+		if msg.Position > final {
+			final = msg.Position
+		}
+		if msg.Role == "assistant" && msg.Position > finalAgent {
+			finalAgent = msg.Position
+		}
+	}
 	seen := map[int]bool{}
 	out := []Message{}
 	for _, msg := range m.Messages {
@@ -475,8 +487,13 @@ func mergeMessages(m Messages, headCount, tailChars int) []Message {
 			continue
 		}
 		seen[msg.Position] = true
-		if msg.Position > headCount {
+		switch {
+		case msg.Position == final || msg.Position == finalAgent:
+			msg.Text = truncateRunes(msg.Text, lastChars)
+		case msg.Position > headCount:
 			msg.Text = truncateRunes(msg.Text, tailChars)
+		default:
+			msg.Text = truncateRunes(msg.Text, headChars)
 		}
 		out = append(out, msg)
 	}

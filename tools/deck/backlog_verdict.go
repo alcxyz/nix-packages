@@ -165,6 +165,16 @@ type ItemText struct {
 	UpdatedAt string        `json:"updatedAt"`
 	Comments  []ItemComment `json:"comments"`
 	PRs       []ItemPR      `json:"prs"`
+	// Linked are the items in other repositories the issue's text links,
+	// with their state, read by the item command when the verdict is made.
+	Linked []ItemLinked `json:"linked"`
+}
+
+type ItemLinked struct {
+	Ref   string `json:"ref"`
+	Kind  string `json:"kind"`
+	State string `json:"state"`
+	Title string `json:"title"`
 }
 
 type ItemComment struct {
@@ -329,10 +339,19 @@ func buildVerdictPrompt(issue BacklogIssue, item ItemText, related map[string]Ba
 	for _, pr := range issue.MergedPRs {
 		f.MergedPRs = append(f.MergedPRs, verdictMerged{Ref: pr.Ref, Closes: pr.Closes, MergedAt: pr.MergedAt})
 	}
+	listed := map[string]bool{}
 	for _, ref := range issue.Related {
 		if r, ok := related[ref]; ok {
+			listed[r.Ref] = true
 			f.Related = append(f.Related, verdictRelated{Ref: r.Ref, Kind: r.Kind, State: r.State})
 			data.RelatedTitle = append(data.RelatedTitle, r.Ref+": "+truncateRunes(r.Title, itemChars))
+		}
+	}
+	for _, l := range item.Linked {
+		if !listed[l.Ref] {
+			listed[l.Ref] = true
+			f.Related = append(f.Related, verdictRelated{Ref: l.Ref, Kind: l.Kind, State: l.State})
+			data.RelatedTitle = append(data.RelatedTitle, l.Ref+": "+truncateRunes(l.Title, itemChars))
 		}
 	}
 	facts, err := json.MarshalIndent(f, "", "  ")

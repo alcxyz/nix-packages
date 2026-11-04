@@ -447,3 +447,27 @@ func TestRefreshNowDuringARead(t *testing.T) {
 		t.Fatalf("the next read queued %d", len(d.backlog.queue))
 	}
 }
+
+func TestVerdictPromptListsLinkedItems(t *testing.T) {
+	issue := BacklogIssue{Ref: "o/r#1", Related: []string{"o/s#2"}}
+	related := map[string]BacklogRelated{"o/s#2": {Ref: "o/s#2", Kind: "issue", State: "open", Title: "FROM-INVENTORY"}}
+	item := ItemText{Linked: []ItemLinked{
+		{Ref: "o/s#2", Kind: "issue", State: "closed", Title: "FROM-ITEM"},
+		{Ref: "o/t#3", Kind: "pr", State: "merged", Title: "LINKED-TITLE"},
+	}}
+	p, err := buildVerdictPrompt(issue, item, related)
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin := strings.LastIndex(p, "BEGIN ISSUE DATA")
+	facts, data := p[:begin], p[begin:]
+	if !strings.Contains(facts, `"ref": "o/t#3"`) || !strings.Contains(facts, `"state": "merged"`) {
+		t.Errorf("the linked item's state is not in the facts:\n%s", facts)
+	}
+	if strings.Contains(facts, "LINKED-TITLE") || !strings.Contains(data, "o/t#3: LINKED-TITLE") {
+		t.Errorf("a linked title is written by people and belongs in the untrusted data:\n%s", p)
+	}
+	if strings.Contains(p, "FROM-ITEM") || strings.Count(facts, `"ref": "o/s#2"`) != 1 {
+		t.Errorf("an item the inventory lists was added twice:\n%s", p)
+	}
+}
