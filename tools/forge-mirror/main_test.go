@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -955,6 +954,9 @@ func TestPolicyCommandsFailClosedBeforeNetwork(t *testing.T) {
 		for _, config := range []string{"missing", "unreadable", "missing-explicit-file-with-env"} {
 			t.Run(name+"/"+config, func(t *testing.T) {
 				isolatedMirrorConfig(t)
+				if name == "audit" {
+					writeAuditPolicy(t, []auditRepository{{FullName: "team/example", Canonical: "forgejo", Mirror: "optional"}})
+				}
 				unsetEnv(t, "FORGE_MIRROR_GITHUB_PRIMARY_REPOS")
 				unsetEnv(t, "FORGE_MIRROR_GITHUB_PRIMARY_REPOS_FILE")
 				if config == "unreadable" {
@@ -972,7 +974,7 @@ func TestPolicyCommandsFailClosedBeforeNetwork(t *testing.T) {
 				}))
 				defer server.Close()
 				err := command(server.URL)
-				if err == nil || !strings.Contains(err.Error(), "github-primary repo config") {
+				if err == nil || (name != "audit" && !strings.Contains(err.Error(), "github-primary repo config")) {
 					t.Fatalf("expected configuration error, got %v", err)
 				}
 				if requests != 0 {
@@ -1011,6 +1013,7 @@ func TestAdditionalPolicyInputsFailBeforeNetwork(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			isolatedMirrorConfig(t)
+			writeAuditPolicy(t, []auditRepository{{FullName: "forge-user/example", Canonical: "forgejo", Mirror: "optional"}})
 			unsetEnv(t, test.valueKey)
 			unsetEnv(t, test.fileKey)
 			requests := 0
@@ -1120,40 +1123,6 @@ func TestMirrorGitHubBulkPreservesForgejoFirst(t *testing.T) {
 	}
 }
 
-func TestAuditGitHubPrimaryDirectionOnly(t *testing.T) {
-	for _, address := range []string{"", "https://forge.example/test-user/public-app.git", "https://github.com/another-owner/renamed", "git@github.com:test-user/public-app.git", "ssh://git@GitHub.com/test-user/public-app.git"} {
-		t.Run(address, func(t *testing.T) {
-			isolatedMirrorConfig(t)
-			t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS", "public-app")
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/api/v1/repos/search":
-					if r.URL.Query().Get("page") == "1" {
-						fmt.Fprint(w, `{"data":[{"name":"public-app","mirror":true,"private":false,"default_branch":"main","original_url":"https://github.com/test-user/public-app.git"}]}`)
-					} else {
-						fmt.Fprint(w, `{"data":[]}`)
-					}
-				case "/api/v1/repos/test-user/public-app/push_mirrors":
-					if r.URL.Query().Get("page") == "1" && address != "" {
-						json.NewEncoder(w).Encode([]pushMirror{{RemoteAddress: address}})
-					} else {
-						fmt.Fprint(w, `[]`)
-					}
-				default:
-					t.Errorf("GitHub-primary audit made unexpected request: %s", r.URL.Path)
-					http.Error(w, "unexpected request", http.StatusNotFound)
-				}
-			}))
-			defer server.Close()
-			err := cmdAudit(server.URL, "test-user", "test-user", "test-token", nil)
-			wantDrift := address != "" && !strings.Contains(address, "forge.example")
-			if (err != nil) != wantDrift {
-				t.Fatalf("expected drift=%v, got %v", wantDrift, err)
-			}
-		})
-	}
-}
-
 func TestFetchPushMirrorsPaginatesAndFailsClosed(t *testing.T) {
 	for _, secondPage := range []string{"mirror", "http-error", "invalid-json"} {
 		t.Run(secondPage, func(t *testing.T) {
@@ -1178,12 +1147,12 @@ func TestFetchPushMirrorsPaginatesAndFailsClosed(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			result, err := auditGitHubPrimaryRepo(server.URL, "test-user", "test-token", forgejoRepo{Name: "public-app"})
+			result, execution := auditDeclaredRepo(server.URL, "test-token", "", forgejoRepo{}, auditRepository{FullName: "test-user/public-app", Canonical: "github", Mirror: "continuity", Retired: true})
 			if secondPage == "mirror" {
-				if err != nil || len(result.issues) != 1 {
-					t.Fatalf("second-page mirror missed: result=%v err=%v", result, err)
+				if len(execution) != 0 || len(result) != 2 {
+					t.Fatalf("second-page mirror missed: result=%v err=%v", result, execution)
 				}
-			} else if err == nil {
+			} else if len(execution) == 0 {
 				t.Fatal("expected failed audit when mirror list is incomplete")
 			}
 		})
@@ -1253,187 +1222,6 @@ func TestBulkConversionSkipsGitHubPrimary(t *testing.T) {
 			}
 			if err != nil || deleted != 1 || migrated != 1 {
 				t.Fatalf("deleted=%d migrated=%d err=%v", deleted, migrated, err)
-			}
-		})
-	}
-}
-
-func TestGitHubDenialAndPrivateVisibilityAreIndependent(t *testing.T) {
-	isolatedMirrorConfig(t)
-	t.Setenv("FORGE_MIRROR_GITHUB_DENIED_REPOS", "publication-denied")
-	t.Setenv("FORGE_MIRROR_REQUIRED_PRIVATE_REPOS", "private-required")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/repos/search":
-			if r.URL.Query().Get("page") == "1" {
-				fmt.Fprint(w, `{"data":[{"name":"publication-denied","private":false},{"name":"private-required","private":false,"default_branch":"dev"}]}`)
-			} else {
-				fmt.Fprint(w, `{"data":[]}`)
-			}
-		case "/api/v1/repos/test-user/publication-denied/push_mirrors":
-			fmt.Fprint(w, `[]`)
-		case "/repos/test-user/private-required":
-			fmt.Fprint(w, `{"default_branch":"dev"}`)
-		case "/api/v1/repos/test-user/private-required/branch_protections":
-			fmt.Fprint(w, `[{"rule_name":"main","apply_to_admins":true,"enable_push":false,"enable_merge_whitelist":true,"merge_whitelist_usernames":["test-user"]}]`)
-		case "/api/v1/repos/test-user/private-required/push_mirrors":
-			if r.URL.Query().Get("page") == "1" {
-				fmt.Fprint(w, `[{"remote_address":"https://github.com/test-user/private-required.git","sync_on_commit":true,"last_update":"2026-01-01T00:00:00Z"}]`)
-			} else {
-				fmt.Fprint(w, `[]`)
-			}
-		case "/api/v1/repos/test-user/private-required/branches", "/repos/test-user/private-required/branches":
-			fmt.Fprint(w, `[]`)
-		default:
-			t.Errorf("unexpected request: %s", r.URL.Path)
-			http.Error(w, "unexpected request", http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-	base, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	http.DefaultClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		clone := r.Clone(r.Context())
-		clone.URL.Scheme = base.Scheme
-		clone.URL.Host = base.Host
-		return http.DefaultTransport.RoundTrip(clone)
-	})
-	if err := cmdAudit(server.URL, "test-user", "test-user", "test-token", nil); err == nil {
-		t.Fatal("required-private visibility violation was not reported")
-	}
-}
-
-func TestGitHubMirrorDenialDoesNotRequirePrivateVisibility(t *testing.T) {
-	isolatedMirrorConfig(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repos/forge-user/publication-denied/push_mirrors" {
-			t.Errorf("unexpected request: %s", r.URL.Path)
-			http.NotFound(w, r)
-			return
-		}
-		fmt.Fprint(w, `[]`)
-	}))
-	defer server.Close()
-	result, err := auditGitHubMirrorDeniedRepo(
-		server.URL,
-		"forge-user",
-		"token",
-		"github-user",
-		forgejoRepo{Name: "publication-denied", Private: false},
-	)
-	if err != nil || len(result.issues) != 0 {
-		t.Fatalf("public publication-denied repo: result=%v err=%v", result, err)
-	}
-}
-
-func TestDeniedMirrorAuditClassifiesEveryRemote(t *testing.T) {
-	for _, tc := range []struct {
-		address string
-		issues  int
-	}{
-		{"https://github.com/another-owner/renamed.git", 1},
-		{"git@github.com:example/sample.git", 1},
-		{"ssh://git@ssh.github.com:443/example/sample.git", 1},
-		{"https://GitHub.COM/example/sample", 1},
-		{"ssh://git@ssh.github.com.:443/example/sample", 1},
-		{"https://www.github.com/example/sample", 1},
-		{"https://forge.example/example/sample.git", 0},
-		{"https://github.com.example/example/sample.git", 0},
-		{"https://github.com@forge.example/example/sample.git", 0},
-	} {
-		t.Run(tc.address, func(t *testing.T) {
-			isolatedMirrorConfig(t)
-			pages := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				pages++
-				switch r.URL.Query().Get("page") {
-				case "1":
-					fmt.Fprint(w, `[{"remote_address":"https://forge.example/first.git"}]`)
-				case "2":
-					json.NewEncoder(w).Encode([]pushMirror{{RemoteAddress: tc.address}})
-				default:
-					fmt.Fprint(w, `[]`)
-				}
-			}))
-			defer server.Close()
-			result, err := auditGitHubMirrorDeniedRepo(server.URL, "example", "synthetic-token", "example", forgejoRepo{Name: "sample"})
-			if err != nil || len(result.issues) != tc.issues || pages != 3 {
-				t.Fatalf("audit: result=%v err=%v pages=%d", result, err, pages)
-			}
-		})
-	}
-}
-
-func TestDeniedMirrorAuditReportsIncompleteEnumeration(t *testing.T) {
-	for _, body := range []string{"http-error", "invalid-json"} {
-		t.Run(body, func(t *testing.T) {
-			isolatedMirrorConfig(t)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Query().Get("page") == "1" {
-					fmt.Fprint(w, `[{"remote_address":"https://forge.example/first.git"}]`)
-				} else if body == "http-error" {
-					http.Error(w, "unavailable", http.StatusServiceUnavailable)
-				} else {
-					fmt.Fprint(w, `not-json`)
-				}
-			}))
-			defer server.Close()
-			result, err := auditGitHubMirrorDeniedRepo(server.URL, "example", "synthetic-token", "example", forgejoRepo{Name: "sample"})
-			if err != nil || len(result.issues) != 1 || !strings.Contains(result.issues[0], "cannot read") {
-				t.Fatalf("incomplete enumeration: %v, %v", result, err)
-			}
-		})
-	}
-}
-
-func TestForgejoFirstAuditStillChecksBranchPolicy(t *testing.T) {
-	for _, branch := range []string{"dev", "main"} {
-		t.Run(branch, func(t *testing.T) {
-			isolatedMirrorConfig(t)
-			t.Setenv("FORGE_MIRROR_GITHUB_PRIMARY_REPOS", "public-app")
-			protectionReads := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/api/v1/repos/search":
-					if r.URL.Query().Get("page") == "1" {
-						fmt.Fprintf(w, `{"data":[{"name":"forgejo-app","default_branch":%q}]}`, branch)
-					} else {
-						fmt.Fprint(w, `{"data":[]}`)
-					}
-				case "/repos/test-user/forgejo-app":
-					fmt.Fprint(w, `{"default_branch":"dev"}`)
-				case "/api/v1/repos/test-user/forgejo-app/branch_protections":
-					protectionReads++
-					fmt.Fprint(w, `[{"rule_name":"main","apply_to_admins":true,"enable_push":false,"enable_merge_whitelist":true,"merge_whitelist_usernames":["test-user"]}]`)
-				case "/api/v1/repos/test-user/forgejo-app/push_mirrors":
-					if r.URL.Query().Get("page") == "1" {
-						fmt.Fprint(w, `[{"remote_address":"https://github.com/test-user/forgejo-app.git","sync_on_commit":true,"last_update":"2026-01-01T00:00:00Z"}]`)
-					} else {
-						fmt.Fprint(w, `[]`)
-					}
-				case "/api/v1/repos/test-user/forgejo-app/branches", "/repos/test-user/forgejo-app/branches":
-					fmt.Fprint(w, `[]`)
-				default:
-					t.Errorf("unexpected request: %s", r.URL.Path)
-					http.Error(w, "unexpected request", http.StatusNotFound)
-				}
-			}))
-			defer server.Close()
-			base, err := url.Parse(server.URL)
-			if err != nil {
-				t.Fatal(err)
-			}
-			http.DefaultClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				clone := r.Clone(r.Context())
-				clone.URL.Scheme = base.Scheme
-				clone.URL.Host = base.Host
-				return http.DefaultTransport.RoundTrip(clone)
-			})
-			err = cmdAudit(server.URL, "test-user", "test-user", "test-token", nil)
-			if (err != nil) != (branch != "dev") || protectionReads != 1 {
-				t.Fatalf("branch=%s protectionReads=%d err=%v", branch, protectionReads, err)
 			}
 		})
 	}
