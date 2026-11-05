@@ -82,7 +82,7 @@ const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
        nixfleet reboot [OPTIONS] [--all | <host>...]
        nixfleet off|on [OPTIONS] <host>
        nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
-       nixfleet runners [status | restart] [OPTIONS] [--all | <host>...]
+       nixfleet runners [status | restart | resume] [OPTIONS] [--all | <host>...]
        nixfleet reservations [list | release ID] [--config FILE] [--confirm-stopped]
        nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]
 
@@ -104,10 +104,9 @@ Subcommands:
   status   Read, without changing anything, what each host booted and runs,
            whether it needs a reboot, its Kubernetes cordon state and its CI
            runner units; see nixfleet status --help.
-  runners  List every CI runner unit with why it does not run and whether
-           it needs a restart, or (restart) restart the units a switch left
-           on an older definition once their running jobs finish; see
-           nixfleet runners --help.
+  runners  List CI runner units with their stopped reasons and restart flags;
+           restart older definitions once running jobs finish, or resume only
+           units recorded as stopped by a reboot run. See runners --help.
   reservations  List held deployment reservations or safely release stopped work.
   triage   Write context.md for a recorded deploy run, by default the newest
            that failed: its facts, failed targets, their logs and first

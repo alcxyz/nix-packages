@@ -28,7 +28,7 @@ in
 buildGoModule (finalAttrs: {
   pname = "nixfleet";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.31.0";
+  version = "0.32.0";
 
   src = ./.;
 

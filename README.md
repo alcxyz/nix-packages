@@ -139,6 +139,13 @@ to inspect and release a stopped invocation. Unknown inspection requires explici
 `--confirm-stopped`; positively active work always refuses release. Authority
 operations require `flock` (included in the base NixOS utilities). See [ADR-0019](docs/adr/0019-shared-deployment-reservations.md).
 
+After a reboot with an unknown outcome, `nixfleet runners status` identifies
+its recorded stop set and prints the exact `nixfleet runners resume HOST
+--config FILE` command. Resume starts only that set after checking controller
+exit, shared reservations, shutdown, holds and start gates. Records survive SSH
+and controller loss and clear automatically at the host's next boot.
+
+
 
 `nix run .#nix-deploy -- --config ./inventory.json --help` selects deployment
 inventory explicitly. `NIX_DEPLOY_CONFIG` supplies the same default for direct

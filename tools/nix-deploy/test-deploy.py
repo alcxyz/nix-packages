@@ -1246,6 +1246,12 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert result.stdout == f"k8s-node-power {version}\n", result.stdout
     _, result = invoke("runners", "--help")
     assert result.stdout.startswith("Usage: runners [status] [--config FILE]") and "nixfleet's runners subcommand and the runners command are the same." in result.stdout, result.stdout
+    _, result = invoke("nixfleet", "runners", "resume", "--help")
+    assert "nixfleet runners resume [--config FILE]" in result.stdout and "unknown outcome" in result.stdout
+    calls, result = invoke("runners", "resume", "--yes", status=2)
+    assert "--yes is an option of runners restart" in result.stderr and calls == []
+    calls, result = invoke("nixfleet", "runners", "resume", "--config", str(config), "node")
+    assert "runner resume complete" in result.stdout and not any("systemctl start" in c[-1] for c in calls)
     _, result = invoke("runners", "restart", "--bogus", status=2)
     assert result.stderr.startswith("runners: unknown option '--bogus'"), result.stderr
     # nixfleet off and on take the inventory's context and stop when it
@@ -1320,4 +1326,4 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     _, result = invoke("nixfleet", "status", "--config", str(config), "nope", status=2)
     assert "unknown host 'nope'" in result.stderr
 
-print("Deployment contract: 122 mocked CLI cases and 38 invalid inventories passed, and 27 nixfleet dispatch, reboot and status cases; no deployment commands executed")
+print("Deployment contract: 122 mocked CLI cases and 38 invalid inventories passed, and 30 nixfleet dispatch, reboot, runner and status cases; no deployment commands executed")

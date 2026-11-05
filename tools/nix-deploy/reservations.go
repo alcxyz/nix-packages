@@ -173,7 +173,9 @@ scan_status=0
 printf '%s\n' "$processes" | awk '
  $1 !~ /^[0-9]+$/ || NF < 3 { invalid=1 }
  $2 !~ /(^|\/)(awk|gawk|mawk|ps)$/ &&
- $0 ~ /(nixos-rebuild|darwin-rebuild|switch-to-configuration|\/activate([[:space:]]|$))/ { busy=1 }
+ ($0 ~ /(nixos-rebuild|darwin-rebuild|switch-to-configuration|\/activate([[:space:]]|$))/ ||
+  $0 ~ /flock.*nixfleet-reboot-runners/ ||
+  $0 ~ /(systemctl[[:space:]]+(reboot|poweroff|halt|kexec)|nixfleet[[:space:]]+reboot|k8s-node-power[[:space:]]+(reboot|off)|ssh.*nixfleet-reboot-runners)/) { busy=1 }
  END { if (busy) exit 0; if (!NR || invalid) exit 2; exit 1 }
 ' || scan_status=$?
 case "$scan_status" in 0) echo busy; exit 0;; 1) ;; *) exit 1;; esac
@@ -190,7 +192,11 @@ echo idle
 `
 
 func (d *deployer) controllerState(info reservationInfo) (string, error) {
-	if info.PID <= 1 || !contains(d.inv.KnownHosts, info.Controller) || info.ControllerEndpoint != d.inv.systemEndpoint(info.Controller) {
+	return d.controllerStateAt(info, false)
+}
+
+func (d *deployer) controllerStateAt(info reservationInfo, local bool) (string, error) {
+	if info.PID <= 1 || (!(local && info.Controller == d.self) && (!contains(d.inv.KnownHosts, info.Controller) || info.ControllerEndpoint != d.inv.systemEndpoint(info.Controller))) {
 		return "unknown", fmt.Errorf("controller identity is incomplete")
 	}
 	// ps distinguishes absence (successful empty output) from an inspection
@@ -230,6 +236,13 @@ started=$(printf '%s\n' "$started" | awk '{$1=$1; print}')
 		// Wall-clock steps can change ps lstart for a live process. A mismatch
 		// alone cannot prove PID reuse; require explicit confirmation instead.
 		script += "if [ \"$started\" = " + shellQuote(info.Started) + " ]; then echo busy; else echo unknown; fi\n"
+	}
+	if local && info.Controller == d.self {
+		argv := []string{"bash", "-s"}
+		if os.Geteuid() != 0 {
+			argv = append([]string{"sudo", "-n"}, argv...)
+		}
+		return runProbe(argv, script)
 	}
 	return d.probeHost(info.Controller, script)
 }

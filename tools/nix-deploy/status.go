@@ -163,7 +163,8 @@ type runnerStatus struct {
 	RestartUnit        string `json:"restartUnit,omitempty"`
 	RestartWaitSeconds int    `json:"restartWaitSeconds,omitempty"`
 	// LastRestart is the restart unit's latest run; nil before its first.
-	LastRestart *runnerRestart `json:"lastRestart"`
+	LastRestart *runnerRestart    `json:"lastRestart"`
+	RebootStop  *runnerRebootStop `json:"rebootStop,omitempty"`
 }
 
 type runnerUnit struct {
@@ -433,7 +434,7 @@ func (s *statusCheck) readHosts(hosts []string) []hostStatus {
 // machine, locally.
 func (s *statusCheck) readHost(host string) hostStatus {
 	h := hostStatus{Host: host, RebootDiffers: []string{}}
-	script := bootcheck.Script + "; " + runnerScript
+	script := bootcheck.Script + "; " + runnerScript + "; " + runnerRebootReadScript
 	if s.inv.BootCheck {
 		script += "; " + bootCheckScript
 	}
@@ -474,7 +475,7 @@ func (s *statusCheck) readHost(host string) hostStatus {
 			h.RebootNeeded = &needed
 		}
 	}
-	h.Runners = parseRunners(stdout)
+	h.Runners = addRunnerRebootStop(parseRunners(stdout), stdout)
 	h.BootCheck = parseBootCheck(stdout)
 	return h
 }

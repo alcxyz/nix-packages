@@ -36,3 +36,17 @@ gave up as busy three times in a row while its runners kept taking jobs.
   host's restart unit concurrently, over SSH as the system user with
   `sudo -n` where the inventory says so, prints its progress, and reports
   each host's outcome.
+
+## Reboot runner recovery, 2026-11-05
+
+Text replaced by the supported resume command in [issue #592](https://git.alc.xyz/alcxyz/nix-packages/issues/592):
+
+Drain and resume need no command: under the runner hold a drain is an
+ordinary `systemctl stop`, which the hold leaves alone, and a resume is
+`systemctl start`. Registrations on the Forgejo side stay manual.
+
+The reboot admission clause was also replaced so unsupported hosts refuse
+before any drain:
+
+> starts the runner units status lists, and fails a host whose runner report
+> is an error rather than reboot runners it cannot see.

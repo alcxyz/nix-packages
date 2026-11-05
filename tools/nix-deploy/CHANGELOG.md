@@ -9,6 +9,17 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.32.0 (2026-11-05)
+
+- Reboot runs record the active runner subset and controller identity on the
+  host before stopping units. Unknown outcomes keep the record across lost
+  connections and controller exits. A real boot clears it automatically.
+- `nixfleet runners status` names reboot-stopped runners and prints an exact
+  `nixfleet runners resume` command. Resume checks controller exit, reserves
+  the host against deployments, and refuses pending shutdown, active reboot
+  commands, holds, gate refusals and unavailable inspection. It starts only
+  recorded units, through their existing systemd start gates.
+
 ## 0.31.0 (2026-11-05)
 
 - Serial deployments from every controller reserve the group's members on the

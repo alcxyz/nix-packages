@@ -35,27 +35,14 @@ func (d *deployer) reserveGroup(g *serialGroup) (*reservation, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	// The process start identity prevents a reused controller PID from looking
-	// like the original deployment. Use the same locale on every controller.
-	started, status := capture(5*time.Second, "bash", "-c", fmt.Sprintf("TZ=UTC LC_ALL=C ps -p %d -o lstart=", os.Getpid()))
-	if status != 0 || strings.TrimSpace(started) == "" {
-		return nil, fmt.Errorf("cannot establish controller process identity")
-	}
-	namespace := "darwin"
-	if runtime.GOOS == "linux" {
-		value, code := capture(5*time.Second, "readlink", "/proc/self/ns/pid")
-		if code != 0 || strings.TrimSpace(value) == "" {
-			return nil, fmt.Errorf("cannot establish controller PID namespace")
-		}
-		namespace = strings.TrimSpace(value)
+	info, err := controllerIdentity(d.inv, d.self)
+	if err != nil {
+		return nil, err
 	}
 	r := &reservation{d: d, token: fmt.Sprintf("%x", nonce)}
-	r.info = reservationInfo{Group: append([]string(nil), g.Hosts...), Controller: d.self, PID: os.Getpid(), Started: strings.Join(strings.Fields(started), " "), Created: time.Now().UTC(), Reason: "reserved; no activation started", Endpoints: map[string]string{}}
-	r.info.PIDNamespace = namespace
-	if contains(d.inv.KnownHosts, d.self) {
-		r.info.ControllerEndpoint = d.inv.systemEndpoint(d.self)
-		r.info.Endpoints[d.self] = r.info.ControllerEndpoint
-	}
+	r.info = info
+	r.info.Group = append([]string(nil), g.Hosts...)
+	r.info.Reason = "reserved; no activation started"
 	for _, host := range g.Hosts {
 		r.keys = append(r.keys, reservationKey(host))
 		r.info.Endpoints[host] = d.inv.systemEndpoint(host)
@@ -197,3 +184,27 @@ func (r *reservation) releaseReason() string {
 }
 
 func reservationKey(host string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(host))) }
+
+func controllerIdentity(inv *inventory, self string) (reservationInfo, error) {
+	// The process start identity prevents a reused controller PID from looking
+	// like the original deployment. Use the same locale on every controller.
+	started, status := capture(5*time.Second, "bash", "-c", fmt.Sprintf("TZ=UTC LC_ALL=C ps -p %d -o lstart=", os.Getpid()))
+	if status != 0 || strings.TrimSpace(started) == "" {
+		return reservationInfo{}, fmt.Errorf("cannot establish controller process identity")
+	}
+	namespace := "darwin"
+	if runtime.GOOS == "linux" {
+		value, code := capture(5*time.Second, "readlink", "/proc/self/ns/pid")
+		if code != 0 || strings.TrimSpace(value) == "" {
+			return reservationInfo{}, fmt.Errorf("cannot establish controller PID namespace")
+		}
+		namespace = strings.TrimSpace(value)
+	}
+
+	info := reservationInfo{Controller: self, PID: os.Getpid(), Started: strings.Join(strings.Fields(started), " "), PIDNamespace: namespace, Created: time.Now().UTC(), Endpoints: map[string]string{}}
+	if contains(inv.KnownHosts, self) {
+		info.ControllerEndpoint = inv.systemEndpoint(self)
+		info.Endpoints[self] = info.ControllerEndpoint
+	}
+	return info, nil
+}

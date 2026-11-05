@@ -1584,7 +1584,8 @@ type hostReboot struct {
 	// bootID is the host's boot ID before the reboot.
 	bootID string
 	// stopped are the runner units this run stopped.
-	stopped []string
+	stopped         []string
+	runnerStopOwner string
 }
 
 func (f *fleetReboot) newHostReboot(ctx context.Context, g *rebootGroup, t *rebootTarget) *hostReboot {
@@ -1955,12 +1956,27 @@ func quoteUnits(units []string) string {
 func (h *hostReboot) stopRunners() error {
 	units := h.target.runners
 	if len(units) == 0 {
+		// Even an all-inactive plan must not reboot behind an outstanding resume.
+		script := runnerRebootLocked("[ ! -e " + runnerRebootDir + " ] || { echo 'reboot refused: outstanding runner stop record; use nixfleet runners resume' >&2; exit 1; }")
+		r := h.runner.Run(h.ctx, k8snode.Command{Argv: h.hostCommand("10", h.privileged(script)), Timeout: bootIDTimeout})
+		if r.Status != 0 {
+			return fmt.Errorf("cannot exclude an outstanding reboot runner stop (status %d); next: %s", r.Status, runnerResumeCommand(h.target.host, h.f.opts.configFile))
+		}
 		return nil
 	}
 	h.log("stopping %s; admitted jobs finish first (waiting up to %s)", strings.Join(units, " "), runnerStopTimeout)
+	info, err := controllerIdentity(h.f.inv, h.f.self)
+	if err != nil {
+		return fmt.Errorf("cannot record reboot controller: %v", err)
+	}
+	owner, err := newRunnerStopOwner()
+	if err != nil {
+		return err
+	}
+	h.runnerStopOwner = owner
 	h.stopped = units
 	r := h.runner.Run(h.ctx, k8snode.Command{
-		Argv:    h.hostCommand("10", h.privileged("systemctl stop "+quoteUnits(units))),
+		Argv:    h.hostCommand("10", h.privileged(runnerStopScript(owner, info, units))),
 		Timeout: runnerStopTimeout,
 	})
 	switch {
@@ -1984,11 +2000,11 @@ func (h *hostReboot) startRunners() {
 	h.stopped = nil
 	h.log("starting %s again", strings.Join(units, " "))
 	r := h.runner.Run(context.WithoutCancel(h.ctx), k8snode.Command{
-		Argv:    h.hostCommand("10", h.privileged("systemctl start "+quoteUnits(units))),
+		Argv:    h.hostCommand("10", h.privileged(runnerStartScript(h.runnerStopOwner))),
 		Timeout: runnerStartTimeout,
 	})
 	if r.Status != 0 {
-		h.log("warning: could not start %s again (ssh exited with status %d); start them by hand", strings.Join(units, " "), r.Status)
+		h.log("warning: could not start %s again (ssh exited with status %d); next: %s", strings.Join(units, " "), r.Status, runnerResumeCommand(h.target.host, h.f.opts.configFile))
 	}
 }
 

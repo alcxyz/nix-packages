@@ -55,8 +55,9 @@ type fakeHost struct {
 	cordoned bool
 	// runners maps runner units to their state; runnerReport, when set, is
 	// the host's nixfleet-runner-status output in their place.
-	runners      map[string]string
-	runnerReport string
+	runners        map[string]string
+	runnerReport   string
+	stoppedRunners []string
 	// runnersStayDown keeps the runner units inactive after a reboot, and
 	// neverReturns the host down.
 	runnersStayDown bool
@@ -358,6 +359,8 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 		f.commands = append(f.commands, where+" "+remote)
 	}
 	switch {
+	case strings.Contains(remote, "reboot refused: outstanding runner stop record"):
+		return k8snode.Result{}
 	case strings.Contains(remote, "/run/nixfleet-boot-check/result"):
 		f.events = append(f.events, "boot check "+host)
 		answer := "status=ok"
@@ -395,19 +398,20 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 		if h.stopFails {
 			return k8snode.Result{Status: 1}
 		}
-		for unit := range h.runners {
-			if strings.Contains(remote, "'"+unit+"'") {
+		h.stoppedRunners = nil
+		for unit, state := range h.runners {
+			if strings.Contains(remote, unit) && state == "active" {
+				h.stoppedRunners = append(h.stoppedRunners, unit)
 				h.runners[unit] = "inactive"
 			}
 		}
 		return k8snode.Result{}
 	case strings.Contains(remote, "systemctl start"):
 		f.events = append(f.events, "start "+host)
-		for unit := range h.runners {
-			if strings.Contains(remote, "'"+unit+"'") {
-				h.runners[unit] = "active"
-			}
+		for _, unit := range h.stoppedRunners {
+			h.runners[unit] = "active"
 		}
+		h.stoppedRunners = nil
 		return k8snode.Result{}
 	case strings.Contains(remote, "systemctl reboot"):
 		if f.rebootNotStarted {
@@ -980,7 +984,7 @@ func TestRebootNeedsReadableRunners(t *testing.T) {
 		t.Errorf("changes: %v", got)
 	}
 	if !slices.ContainsFunc(f.commands, func(c string) bool {
-		return strings.HasSuffix(c, "systemctl stop 'forgejo-actions-runner.service'")
+		return strings.Contains(c, "systemctl stop -- $units") && strings.Contains(c, "forgejo-actions-runner.service") && !strings.Contains(c, "forgejo-podman-runner-fast.service")
 	}) {
 		t.Errorf("commands: %v", f.commands)
 	}
@@ -1177,11 +1181,10 @@ func TestRebootRunners(t *testing.T) {
 			if got := f.changes(); !slices.Equal(got, c.changes) {
 				t.Errorf("changes: %v", got)
 			}
-			// Only the active unit is stopped and started.
+			// The plan must never pass the hand-stopped spare to the stop record.
 			for _, command := range f.commands {
-				if strings.Contains(command, "systemctl stop") && command != "root@host-a systemctl stop 'forgejo-actions-runner.service'" ||
-					strings.Contains(command, "systemctl start") && command != "root@host-a systemctl start 'forgejo-actions-runner.service'" {
-					t.Errorf("command: %s", command)
+				if strings.Contains(command, "systemctl stop") && strings.Contains(command, "gitea-runner-spare.service") {
+					t.Errorf("hand-stopped unit selected: %s", command)
 				}
 			}
 		})
@@ -1590,8 +1593,8 @@ func TestRebootIncludeSelf(t *testing.T) {
 	if changes[len(changes)-2] != "stop op" || changes[len(changes)-1] != "reboot op" {
 		t.Errorf("changes: %v", changes)
 	}
-	for _, want := range []string{"local sudo systemctl stop 'forgejo-actions-runner.service'", "local sudo systemctl reboot"} {
-		if !slices.Contains(f.commands, want) {
+	for _, want := range []string{"local sudo flock -w 10 /run/nixfleet-reboot-runners.lock", "local sudo systemctl reboot"} {
+		if !slices.ContainsFunc(f.commands, func(c string) bool { return strings.HasPrefix(c, want) }) {
 			t.Errorf("no %q in %v", want, f.commands)
 		}
 	}

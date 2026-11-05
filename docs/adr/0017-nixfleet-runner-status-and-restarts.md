@@ -1,7 +1,7 @@
 # ADR-0017: nixfleet runner status and restarts
 
 **Status:** Accepted
-**Date:** 2026-11-02, updated 2026-11-05
+**Date:** 2026-11-02, updated 2026-11-05 (recorded reboot runner recovery)
 **History:** [replaced text](archive/0017-nixfleet-runner-status-and-restarts-history.md)
 **Applies to:** `tools/nix-deploy/` (`nixfleet status`, `nixfleet runners`), and the host side in nix-config's runner module
 
@@ -84,8 +84,10 @@ provides, readable without root:
   busy or failed. `--json` carries every field. Without the command it
   lists units named `gitea-runner-*`, `gitea-*runner`, `forgejo-*runner` and
   `forgejo-*-runner-*`, with their states only. `nixfleet reboot` stops and
-  starts the runner units status lists, and fails a host whose runner report
-  is an error rather than reboot runners it cannot see.
+  starts the runner units status lists. Before recording or draining any
+  runner it requires a working version 1 host report and readable runner hold;
+  a missing or failed report refuses before stopping units. The name-pattern
+  fallback remains read-only, avoiding a stop that cannot be safely resumed.
 - `nixfleet runners [status]` lists every runner and tracked unit with its
   state, restart flag and reason, then the hold's reason and the last
   restart run.
@@ -103,9 +105,20 @@ provides, readable without root:
   not started stay as they are. It exits 1 when a host could not be read, has no
   restart unit, stayed busy or failed.
 
-Drain and resume need no command: under the runner hold a drain is an
-ordinary `systemctl stop`, which the hold leaves alone, and a resume is
-`systemctl start`. Registrations on the Forgejo side stay manual.
+`nixfleet runners resume [--all | <host>...]` is the supported recovery for
+runner units recorded as stopped by a reboot run with an unknown outcome.
+It uses the checks and host-owned record in
+[ADR-0019](0019-shared-deployment-reservations.md#runner-recovery-after-an-unknown-reboot-outcome).
+`runners status` names that reason distinctly and prints the exact command,
+including the host and inventory. It preserves a host-provided hold or gate
+reason alongside the reboot reason. The JSON status includes the stop record.
+
+Resume is separate from restart: restart replaces running older definitions
+and drains jobs, whereas resume starts an exact recorded inactive subset.
+It requires no confirmation flag, like `reservations release`, and exits 1 on
+refusal or failed inspection. An unrecorded ordinary `systemctl stop` remains
+an operator drain that nothing automatically undoes. Registrations on the
+Forgejo side stay manual.
 
 ## Alternatives Considered
 

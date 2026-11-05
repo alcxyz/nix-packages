@@ -17,8 +17,9 @@ import (
 
 const runnersUsage = `Usage: nixfleet runners [status] [--config FILE] [--all | <host>...]
        nixfleet runners restart [--config FILE] [--all | <host>...] [--dry-run] [--yes]
+       nixfleet runners resume [--config FILE] [--all | <host>...]
 
-Reads and restarts the CI runner units of the selected hosts (ADR-0017).
+Reads, restarts and resumes the CI runner units of the selected hosts (ADR-0017).
 nixfleet's runners subcommand and the runners command are the same.
 With no host it works on this machine; --all selects the hosts deploy --all
 would; hosts may be named by alias. Hosts are read as nixfleet status reads
@@ -38,6 +39,8 @@ recorded, needs a restart.
            reset, refused by its start gate, failed, or stopped by hand,
            which nothing undoes) or why it needs the restart. Then the
            runner hold's reason, when one applies, and the last restart run.
+           A reboot stop record distinctly identifies units stopped by a reboot
+           run with an unknown outcome, and prints the exact resume command.
   restart  Restarts, on each selected host, the units that need it, once
            their running jobs finish: the host's restart unit
            (forgejo-runner-restart.service, started through sudo -n where
@@ -61,6 +64,19 @@ recorded, needs a restart.
            why it is skipped. --dry-run stops there. Otherwise a terminal is
            asked to confirm, and without one the run needs --yes.
 
+  resume   Starts only the units recorded on the host by a reboot run, once
+           that controller has exited and has no outstanding reboot work.
+           It reserves the host on the shared
+           authority, refusing an existing reservation or unavailable authority.
+           It refuses pending shutdown, active reboot commands, system jobs,
+           runner holds, gate refusals, resets, restarts or unreadable state.
+           It never resumes unrecorded hand-stopped units or bypasses a start
+           gate. A terminal asks for local sudo when needed; noninteractive
+           use needs preauthorized sudo. No confirmation or --yes is needed.
+           Records survive controller/SSH failure and clear with the host's
+           /run at reboot; enabled runners start with boot as usual. An older
+           run without a record cannot be resumed through this command.
+
 Options:
   --config FILE  The inventory; default NIX_DEPLOY_CONFIG.
   --all          Select the hosts deploy --all would.
@@ -72,7 +88,8 @@ The exit status is 2 for invalid arguments. status exits 0 however the
 hosts answer, and 1 when the inventory or this machine's name fails.
 restart exits 0 when every selected host restarted what it needed or needed
 nothing, and 1 when one could not be read, cannot restart from here, stayed
-busy or failed.
+busy or failed. resume exits 0 when recorded units resumed or there was
+nothing to resume, and 1 when any selected host refused or failed.
 `
 
 // Bounds of a restart run. The host bounds its own wait; nixfleet waits
@@ -94,7 +111,7 @@ type runnersOptions struct {
 
 func parseRunnersArgs(args []string) (runnersOptions, error) {
 	opts := runnersOptions{command: "status", configFile: os.Getenv("NIX_DEPLOY_CONFIG")}
-	if len(args) > 0 && (args[0] == "status" || args[0] == "restart") {
+	if len(args) > 0 && (args[0] == "status" || args[0] == "restart" || args[0] == "resume") {
 		opts.command = args[0]
 		args = args[1:]
 	}
@@ -163,8 +180,17 @@ func runRunners(name string, args []string) int {
 	}
 	states := s.readHosts(hosts)
 	if opts.command == "status" {
-		printRunners(os.Stdout, s.ui, states)
+		printRunners(os.Stdout, s.ui, states, opts.configFile)
 		return 0
+	}
+	if opts.command == "resume" {
+		if os.Geteuid() != 0 && isTerminal(os.Stdin) && resumeUsesLocalSudo(s.self, states) {
+			if err := validateSudo(); err != nil {
+				fmt.Fprintf(os.Stderr, "%s resume: sudo: %v\n", name, err)
+				return 1
+			}
+		}
+		return runRunnerResume(s, states, opts.configFile, os.Stdout)
 	}
 	restarter := &fleetRestart{name: name, status: s, out: os.Stdout, poll: restartPollInterval, validateSudo: validateSudo}
 	if isTerminal(os.Stdin) {
@@ -175,7 +201,7 @@ func runRunners(name string, args []string) int {
 
 // printRunners lists every runner and tracked unit of the hosts, then each
 // host's hold reason and last restart run, labeled [host] in its color.
-func printRunners(w io.Writer, u *ui, states []hostStatus) {
+func printRunners(w io.Writer, u *ui, states []hostStatus, configs ...string) {
 	format := "%s %-40s %-18s %-8s %s\n"
 	fmt.Fprintf(w, format, fmt.Sprintf("%-12s", "host"), "unit", "state", "restart", "why")
 	var notes []string
@@ -209,6 +235,13 @@ func printRunners(w io.Writer, u *ui, states []hostStatus) {
 		}
 		if r.Hold != nil && r.Hold.Reason != "none" {
 			notes = append(notes, fmt.Sprintf("%s runner hold %s: %s", u.host(h.Host), r.Hold.State, r.Hold.Reason))
+		}
+		if r.RebootStop != nil {
+			config := ""
+			if len(configs) > 0 {
+				config = configs[0]
+			}
+			notes = append(notes, u.host(h.Host)+" "+unknownRunnerReboot+"; next: "+runnerResumeCommand(h.Host, config))
 		}
 		if r.LastRestart != nil {
 			notes = append(notes, u.host(h.Host)+" last runner restart "+describeRestart(r.LastRestart))

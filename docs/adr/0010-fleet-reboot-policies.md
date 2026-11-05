@@ -1,7 +1,7 @@
 # ADR-0010: Fleet reboots by policy and constraint group
 
 **Status:** Accepted
-**Date:** 2026-10-16, updated 2026-11-05 (ambiguous cancelled reboot commands)
+**Date:** 2026-10-16, updated 2026-11-05 (ambiguous reboot outcomes and recorded runner recovery)
 **Amended:** 2026-10-16 (core singletons and reboot marks; interactive hosts, this machine and the boot check), 2026-10-17 (every question before the start; only streaming, caught-up replicas take over; room before the drain; a hook around planned reboots), 2026-10-27 (replica spread before the drain), 2026-11-03 (the single-node command replaces the Bash `kreboot`, `koff` and `kon`)
 **History:** [replaced text](archive/0010-fleet-reboot-policies-history.md)
 **Applies to:** `tools/nix-deploy/` (`nixfleet reboot`)
@@ -54,6 +54,12 @@ policies its inventory entries give it:
   uncertain outcome, so runners remain stopped. A command known not to have
   started permits restoring them. A matching old boot ID alone cannot exclude
   a shutdown that was queued but has not begun.
+  The host records the stop set before stopping it. Unknown outcomes keep
+  that record, and `nixfleet runners status` prints the supported
+  `nixfleet runners resume` command. Resume checks controller exit, shared
+  reservations, shutdown, runner holds and start gates; a real reboot clears
+  the record with `/run`. See
+  [ADR-0019](0019-shared-deployment-reservations.md#runner-recovery-after-an-unknown-reboot-outcome).
 - **Interactive host:** a host in `interactiveHosts` runs the inventory's
   guard before its reboot ([Interactive hosts and
   questions](#interactive-hosts-and-questions)).

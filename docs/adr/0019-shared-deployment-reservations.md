@@ -1,7 +1,7 @@
 # ADR-0019: Shared deployment reservations
 
 **Status:** Accepted
-**Date:** 2026-11-05, updated 2026-11-05 (supported recovery)
+**Date:** 2026-11-05, updated 2026-11-05 (supported reservation and reboot runner recovery)
 **History:** [replaced text](archive/0019-shared-deployment-reservations-history.md)
 **Applies to:** `tools/nix-deploy/`
 
@@ -98,6 +98,73 @@ pending system jobs; it cannot prove the absence of arbitrary custom detached
 work or future external scheduling. Unavailable inspection requires explicit
 confirmation. Changing authority, endpoint or member identifiers requires
 coordination with outstanding work.
+
+## Runner recovery after an unknown reboot outcome
+
+Before stopping runners, a reboot run requires a working version 1 host report
+and readable runner hold, refusing unsupported hosts before recording or
+draining anything. It publishes a root-owned record under
+`/run/nixfleet-reboot-runners`, using an atomic directory rename. It contains
+a random owner token, the controller's PID, UTC start and PID namespace
+identity, its inventory endpoint, and the units actually active at the host's
+stop-time check. The record is readable by status without root. A stale plan
+cannot record an already inactive, hand-stopped or held unit. Publication
+precedes stopping, so a lost acknowledgement cannot lose the recovery set.
+A bounded host `flock` serializes record publication, stopping and resuming;
+a later reboot run cannot overwrite an outstanding record, even when all
+its runner units are already inactive.
+
+This record is durable across controller exits, interruptions and SSH loss,
+but boot-scoped: `/run` clears on a real reboot. Enabled units start with boot
+as before, and no stale reboot record or startup migration blocks later work.
+An uncertain reboot still leaves runners stopped. Neither a matching old boot
+ID nor a missing SSH acknowledgement triggers a start.
+
+`nixfleet runners status` identifies this record as "stopped by a reboot run
+with an unknown outcome" and prints `nixfleet runners resume HOST --config FILE`
+with the exact inventory and host. Resume:
+
+- Requires the recorded reboot controller to have exited, using the same
+  identity rules as reservation release. When it is this machine, inspection
+  is local with root visibility. Otherwise its recorded inventory endpoint
+  must still match and be reachable. Busy, unknown or unavailable inspection
+  refuses, with no confirmation override. Root-visible work inspection also
+  excludes surviving SSH children that could still dispatch a reboot, even
+  after the controller PID has exited.
+- Acquires a reservation for that host on the shared authority. This conflicts
+  atomically with any deployment reservation containing the host. An unavailable
+  authority refuses. Protection lasts through a fresh acknowledgement of the start result; an uncertain
+  resume retains it for inspection through `reservations release`. Work
+  inspection also recognizes host reboot-runner operations still holding their
+  `flock`, so a lost connection cannot release an outstanding start.
+- Under the host lock, rechecks record ownership, refuses scheduled shutdown,
+  pending system jobs, an active shutdown target or a shutdown command still
+  running, and requires complete successful inspection.
+- Requires the version 1 host runner report, an active hold reporting `none`,
+  no active restart, and recorded units either already active or inactive with
+  the host's ordinary stopped reason. Held, gated, disabled, reset, failed,
+  transitional or unknown states refuse before any start. The ordinary stopped
+  reason is part of this additive recovery contract; unknown wording refuses.
+- Starts only recorded units still inactive, through ordinary `systemctl start`
+  and the units' existing start gates. It never resets failures, overrides a
+  gate or starts an unrecorded unit. A hold that begins after inspection still
+  has its start gate. A skipped or failed start retains the record for retry;
+  units already active are left alone. Unit definitions removed by a later
+  deployment are skipped rather than started. Success atomically retires the
+  owned directory before deleting its contents; interrupted cleanup cannot
+  leave a partial blocking record.
+
+Resume is an explicit action and needs no `--yes`, like `reservations release`.
+A terminal validates local sudo before any local controller or target probe.
+Noninteractive sessions require preauthorized local sudo. Inventory and
+endpoint changes still require coordination with outstanding work; an
+unreachable or removed controller cannot be assumed idle, but recovery on
+the original controller uses local inspection.
+It differs from `runners restart`, which only replaces running units with older
+definitions. No record means no work, including after a real reboot. Historical
+runs from before this recording support cannot be reconstructed from inactive
+units and are never guessed from logs. The same host safety checks apply to a
+reboot run restoring runners after a definite pre-reboot failure.
 
 ## Runtime contract
 
