@@ -21,7 +21,13 @@ forgejo-runner.overrideAttrs (old: {
     "-w"
     "-X code.forgejo.org/forgejo/runner/v13/internal/pkg/ver.version=v13.2.0"
   ];
-  patches = (old.patches or [ ]) ++ [ ./cancellation-cleanup.patch ];
+  # pause.patch: neither the runner nor Forgejo can stop a runner taking new
+  # jobs without also starting the countdown to cancelling its running ones
+  # (ADR-0017).
+  patches = (old.patches or [ ]) ++ [
+    ./cancellation-cleanup.patch
+    ./pause.patch
+  ];
   checkFlags = [
     "-skip ${
       lib.concatStringsSep "|" [

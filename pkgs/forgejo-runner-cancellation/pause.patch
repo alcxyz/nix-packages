@@ -1,0 +1,376 @@
+diff --git a/internal/app/poll/pause.go b/internal/app/poll/pause.go
+new file mode 100644
+index 0000000..245d4ca
+--- /dev/null
++++ b/internal/app/poll/pause.go
+@@ -0,0 +1,69 @@
++// Copyright The Forgejo Authors.
++// SPDX-License-Identifier: MIT
++
++package poll
++
++import (
++	"fmt"
++	"net"
++	"os"
++
++	log "github.com/sirupsen/logrus"
++)
++
++// pauseFileEnv names a file that pauses the runner while it exists: the runner
++// fetches no new tasks and lets the ones it runs finish, with no time limit.
++const pauseFileEnv = "FORGEJO_RUNNER_PAUSE_FILE"
++
++// pauseState reports a pause through the service manager's status text, as
++// "paused tasks=<running>", and clears the text when the pause ends. Its
++// methods run while fetchMutex is held, so no fetch is in flight, and the count
++// includes failed fetches that may still hold a task on the server, so zero
++// means that the runner has nothing to do.
++type pauseState struct {
++	file   string
++	notify func(status string) error
++	last   string
++}
++
++func newPauseState() pauseState {
++	return pauseState{file: os.Getenv(pauseFileEnv), notify: sdNotifyStatus}
++}
++
++// update reports whether the runner is paused, and tells the service manager
++// when the running count or the pause itself changes.
++func (s *pauseState) update(running int64) bool {
++	if s.file == "" {
++		return false
++	}
++	_, err := os.Lstat(s.file)
++	paused := err == nil
++	status := ""
++	if paused {
++		status = fmt.Sprintf("paused tasks=%d", running)
++	}
++	if status != s.last {
++		log.Infof("[poller] pause status: %q", status)
++		if err := s.notify(status); err != nil {
++			log.WithError(err).Warn("[poller] could not report the pause status")
++		} else {
++			s.last = status
++		}
++	}
++	return paused
++}
++
++// sdNotifyStatus sends the status text to NOTIFY_SOCKET, if there is one.
++func sdNotifyStatus(status string) error {
++	socket := os.Getenv("NOTIFY_SOCKET")
++	if socket == "" {
++		return nil
++	}
++	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socket, Net: "unixgram"})
++	if err != nil {
++		return err
++	}
++	defer conn.Close()
++	_, err = conn.Write([]byte("STATUS=" + status))
++	return err
++}
+diff --git a/internal/app/poll/pause_test.go b/internal/app/poll/pause_test.go
+new file mode 100644
+index 0000000..5a6c6ff
+--- /dev/null
++++ b/internal/app/poll/pause_test.go
+@@ -0,0 +1,216 @@
++// Copyright The Forgejo Authors.
++// SPDX-License-Identifier: MIT
++
++package poll
++
++import (
++	"context"
++	"errors"
++	"net"
++	"os"
++	"path/filepath"
++	"testing"
++	"testing/synctest"
++	"time"
++
++	"connectrpc.com/connect"
++
++	runnerv1 "code.forgejo.org/forgejo/actions-proto/runner/v1"
++	"code.forgejo.org/forgejo/runner/v13/internal/app/run"
++	mock_runner "code.forgejo.org/forgejo/runner/v13/internal/app/run/mocks"
++	"code.forgejo.org/forgejo/runner/v13/internal/pkg/client"
++	"code.forgejo.org/forgejo/runner/v13/internal/pkg/client/mocks"
++	"code.forgejo.org/forgejo/runner/v13/internal/pkg/config"
++
++	gouuid "github.com/google/uuid"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/mock"
++	"github.com/stretchr/testify/require"
++)
++
++func TestPauseStateReportsChanges(t *testing.T) {
++	file := filepath.Join(t.TempDir(), "paused")
++	var sent []string
++	state := pauseState{file: file, notify: func(status string) error {
++		sent = append(sent, status)
++		return nil
++	}}
++
++	assert.False(t, state.update(1))
++	assert.Empty(t, sent, "an unpaused runner reports nothing")
++
++	require.NoError(t, os.WriteFile(file, nil, 0o644))
++	assert.True(t, state.update(1))
++	assert.True(t, state.update(1))
++	assert.True(t, state.update(0))
++	assert.Equal(t, []string{"paused tasks=1", "paused tasks=0"}, sent)
++
++	require.NoError(t, os.Remove(file))
++	assert.False(t, state.update(0))
++	assert.Equal(t, []string{"paused tasks=1", "paused tasks=0", ""}, sent)
++}
++
++func TestPauseStateRetriesAFailedReport(t *testing.T) {
++	file := filepath.Join(t.TempDir(), "paused")
++	require.NoError(t, os.WriteFile(file, nil, 0o644))
++	calls := 0
++	state := pauseState{file: file, notify: func(string) error {
++		calls++
++		if calls == 1 {
++			return errors.New("no socket")
++		}
++		return nil
++	}}
++	assert.True(t, state.update(0))
++	assert.True(t, state.update(0))
++	assert.True(t, state.update(0))
++	assert.Equal(t, 2, calls)
++}
++
++func TestPauseStateWithoutAFile(t *testing.T) {
++	var state pauseState
++	assert.False(t, state.update(3))
++}
++
++func TestSdNotifyStatus(t *testing.T) {
++	socket := filepath.Join(t.TempDir(), "notify")
++	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: socket, Net: "unixgram"})
++	require.NoError(t, err)
++	defer conn.Close()
++
++	t.Setenv("NOTIFY_SOCKET", socket)
++	require.NoError(t, sdNotifyStatus("paused tasks=2"))
++	buffer := make([]byte, 64)
++	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
++	n, err := conn.Read(buffer)
++	require.NoError(t, err)
++	assert.Equal(t, "STATUS=paused tasks=2", string(buffer[:n]))
++
++	t.Setenv("NOTIFY_SOCKET", "")
++	assert.NoError(t, sdNotifyStatus("ignored"))
++}
++
++// A paused poller fetches nothing, lets its running task finish and reports
++// that, and fetches again once the pause ends.
++func TestPollerPause(t *testing.T) {
++	file := filepath.Join(t.TempDir(), "paused")
++
++	synctest.Test(t, func(t *testing.T) {
++		pollingCtx, cancel := context.WithCancel(t.Context())
++		defer cancel()
++
++		release := make(chan struct{})
++		statuses := make(chan string, 8)
++
++		mockClient := mocks.NewMockClient(t)
++		mockClient.On("FetchInterval").Return(1 * time.Second)
++		mockClient.On("Address").Return("https://client")
++		mockClient.On("SetRequestKey", mock.Anything).Return(func() {})
++		mockClient.On("FetchTask", mock.Anything, mock.Anything).Return(connect.NewResponse(&runnerv1.FetchTaskResponse{
++			Task:         &runnerv1.Task{},
++			TasksVersion: int64(1),
++		}), nil).Once()
++		mockClient.On("FetchTask", mock.Anything, mock.Anything).Return(connect.NewResponse(&runnerv1.FetchTaskResponse{
++			TasksVersion: int64(1),
++		}), nil)
++
++		mockRunner := mock_runner.NewMockRunner(t)
++		mockRunner.On("Run", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
++			<-release
++		}).Once()
++
++		// Two slots: the running task leaves one that a pause must keep empty.
++		p := New(pollingCtx, &config.Config{
++			Runner: config.Runner{Capacity: 2},
++		}, []client.Client{mockClient}, []run.RunnerInterface{mockRunner}).(*poller)
++		p.pause = pauseState{file: file, notify: func(status string) error {
++			statuses <- status
++			return nil
++		}}
++		go p.Poll()
++
++		time.Sleep(1500 * time.Millisecond)
++		mockClient.AssertNumberOfCalls(t, "FetchTask", 2)
++
++		require.NoError(t, os.WriteFile(file, nil, 0o644))
++		time.Sleep(1 * time.Second)
++		assert.Equal(t, "paused tasks=1", <-statuses)
++
++		time.Sleep(5 * time.Second)
++		mockClient.AssertNumberOfCalls(t, "FetchTask", 2)
++
++		close(release)
++		time.Sleep(1 * time.Second)
++		assert.Equal(t, "paused tasks=0", <-statuses)
++		mockClient.AssertNumberOfCalls(t, "FetchTask", 2)
++
++		require.NoError(t, os.Remove(file))
++		time.Sleep(1 * time.Second)
++		assert.Empty(t, <-statuses)
++		mockClient.AssertNumberOfCalls(t, "FetchTask", 3)
++
++		require.NoError(t, p.Shutdown(t.Context()))
++	})
++}
++
++// A fetch that failed may hold a task on the server. A pause must retry it with
++// the same request key and count it as work, or a restart would abandon the task.
++func TestPollerPauseResolvesAFailedFetch(t *testing.T) {
++	file := filepath.Join(t.TempDir(), "paused")
++
++	synctest.Test(t, func(t *testing.T) {
++		pollingCtx, cancel := context.WithCancel(t.Context())
++		defer cancel()
++
++		release := make(chan struct{})
++		statuses := make(chan string, 8)
++		var keys []gouuid.UUID
++
++		mockClient := mocks.NewMockClient(t)
++		mockClient.On("FetchInterval").Return(1 * time.Second)
++		mockClient.On("Address").Return("https://client")
++		mockClient.On("SetRequestKey", mock.Anything).Run(func(args mock.Arguments) {
++			keys = append(keys, args.Get(0).(gouuid.UUID))
++		}).Return(func() {})
++		// The pause arrives during the failed fetch, whose response is lost twice.
++		mockClient.On("FetchTask", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
++			require.NoError(t, os.WriteFile(file, nil, 0o644))
++		}).Return(nil, errors.New("connection lost")).Once()
++		mockClient.On("FetchTask", mock.Anything, mock.Anything).Return(nil, errors.New("connection lost")).Once()
++		mockClient.On("FetchTask", mock.Anything, mock.Anything).Return(connect.NewResponse(&runnerv1.FetchTaskResponse{
++			Task:         &runnerv1.Task{},
++			TasksVersion: int64(1),
++		}), nil).Once()
++
++		mockRunner := mock_runner.NewMockRunner(t)
++		mockRunner.On("Run", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
++			<-release
++		}).Once()
++
++		p := New(pollingCtx, &config.Config{
++			Runner: config.Runner{Capacity: 2},
++		}, []client.Client{mockClient}, []run.RunnerInterface{mockRunner}).(*poller)
++		p.pause = pauseState{file: file, notify: func(status string) error {
++			statuses <- status
++			return nil
++		}}
++		go p.Poll()
++
++		time.Sleep(2500 * time.Millisecond)
++		assert.Equal(t, "paused tasks=1", <-statuses, "the unresolved fetch counts as work")
++		mockClient.AssertNumberOfCalls(t, "FetchTask", 3)
++		assert.Equal(t, keys[0], keys[1])
++		assert.Equal(t, keys[0], keys[2])
++
++		// The task it held runs, and nothing more is fetched while paused.
++		time.Sleep(5 * time.Second)
++		mockClient.AssertNumberOfCalls(t, "FetchTask", 3)
++		assert.Empty(t, statuses, "the count stays at one")
++
++		close(release)
++		time.Sleep(1 * time.Second)
++		assert.Equal(t, "paused tasks=0", <-statuses)
++
++		require.NoError(t, p.Shutdown(t.Context()))
++	})
++}
+diff --git a/internal/app/poll/poller.go b/internal/app/poll/poller.go
+index 7250e4a..eef0801 100644
+--- a/internal/app/poll/poller.go
++++ b/internal/app/poll/poller.go
+@@ -32,6 +32,7 @@ type poller struct {
+ 	clients []client.Client
+ 	runners []run.RunnerInterface
+ 	cfg     *config.Config
++	pause   pauseState
+ 
+ 	pollingCtx      context.Context
+ 	shutdownPolling context.CancelFunc
+@@ -59,6 +60,7 @@ func (p *poller) init(ctx context.Context, cfg *config.Config, clients []client.
+ 	p.clients = clients
+ 	p.runners = runners
+ 	p.cfg = cfg
++	p.pause = newPauseState()
+ 
+ 	p.pollingCtx = pollingCtx
+ 	p.shutdownPolling = shutdownPolling
+@@ -77,6 +79,7 @@ func (p *poller) Poll() {
+ 	}
+ 	taskVersions := make([]atomic.Int64, len(p.clients))
+ 	inProgressTasks := atomic.Int64{}
++	unresolvedFetches := atomic.Int64{}
+ 	wg := &sync.WaitGroup{}
+ 
+ 	// When we start a FetchTask, we'll be requesting (capacity - inProgressTasks) tasks from a remote and may receive
+@@ -90,7 +93,7 @@ func (p *poller) Poll() {
+ 	log.Infof("[poller] launched")
+ 	for i := range p.clients {
+ 		wg.Go(func() {
+-			p.pollForClient(limiters[i], p.clients[i], p.runners[i], capacity, fetchMutex, &taskVersions[i], &inProgressTasks, wg)
++			p.pollForClient(limiters[i], p.clients[i], p.runners[i], capacity, fetchMutex, &taskVersions[i], &inProgressTasks, &unresolvedFetches, wg)
+ 		})
+ 	}
+ 
+@@ -101,7 +104,7 @@ func (p *poller) Poll() {
+ 	close(p.done)
+ }
+ 
+-func (p *poller) pollForClient(limiter *rate.Limiter, client client.Client, runner run.RunnerInterface, capacity int64, fetchMutex chan any, taskVersions, inProgressTasks *atomic.Int64, wg *sync.WaitGroup) {
++func (p *poller) pollForClient(limiter *rate.Limiter, client client.Client, runner run.RunnerInterface, capacity int64, fetchMutex chan any, taskVersions, inProgressTasks, unresolvedFetches *atomic.Int64, wg *sync.WaitGroup) {
+ 	// When the FetchTask() API is invoked to create a task, unpreventable environmental errors may occur; for example,
+ 	// network disconnects and timeouts. It's possible that these errors occur after the server-side has assigned a task
+ 	// to the runner during the API call, in which case the error would cause that task to be lost between the two
+@@ -118,6 +121,10 @@ func (p *poller) pollForClient(limiter *rate.Limiter, client client.Client, runn
+ 	// new key when a successful call is received.
+ 	requestKey := gouuid.New()
+ 
++	// A fetch that failed may have been assigned a task on the server, which only a retry with its request key gets
++	// back. A pause therefore still retries it, and counts it as running work until it resolves.
++	unresolved := false
++
+ 	for {
+ 		if err := limiter.Wait(p.pollingCtx); err != nil {
+ 			log.Infof("[poller] shutdown begin, %d tasks currently running", inProgressTasks.Load())
+@@ -126,10 +133,21 @@ func (p *poller) pollForClient(limiter *rate.Limiter, client client.Client, runn
+ 
+ 		fetchMutex <- struct{}{} // lock mutex
+ 		availableCapacity := capacity - inProgressTasks.Load()
++		if p.pause.update(inProgressTasks.Load()+unresolvedFetches.Load()) && !unresolved {
++			availableCapacity = 0
++		}
+ 		if availableCapacity > 0 {
+ 			log.Tracef("[poller] fetching at most %d tasks from client %s", availableCapacity, client.Address())
+ 			tasks, reuseRequestKey := p.fetchTasks(p.pollingCtx, client, taskVersions, availableCapacity, requestKey)
+ 			inProgressTasks.Add(int64(len(tasks)))
++			if reuseRequestKey != unresolved {
++				unresolved = reuseRequestKey
++				if unresolved {
++					unresolvedFetches.Add(1)
++				} else {
++					unresolvedFetches.Add(-1)
++				}
++			}
+ 
+ 			<-fetchMutex // unlock mutex by draining channel
+ 
