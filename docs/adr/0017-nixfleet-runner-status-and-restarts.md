@@ -92,11 +92,16 @@ provides, readable without root:
 - `nixfleet runners restart [--all | <host>...] [--dry-run] [--yes]` plans
   first (what each host would restart and why, or why it is skipped), asks
   on a terminal or needs `--yes`, then runs `systemctl start` of each
-  host's restart unit concurrently, over SSH as the system user with
-  `sudo -n` where the inventory says so, prints its progress, and reports
-  each host's outcome. The host unit goes on if nixfleet is interrupted. It
-  exits 1 when a host could not be read, has no restart unit, stayed busy or
-  failed.
+  host's restart unit, over SSH as the system user with `sudo -n` where the
+  inventory says so, prints its progress, and reports each host's outcome.
+  Hosts run in the groups `nixfleet reboot` uses: the members of a serial group
+  one at a time, so that the others keep taking jobs, and a member that fails in
+  the plan or does not finish stops the rest of its group; other hosts run
+  concurrently. Within a group a restart that already runs comes first, then
+  this machine, whose sudo has just been validated, then the inventory's order.
+  A running host unit goes on if nixfleet is interrupted, and members that have
+  not started stay as they are. It exits 1 when a host could not be read, has no
+  restart unit, stayed busy or failed.
 
 Drain and resume need no command: under the runner hold a drain is an
 ordinary `systemctl stop`, which the hold leaves alone, and a resume is

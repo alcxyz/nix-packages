@@ -27,3 +27,12 @@ gave up as busy three times in a row while its runners kept taking jobs.
 
 - A busy host may need several runs, or a quieter time, before its restart
   goes through; the restart never trades a job for it.
+
+## Text replaced later on 2026-11-05
+
+- `nixfleet runners restart [--all | <host>...] [--dry-run] [--yes]` plans
+  first (what each host would restart and why, or why it is skipped), asks
+  on a terminal or needs `--yes`, then runs `systemctl start` of each
+  host's restart unit concurrently, over SSH as the system user with
+  `sudo -n` where the inventory says so, prints its progress, and reports
+  each host's outcome.

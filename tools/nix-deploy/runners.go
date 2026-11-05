@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -46,10 +47,13 @@ recorded, needs a restart.
            restarts the runners that require it, so those pause as well.
            When a wait outlasts the host's limit (the job timeout and 5
            minutes by default) the host gives up and nothing is restarted, and
-           a runner on a build that cannot pause fails the run. The hosts run
-           concurrently, so restart them one at a time to keep CI admitting
-           jobs. The unit goes on when nixfleet is interrupted or loses its
-           connection; nixfleet status shows its result.
+           a runner on a build that cannot pause fails the run. Hosts run in
+           the groups nixfleet reboot uses: the members of a serial group one
+           at a time, so the others keep taking jobs, and a member that fails
+           in the plan or does not finish stops the rest of its group. Other
+           hosts run concurrently. A running unit goes on when nixfleet is
+           interrupted or loses its connection, and members that have not
+           started stay as they are; nixfleet status shows the results.
 
            The plan comes first: what each host would restart and why, or
            why it is skipped. --dry-run stops there. Otherwise a terminal is
@@ -306,6 +310,7 @@ func (t *restartTarget) describe() string {
 
 func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 	targets := f.plan(states, opts.all)
+	f.stopFailedGroups(targets)
 	exit := 0
 	var work []*restartTarget
 	for _, t := range targets {
@@ -324,6 +329,16 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 	}
 	if len(targets) == 0 {
 		f.log("no runner hosts among the selected hosts")
+	}
+	groups := f.groups(work)
+	for _, group := range groups {
+		if len(group) > 1 {
+			hosts := make([]string, len(group))
+			for i, t := range group {
+				hosts[i] = t.host
+			}
+			f.log("one at a time: %s", strings.Join(hosts, ", "))
+		}
 	}
 	if opts.dryRun || len(work) == 0 {
 		return exit
@@ -349,25 +364,105 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 			}
 		}
 	}
-	f.log("Interrupting nixfleet leaves the restarts running on the hosts; nixfleet status shows their results.")
-	outcomes := make([]string, len(work))
-	failed := make([]bool, len(work))
+	f.log("Interrupting nixfleet leaves the running restarts going on the hosts and starts no more; nixfleet status shows their results.")
+	outcomes := map[*restartTarget]string{}
 	var wait sync.WaitGroup
-	for i, t := range work {
+	for _, group := range groups {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			outcomes[i], failed[i] = f.restart(t)
+			var stoppedBy string
+			for _, t := range group {
+				if stoppedBy != "" {
+					f.lock.Lock()
+					outcomes[t] = stoppedOutcome(t, stoppedBy)
+					exit = 1
+					f.lock.Unlock()
+					continue
+				}
+				outcome, failed := f.restart(t)
+				f.lock.Lock()
+				outcomes[t] = outcome
+				if failed {
+					exit = 1
+				}
+				f.lock.Unlock()
+				if failed {
+					stoppedBy = t.host
+				}
+			}
 		}()
 	}
 	wait.Wait()
-	for i, t := range work {
-		f.say(t.host, outcomes[i])
-		if failed[i] {
-			exit = 1
-		}
+	for _, t := range work {
+		f.say(t.host, outcomes[t])
 	}
 	return exit
+}
+
+// stoppedOutcome says what happens to a member whose serial group stopped.
+// Nothing is started on it, since following a run starts the unit, and a run
+// that ended meanwhile would start again.
+func stoppedOutcome(t *restartTarget, host string) string {
+	if t.joins {
+		return "not followed: " + host + " failed, which stops its serial group; the restart it already runs goes on"
+	}
+	return "not started: " + host + " failed, which stops its serial group"
+}
+
+// stopFailedGroups skips, in the plan, the other members of a serial group with
+// a member that failed planning, wherever it stands in the group.
+func (f *fleetRestart) stopFailedGroups(targets []*restartTarget) {
+	failed := map[*serialGroup]string{}
+	for _, t := range targets {
+		if serial := f.status.inv.group(t.host); serial != nil && t.failed && failed[serial] == "" {
+			failed[serial] = t.host
+		}
+	}
+	for _, t := range targets {
+		host := failed[f.status.inv.group(t.host)]
+		if host != "" && !t.failed && t.skip == "" {
+			t.skip, t.failed = stoppedOutcome(t, host), true
+		}
+	}
+}
+
+// groups splits the work into the groups nixfleet reboot uses: a serial group's
+// members run one at a time, and every other host on its own. Within a group, a
+// restart that already runs comes first, so that two members are not paused at
+// once, then this machine, whose sudo was just validated and may not last
+// through a long wait, then the inventory's order.
+func (f *fleetRestart) groups(work []*restartTarget) [][]*restartTarget {
+	var groups [][]*restartTarget
+	positions := map[*serialGroup]int{}
+	for _, t := range work {
+		serial := f.status.inv.group(t.host)
+		if serial == nil {
+			groups = append(groups, []*restartTarget{t})
+			continue
+		}
+		position, ok := positions[serial]
+		if !ok {
+			position = len(groups)
+			positions[serial] = position
+			groups = append(groups, nil)
+		}
+		groups[position] = append(groups[position], t)
+		hosts := serial.Hosts
+		rank := func(t *restartTarget) int {
+			switch {
+			case t.joins:
+				return -2
+			case t.host == f.status.self:
+				return -1
+			}
+			return indexOf(hosts, t.host)
+		}
+		sort.SliceStable(groups[position], func(i, j int) bool {
+			return rank(groups[position][i]) < rank(groups[position][j])
+		})
+	}
+	return groups
 }
 
 // startCommand starts the host's restart unit and waits for it to finish.

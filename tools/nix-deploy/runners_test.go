@@ -168,6 +168,8 @@ type restartFleet struct {
 	after  map[string]string
 	status map[string]int
 	starts []string
+	// running and peak count the starts under way, for the serial group test.
+	running, peak int
 	// block holds the start until released, for the progress test.
 	block chan struct{}
 }
@@ -181,12 +183,16 @@ func (f *restartFleet) run(timeout time.Duration, argv ...string) (string, strin
 	if strings.Contains(last, "systemctl start") {
 		f.lock.Lock()
 		f.starts = append(f.starts, host+": "+last)
+		f.running++
+		f.peak = max(f.peak, f.running)
 		f.lock.Unlock()
 		if f.block != nil {
 			<-f.block
 		}
+		time.Sleep(5 * time.Millisecond)
 		f.lock.Lock()
 		defer f.lock.Unlock()
+		f.running--
 		if report, ok := f.after[host]; ok {
 			f.reports[host] = report
 		}
@@ -284,6 +290,164 @@ func TestRunnersRestart(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, out.String())
 		}
 	}
+}
+
+func TestRunnersRestartSerialGroupOneAtATime(t *testing.T) {
+	done := func(host string) string {
+		return runnerReport([]string{primaryOK}, "restart\tinactive\tdone\t1762100000\tforgejo-actions-runner.service\t-")
+	}
+	failed := runnerReport([]string{primaryOld}, "restart\tinactive\tbusy\t1762100000\tforgejo-actions-runner.service\tjob_running unit=forgejo-actions-runner.service")
+	flagged := runnerReport([]string{primaryOld}, "")
+	starts := func(f *restartFleet) []string {
+		var hosts []string
+		for _, start := range f.starts {
+			hosts = append(hosts, strings.Split(start, ":")[0])
+		}
+		return hosts
+	}
+	newFleet := func() *restartFleet {
+		return &restartFleet{reports: map[string]string{"node": flagged, "solo": flagged, "k1": flagged, "spare": flagged}}
+	}
+	hosts := []string{"node", "solo", "k1", "spare"}
+
+	t.Run("in inventory order, with others alongside", func(t *testing.T) {
+		f := newFleet()
+		f.after = map[string]string{"node": done("node"), "solo": done("solo"), "k1": done("k1"), "spare": done("spare")}
+		var out bytes.Buffer
+		r := newFleetRestart(t, f, &out)
+		r.status.inv.SerialGroups = []*serialGroup{{Hosts: []string{"k1", "solo", "node"}}}
+		if code := r.run(r.status.readHosts(hosts), runnersOptions{command: "restart", yes: true}); code != 0 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		var group []string
+		for _, host := range starts(f) {
+			if host != "spare" {
+				group = append(group, host)
+			}
+		}
+		if want := []string{"k1", "solo", "node"}; !slices.Equal(group, want) {
+			t.Errorf("order %q, want %q", group, want)
+		}
+		if want := "one at a time: k1, solo, node\n"; !strings.Contains(out.String(), want) {
+			t.Errorf("the plan lacks %q:\n%s", want, out.String())
+		}
+		if len(f.starts) != 4 || f.peak > 2 {
+			t.Errorf("starts %q, peak %d", f.starts, f.peak)
+		}
+	})
+
+	t.Run("a member that does not finish stops the rest of its group", func(t *testing.T) {
+		f := newFleet()
+		f.after = map[string]string{"k1": done("k1"), "solo": failed, "node": done("node"), "spare": done("spare")}
+		var out bytes.Buffer
+		r := newFleetRestart(t, f, &out)
+		r.status.inv.SerialGroups = []*serialGroup{{Hosts: []string{"k1", "solo", "node"}}}
+		if code := r.run(r.status.readHosts(hosts), runnersOptions{command: "restart", yes: true}); code != 1 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		if slices.Contains(starts(f), "node") {
+			t.Errorf("node started after solo failed: %q", f.starts)
+		}
+		if !slices.Contains(starts(f), "spare") {
+			t.Errorf("a host outside the group stopped too: %q", f.starts)
+		}
+		for _, want := range []string{"[node] not started: solo failed, which stops its serial group\n", "[solo] busy for"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("missing %q:\n%s", want, out.String())
+			}
+		}
+	})
+
+	t.Run("a member that cannot be read stops its group, wherever it stands", func(t *testing.T) {
+		f := newFleet()
+		delete(f.reports, "node")
+		f.after = map[string]string{"k1": done("k1"), "solo": done("solo"), "spare": done("spare")}
+		var out bytes.Buffer
+		r := newFleetRestart(t, f, &out)
+		r.status.inv.SerialGroups = []*serialGroup{{Hosts: []string{"k1", "solo", "node"}}}
+		// The plan says so before anything runs.
+		if code := r.run(r.status.readHosts(hosts), runnersOptions{command: "restart", dryRun: true}); code != 1 || len(f.starts) != 0 {
+			t.Fatalf("dry run: %d %q", code, f.starts)
+		}
+		if want := "[solo] not started: node failed, which stops its serial group\n"; !strings.Contains(out.String(), want) {
+			t.Errorf("plan lacks %q:\n%s", want, out.String())
+		}
+		if code := r.run(r.status.readHosts(hosts), runnersOptions{command: "restart", yes: true}); code != 1 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		if !slices.Equal(starts(f), []string{"spare"}) {
+			t.Errorf("starts %q", f.starts)
+		}
+		if want := "[k1] not started: node failed, which stops its serial group\n"; !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q:\n%s", want, out.String())
+		}
+	})
+
+	t.Run("a stopped group starts nothing, even on a member already running", func(t *testing.T) {
+		f := newFleet()
+		delete(f.reports, "node")
+		f.reports["solo"] = runnerReport([]string{primaryOld}, "restart\tactivating\twaiting\t1762100000\tforgejo-actions-runner.service\tjob_running unit=forgejo-actions-runner.service")
+		f.after = map[string]string{"solo": done("solo")}
+		var out bytes.Buffer
+		r := newFleetRestart(t, f, &out)
+		r.status.inv.SerialGroups = []*serialGroup{{Hosts: []string{"k1", "solo", "node"}}}
+		if code := r.run(r.status.readHosts([]string{"k1", "solo", "node"}), runnersOptions{command: "restart", yes: true}); code != 1 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		if len(f.starts) != 0 {
+			t.Errorf("starts %q", f.starts)
+		}
+		for _, want := range []string{"[k1] not started: node failed", "[solo] not followed: node failed, which stops its serial group; the restart it already runs goes on"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("missing %q:\n%s", want, out.String())
+			}
+		}
+	})
+
+	t.Run("a member with nothing to restart does not stop its group", func(t *testing.T) {
+		f := newFleet()
+		f.reports["k1"] = runnerReport([]string{primaryOK}, "")
+		f.after = map[string]string{"solo": done("solo"), "node": done("node")}
+		var out bytes.Buffer
+		r := newFleetRestart(t, f, &out)
+		r.status.inv.SerialGroups = []*serialGroup{{Hosts: []string{"k1", "solo", "node"}}}
+		if code := r.run(r.status.readHosts([]string{"k1", "solo", "node"}), runnersOptions{command: "restart", yes: true}); code != 0 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		if !slices.Equal(starts(f), []string{"solo", "node"}) {
+			t.Errorf("starts %q", f.starts)
+		}
+	})
+
+	t.Run("a running restart comes first, then this machine", func(t *testing.T) {
+		f := newFleet()
+		f.reports["xyz"] = flagged
+		f.reports["node"] = runnerReport([]string{primaryOld}, "restart\tactivating\twaiting\t1762100000\tforgejo-actions-runner.service\tjob_running unit=forgejo-actions-runner.service")
+		f.after = map[string]string{"node": done("node"), "solo": done("solo"), "xyz": done("xyz")}
+		var out bytes.Buffer
+		r := newFleetRestart(t, f, &out)
+		r.status.inv.SerialGroups = []*serialGroup{{Hosts: []string{"solo", "node", "xyz"}}}
+		if code := r.run(r.status.readHosts([]string{"solo", "node", "xyz"}), runnersOptions{command: "restart", yes: true}); code != 0 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		if want := []string{"node", "xyz", "solo"}; !slices.Equal(starts(f), want) {
+			t.Errorf("order %q, want %q", starts(f), want)
+		}
+	})
+
+	t.Run("one at a time when the whole selection is a group", func(t *testing.T) {
+		f := newFleet()
+		f.after = map[string]string{"node": done("node"), "solo": done("solo"), "k1": done("k1")}
+		var out bytes.Buffer
+		r := newFleetRestart(t, f, &out)
+		r.status.inv.SerialGroups = []*serialGroup{{Hosts: []string{"node", "solo", "k1"}}}
+		if code := r.run(r.status.readHosts([]string{"node", "solo", "k1"}), runnersOptions{command: "restart", yes: true}); code != 0 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		if f.peak != 1 {
+			t.Errorf("%d restarts at once in a serial group", f.peak)
+		}
+	})
 }
 
 func TestRunnersRestartFailures(t *testing.T) {

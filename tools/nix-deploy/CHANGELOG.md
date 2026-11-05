@@ -9,6 +9,13 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.30.0 (2026-11-05)
+
+- `nixfleet runners restart` restarts the members of a serial group one at a
+  time, in the groups `nixfleet reboot` uses, so a fleet restart leaves the
+  other hosts taking jobs. A member that fails in the plan or does not finish
+  stops the rest of its group (ADR-0017).
+
 ## 0.29.1 (2026-11-05)
 
 - `nixfleet runners restart` and its help say that a restart happens once the
