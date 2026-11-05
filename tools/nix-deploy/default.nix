@@ -10,21 +10,25 @@
   makeWrapper,
   openssh,
   python3,
+  procps,
   stdenv,
   writableTmpDirAsHomeHook,
 }:
 let
-  deployPath = lib.makeBinPath [
-    bash
-    coreutils
-    hostname
-    openssh
-  ];
+  deployPath = lib.makeBinPath (
+    [
+      bash
+      coreutils
+      hostname
+      openssh
+    ]
+    ++ lib.optionals stdenv.hostPlatform.isLinux [ procps ]
+  );
 in
 buildGoModule (finalAttrs: {
   pname = "nixfleet";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.30.0";
+  version = "0.31.0";
 
   src = ./.;
 
@@ -47,7 +51,10 @@ buildGoModule (finalAttrs: {
     git
     python3
   ]
-  ++ lib.optionals stdenv.hostPlatform.isLinux [ acl ];
+  ++ lib.optionals stdenv.hostPlatform.isLinux [
+    acl
+    procps
+  ];
 
   # One program answers to nixfleet, deploy, k8s-node-power and runners, by
   # the name it is invoked as. The black-box contract mocks deployment commands, so it

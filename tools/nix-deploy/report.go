@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -202,20 +201,8 @@ func checkReportACL(path string) error {
 	return nil
 }
 
-// reportTemps holds the temporary files writeReportFile has not yet renamed or
-// removed, so the interrupt handler can remove them before os.Exit skips the
-// writers' deferred cleanup.
-var reportTemps sync.Map
-
-func removeReportTemps() {
-	reportTemps.Range(func(name, _ any) bool {
-		os.Remove(name.(string))
-		return true
-	})
-}
-
-// writeReportFile publishes only complete reports. An interrupt can exit while
-// another writer is active, so writers must never truncate the published file.
+// writeReportFile publishes only complete reports. Cancellation unwinds the
+// controller normally, so deferred cleanup removes any unpublished temporary file.
 // Replacing the report by rename needs write access to its directory.
 func writeReportFile(path string, data []byte) error {
 	mode := os.FileMode(0o600)
@@ -236,11 +223,7 @@ func writeReportFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	reportTemps.Store(temp.Name(), struct{}{})
-	defer func() {
-		os.Remove(temp.Name())
-		reportTemps.Delete(temp.Name())
-	}()
+	defer os.Remove(temp.Name())
 	// Inherited ACLs can grant access independently of mode bits on Darwin,
 	// or become effective when Chmod restores a group mask on Linux. Refuse
 	// them before writing any report data to the temporary file.

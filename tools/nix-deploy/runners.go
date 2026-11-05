@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"nix-deploy/internal/process"
 )
 
 const runnersUsage = `Usage: nixfleet runners [status] [--config FILE] [--all | <host>...]
@@ -581,7 +583,10 @@ func askLine(in io.Reader, out io.Writer) func(string) bool {
 	reader := bufio.NewReader(in)
 	return func(question string) bool {
 		fmt.Fprint(out, question)
-		answer, _ := reader.ReadString('\n')
+		answer, err := readPromptLine(runContext, reader)
+		if err != nil {
+			return false
+		}
 		answer = strings.ToLower(strings.TrimSpace(answer))
 		return answer == "y" || answer == "yes"
 	}
@@ -592,5 +597,5 @@ func askLine(in io.Reader, out io.Writer) func(string) bool {
 func validateSudo() error {
 	cmd := exec.Command("sudo", "-v")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	return process.Run(runContext, cmd)
 }

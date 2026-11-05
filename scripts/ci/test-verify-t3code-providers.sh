@@ -5,7 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_root=$(mktemp -d)
 real_rm=$(command -v rm)
 trap '"$real_rm" -rf "$test_root"' EXIT
-mkdir -p "$test_root/bin" "$test_root/out-t3code/bin"
+mkdir -p "$test_root/bin" "$test_root/out-t3code/bin" "$test_root/out-claude/bin" "$test_root/out-codex/bin" "$test_root/out-app/bin"
 
 cat >"$test_root/bin/git" <<'MOCK'
 #!/usr/bin/env bash
@@ -34,6 +34,9 @@ case "$*" in
   'eval --raw .#t3code.embeddedProviderVersions.codexCli') printf '4.5.6\n' ;;
   'eval --raw .#t3code.version') printf '0.1.0\n' ;;
   'build -L .#t3code --no-link --print-out-paths') printf '%s/out-t3code\n' "$MOCK_STATE" ;;
+  'build -L .#claude-code --no-link --print-out-paths') printf '%s/out-claude\n' "$MOCK_STATE" ;;
+  'build -L .#codex-cli --no-link --print-out-paths') printf '%s/out-codex\n' "$MOCK_STATE" ;;
+  'build -L .#codex-app-server --no-link --print-out-paths') printf '%s/out-app\n' "$MOCK_STATE" ;;
   'build -L '*) ;;
   *) echo "Unexpected nix invocation: $*" >&2; exit 92 ;;
 esac
@@ -54,6 +57,18 @@ cat >"$test_root/out-t3code/bin/t3" <<'MOCK'
 printf 't3 v0.1.0\n'
 MOCK
 chmod +x "$test_root/bin/"* "$test_root/out-t3code/bin/t3"
+
+for pair in 'claude claude 1.2.3' 'codex codex 4.5.6' 'app codex-app-server 7.8.9'; do
+ read -r dir binary version <<<"$pair"
+ cat >"$test_root/out-$dir/bin/$binary" <<MOCK
+#!/usr/bin/env bash
+[[ -d "\$HOME" && "\$HOME" != "$HOME" && -d "\$XDG_CONFIG_HOME" ]] || exit 12
+[[ -z "\${PROVIDER_TEST_SECRET:-}" ]] || exit 13
+printf '%s\n' '$version'
+MOCK
+ chmod +x "$test_root/out-$dir/bin/$binary"
+done
+export PROVIDER_TEST_SECRET=synthetic
 
 new_case() {
   : >"$test_root/calls"
@@ -102,6 +117,12 @@ assert_called 'nix build -L .#t3code --no-link --print-out-paths'
 new_case 'pkgs/claude-code/default.nix'
 run_case 0
 assert_called 'nix build -L .#t3code --no-link --print-out-paths'
+
+# The standalone provider must be checked even without a T3 wrapper change.
+new_case 'pkgs/codex-app-server/default.nix'
+run_case 0
+assert_called 'nix build -L .#codex-app-server --no-link --print-out-paths'
+assert_not_called 'nix build -L .#t3code --no-link --print-out-paths'
 
 # A global package input produces the full-matrix marker and validates T3.
 new_case 'flake.lock'
@@ -154,4 +175,13 @@ run_case 47
 grep -Fq 'mocked provider build failure' "$test_root/output"
 assert_not_called 'nix build -L .#t3code --no-link --print-out-paths'
 
+printf '#!/usr/bin/env bash\nprintf "999.0.0\\n"\n' >"$test_root/out-codex/bin/codex"
+new_case 'pkgs/codex-cli/default.nix'
+run_case 1
+grep -Fq 'expected 4.5.6' "$test_root/output"
+printf '#!/usr/bin/env bash\nprintf "4.5.6\\n"\n' >"$test_root/out-codex/bin/codex"
+printf '#!/usr/bin/env bash\nprintf "999.0.0\\n"\n' >"$test_root/out-app/bin/codex-app-server"
+new_case 'pkgs/codex-app-server/default.nix'
+run_case 1
+grep -Fq 'expected 7.8.9' "$test_root/output"
 echo 'T3 Code provider selection regression tests passed.'

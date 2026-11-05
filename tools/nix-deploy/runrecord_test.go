@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -12,6 +13,35 @@ import (
 	"testing"
 	"time"
 )
+
+func TestInterruptedRecordDoesNotReplaceLatestFailedRun(t *testing.T) {
+	stateRuns(t)
+	flake := flakeWithLock(t, "synthetic lock")
+	failed := startRunRecord(nil, flake, false, false, false, 30)
+	first := newReport()
+	first.record("system", "node", "failed")
+	(&deployer{record: failed}).finishRecord([]string{"node"}, first, true)
+	retry := startRunRecord(nil, flake, false, false, false, 30)
+	ctx, cancel := context.WithCancel(context.Background())
+	previous := runContext
+	runContext = ctx
+	defer func() { runContext = previous }()
+	cancel()
+	r := newReport()
+	r.record("system", "node", "failed")
+	(&deployer{record: retry}).finishRecord([]string{"node"}, r, true)
+	info, err := readRunInfo(retry.dir)
+	if err != nil || info.Ended != nil || info.Failed != nil || retry.active != nil {
+		t.Fatalf("interrupted run finished: %+v %v", info, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(retry.dir, "report.json")); err != nil || !strings.Contains(string(data), `"failed": true`) {
+		t.Fatalf("partial failure report missing: %s %v", data, err)
+	}
+	selected, err := selectRun(filepath.Dir(retry.dir), "", false)
+	if err != nil || selected != failed.dir {
+		t.Fatalf("interrupted retry displaced failed run: %s %v", selected, err)
+	}
+}
 
 func TestRunIDsSortByTime(t *testing.T) {
 	base := time.Date(2026, 10, 27, 16, 54, 25, 0, time.UTC)

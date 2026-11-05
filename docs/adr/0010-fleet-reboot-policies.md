@@ -1,7 +1,7 @@
 # ADR-0010: Fleet reboots by policy and constraint group
 
 **Status:** Accepted
-**Date:** 2026-10-16
+**Date:** 2026-10-16, updated 2026-11-05 (ambiguous cancelled reboot commands)
 **Amended:** 2026-10-16 (core singletons and reboot marks; interactive hosts, this machine and the boot check), 2026-10-17 (every question before the start; only streaming, caught-up replicas take over; room before the drain; a hook around planned reboots), 2026-10-27 (replica spread before the drain), 2026-11-03 (the single-node command replaces the Bash `kreboot`, `koff` and `kon`)
 **History:** [replaced text](archive/0010-fleet-reboot-policies-history.md)
 **Applies to:** `tools/nix-deploy/` (`nixfleet reboot`)
@@ -50,6 +50,10 @@ policies its inventory entries give it:
   which lets the runner finish its admitted jobs within its own shutdown
   timeout and admit no new ones. If the host then is not rebooted, they are
   started again; after the reboot they must be active.
+  An interrupted or timed-out reboot command that already started has an
+  uncertain outcome, so runners remain stopped. A command known not to have
+  started permits restoring them. A matching old boot ID alone cannot exclude
+  a shutdown that was queued but has not begun.
 - **Interactive host:** a host in `interactiveHosts` runs the inventory's
   guard before its reboot ([Interactive hosts and
   questions](#interactive-hosts-and-questions)).
@@ -328,9 +332,9 @@ operator's setup, not this tool's.
   node starts only after the previous one finished, after its cluster
   checks settled. This machine's turn ends with its reboot, which comes
   after `run-finish`, so it gets `host-finish` only when the reboot does
-  not happen; SIGTERM while its reboot command runs may be the shutdown
-  itself and sends none, while the operator's interrupt leaves it up and
-  finishes its turn. Calls are serialized, run
+  not happen. Cancellation or timeout while its reboot command runs can race
+  with queued shutdown and sends no finish event; a command known not to have
+  started finishes the turn normally. Calls are serialized, run
   on their own clock (so an interrupted run still reports) and are bounded
   at 60 seconds, plus up to 5 seconds for a hook that ignores the stop;
   each runs in its own process group, which the deadline stops and which

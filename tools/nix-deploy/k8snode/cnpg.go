@@ -164,9 +164,8 @@ func streamingReplicas(c cnpgCluster, pods []pod, standbys map[string]standby, e
 }
 
 // cnpgInstalled reports whether the cluster serves CloudNativePG clusters.
-func (o *Operation) cnpgInstalled() bool {
-	r := o.kubectl(Command{Argv: []string{"get", "clusters.postgresql.cnpg.io", "--all-namespaces"}, Quiet: true})
-	return r.Status == 0
+func (o *Operation) cnpgInstalled() (bool, error) {
+	return o.integrationInstalled("clusters.postgresql.cnpg.io")
 }
 
 func (o *Operation) listCNPGClusters() ([]cnpgCluster, error) {
@@ -220,7 +219,9 @@ func cnpgSurvivabilityFailures(target string, clusters []cnpgCluster, pods []pod
 }
 
 func (o *Operation) waitForCNPGSurvivability() error {
-	if !o.cnpgInstalled() {
+	if installed, err := o.cnpgInstalled(); err != nil {
+		return err
+	} else if !installed {
 		o.log("CloudNativePG clusters not found; skipping database maintenance gate")
 		return nil
 	}
@@ -250,7 +251,9 @@ func (o *Operation) waitForCNPGSurvivability() error {
 }
 
 func (o *Operation) waitForCNPGHealth() error {
-	if !o.cnpgInstalled() {
+	if installed, err := o.cnpgInstalled(); err != nil {
+		return err
+	} else if !installed {
 		return nil
 	}
 	o.log("waiting for CloudNativePG clusters to become fully healthy")
@@ -372,7 +375,9 @@ func planSwitchovers(target string, clusters []cnpgCluster, pods []pod, nodes []
 // trail briefly under load, so it waits up to the settle timeout for one to
 // catch up.
 func (o *Operation) planCNPGSwitchovers() ([]switchover, error) {
-	if !o.cnpgInstalled() {
+	if installed, err := o.cnpgInstalled(); err != nil {
+		return nil, err
+	} else if !installed {
 		return nil, nil
 	}
 	deadline := o.now().Add(duration(o.opts.SettleTimeout))

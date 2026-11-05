@@ -629,7 +629,14 @@ func (d *deployer) finishRecord(selected []string, r *report, failed bool) {
 	if err != nil {
 		rec.warn(err)
 	}
-	rec.finish(failed)
+	if runContext.Err() == nil {
+		rec.finish(failed)
+	} else if rec.active != nil {
+		// Keep interrupted run.json incomplete, as ADR-0016 specifies, while
+		// still publishing the partial report and releasing the kernel lock.
+		rec.active.Close()
+		rec.active = nil
+	}
 	if failed {
 		fmt.Fprintf(os.Stderr, "deploy: run record: %s\n", rec.dir)
 	}

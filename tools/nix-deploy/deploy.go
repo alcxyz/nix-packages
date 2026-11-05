@@ -146,13 +146,31 @@ func (d *deployer) buildHost(host string, targets []target, evaluated map[string
 
 // switchHost activates a single host's system, behind its serial group's
 // pre-check and ready gate.
-func (d *deployer) switchHost(t target, path, mode string, r *report) int {
+func (d *deployer) switchHost(t target, path, mode string, r *report) (result int) {
 	group := d.inv.group(t.host)
+	var shared *reservation
+	if group != nil {
+		var err error
+		shared, err = d.reserveGroup(group)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "deploy:", err)
+			r.record(t.phase, t.host, "failed")
+			return 1
+		}
+	}
+	defer func() {
+		if shared != nil && !shared.finish(result != 0) && result == 0 {
+			result = 1
+			r.record(t.phase, t.host, "failed")
+		}
+	}()
+
 	if group != nil && group.ReadyCommand != "" {
 		if others := group.others(t.host); len(others) > 0 {
 			d.ui.section("serial group pre-check")
 			if notReady, ok := d.precheck(group, others); !ok {
 				fmt.Fprintf(os.Stderr, "deploy: serial group blocked: %s not ready before rollout; switching %s could break quorum\n", notReady, t.host)
+				r.record(t.phase, t.host, "failed")
 				return 1
 			}
 		}
@@ -169,8 +187,19 @@ func (d *deployer) switchHost(t target, path, mode string, r *report) int {
 		return 1
 	}
 	streams, log := d.switchLogged(t)
+	if shared != nil && !shared.start(t.host) {
+		log.Close()
+		d.failed.finish(t, false)
+		r.record(t.phase, t.host, "failed")
+		return 1
+	}
 	status := d.activateSystem(t.host, path, streams, false)
 	log.Close()
+	if shared != nil && !shared.ended(status) {
+		d.failed.finish(t, false)
+		r.record(t.phase, t.host, "failed")
+		return 1
+	}
 	r.addTime(t, "activate", time.Since(started))
 	if status != 0 || group == nil {
 		d.recordActivation(r, t, status)

@@ -124,8 +124,8 @@ func requiresTargetNode(target string, spec podSpec, nodes []node) bool {
 }
 
 // workloadRequiresTargetNode reports whether the controller's Pods can run
-// only on the target node. A controller or node list kubectl cannot read
-// counts as portable, as in the Bash tool.
+// only on the target node. Confirmed absence counts as portable; failed
+// inspection returns an error.
 func (o *Operation) workloadRequiresTargetNode(w workload) (bool, error) {
 	var c controller
 	found, err := o.readQuiet(&c, "-n", w.Namespace, "get", w.ref(), "-o", "json")
@@ -133,8 +133,7 @@ func (o *Operation) workloadRequiresTargetNode(w workload) (bool, error) {
 		return false, err
 	}
 	var nodes nodeList
-	found, err = o.readQuiet(&nodes, "get", "nodes", "-o", "json")
-	if err != nil || !found {
+	if err := o.getJSON(&nodes, "get", "nodes", "-o", "json"); err != nil {
 		return false, err
 	}
 	return requiresTargetNode(o.opts.Node, c.Spec.Template.Spec, nodes.Items), nil
@@ -395,19 +394,19 @@ func readyFloor(target, namespace string, d controller, nodes []node, pods []pod
 }
 
 // deploymentReadyFloor reads the Deployment, the nodes and the namespace's
-// Pods and returns readyFloor. ok is false when kubectl cannot read any of
-// them, and the caller then requires every replica.
+// Pods and returns readyFloor. Confirmed absence sets ok false, so the
+// caller requires every replica. Inspection errors block maintenance.
 func (o *Operation) deploymentReadyFloor(w workload) (floor int, ok bool, err error) {
 	var d controller
 	if found, err := o.readQuiet(&d, "-n", w.Namespace, "get", w.ref(), "-o", "json"); err != nil || !found {
 		return 0, false, err
 	}
 	var nodes nodeList
-	if found, err := o.readQuiet(&nodes, "get", "nodes", "-o", "json"); err != nil || !found {
+	if err := o.getJSON(&nodes, "get", "nodes", "-o", "json"); err != nil {
 		return 0, false, err
 	}
 	var pods podList
-	if found, err := o.readQuiet(&pods, "-n", w.Namespace, "get", "pods", "-o", "json"); err != nil || !found {
+	if err := o.getJSON(&pods, "-n", w.Namespace, "get", "pods", "-o", "json"); err != nil {
 		return 0, false, err
 	}
 	return readyFloor(o.opts.Node, w.Namespace, d, nodes.Items, pods.Items), true, nil

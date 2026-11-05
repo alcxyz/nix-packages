@@ -124,10 +124,11 @@ type rebootFake struct {
 	rebootCancels bool
 	// rebootTerminates interrupts it as a shutdown's SIGTERM would, and
 	// rebootQueuedCancels after this machine's command queued the reboot.
-	rebootTerminates    bool
-	rebootQueuedCancels bool
-	terminate           func()
-	cancel              context.CancelFunc
+	rebootTerminates     bool
+	rebootQueuedCancels  bool
+	rebootInFlightCancel bool
+	rebootNotStarted     bool
+	cancel               context.CancelFunc
 
 	// sudos records the local sudo calls; sudoFails fails them.
 	sudos     []string
@@ -409,15 +410,16 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 		}
 		return k8snode.Result{}
 	case strings.Contains(remote, "systemctl reboot"):
+		if f.rebootNotStarted {
+			f.cancel()
+			return k8snode.Result{Status: k8snode.StatusNotStarted}
+		}
 		f.events = append(f.events, "reboot "+host)
 		f.begin(host)
 		if h.rebootFails {
 			return k8snode.Result{Stderr: "Failed to reboot\n", Status: 1}
 		}
 		if f.rebootCancels || f.rebootTerminates {
-			if f.rebootTerminates {
-				f.terminate()
-			}
 			f.cancel()
 			if argv[0] == "sh" {
 				// This machine: the signal ended the reboot command.
@@ -428,10 +430,15 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 			return k8snode.Result{Status: 255}
 		}
 		f.boot(h)
+		if f.rebootInFlightCancel {
+			f.cancel()
+			return k8snode.Result{Status: 130}
+		}
 		if argv[0] == "sh" {
 			// This machine: systemctl returns before the shutdown.
 			if f.rebootQueuedCancels {
 				f.cancel()
+				return k8snode.Result{Status: 130}
 			}
 			return k8snode.Result{}
 		}
@@ -516,7 +523,6 @@ func (f *rebootFake) fleet(args ...string) (*fleetReboot, []string) {
 	r.terminal = f.terminal
 	r.sleep = func(ctx context.Context, d time.Duration) error { return ctx.Err() }
 	r.fake = f.command
-	f.terminate = func() { r.terminated.Store(true) }
 	r.nodeReboot = f.nodeReboot
 	r.hook = func(ctx context.Context, command string, env []string) error {
 		f.lock.Lock()
@@ -1371,17 +1377,35 @@ func TestRebootConfirmationInterrupted(t *testing.T) {
 	}
 }
 
-// An interrupt during the reboot wait restarts the runners of a host that
-// is still on its old boot.
-func TestRebootInterruptedWaitStartsRunners(t *testing.T) {
+// A cancelled in-flight reboot has an unknown outcome, even when a fixture
+// knows the command was lost. An old boot can still have shutdown queued.
+func TestRebootInterruptedCommandLeavesRunnersStopped(t *testing.T) {
 	f := newRebootFake(t)
 	f.hosts["host-a"].rebootLost = true
 	f.rebootCancels = true
 	if status := f.run("host-a", "--yes"); status != 1 {
 		t.Errorf("status %d", status)
 	}
-	if got := f.changes(); !slices.Equal(got, []string{"stop host-a", "reboot host-a", "start host-a"}) {
+	if got := f.changes(); !slices.Equal(got, []string{"stop host-a", "reboot host-a"}) {
 		t.Errorf("changes: %v", got)
+	}
+}
+
+func TestRebootAcknowledgementCancellation(t *testing.T) {
+	for _, started := range []bool{false, true} {
+		f := newRebootFake(t)
+		f.rebootInFlightCancel = started
+		f.rebootNotStarted = !started
+		if status := f.run("host-a", "--yes"); status != 1 {
+			t.Fatalf("started=%t: exit %d", started, status)
+		}
+		want := []string{"stop host-a", "start host-a"}
+		if started {
+			want = []string{"stop host-a", "reboot host-a"}
+		}
+		if got := f.changes(); !slices.Equal(got, want) {
+			t.Fatalf("started=%t: changes %v, want %v", started, got, want)
+		}
 	}
 }
 

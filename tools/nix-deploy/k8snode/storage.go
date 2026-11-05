@@ -67,9 +67,8 @@ type longhornReplica struct {
 	} `json:"status"`
 }
 
-func (o *Operation) longhornVolumesServed() bool {
-	r := o.kubectl(Command{Argv: []string{"-n", "longhorn-system", "get", "volumes.longhorn.io"}, Quiet: true})
-	return r.Status == 0
+func (o *Operation) longhornVolumesServed() (bool, error) {
+	return o.integrationInstalled("volumes.longhorn.io")
 }
 
 func (o *Operation) listLonghornVolumes() ([]longhornVolume, error) {
@@ -92,8 +91,8 @@ func unhealthyAttachedVolumes(volumes []longhornVolume) []string {
 	return lines
 }
 
-// longhornSetting reads a Longhorn setting's value, or "" when kubectl
-// cannot read it.
+// longhornSetting returns a setting, an empty value for confirmed absence,
+// or an error when inspection fails.
 func (o *Operation) longhornSetting(name string) (string, error) {
 	var setting struct {
 		Value json.RawMessage `json:"value"`
@@ -142,11 +141,9 @@ var digitsPattern = regexp.MustCompile(`^[0-9]+$`)
 // admission closed, it temporarily admits two rebuilds per node while
 // degraded volumes recover, and restores the setting afterwards.
 func (o *Operation) waitForLonghornHealth() error {
-	if r := o.kubectl(Command{Argv: []string{"get", "namespace", "longhorn-system"}, Quiet: true}); r.Status != 0 {
-		o.log("longhorn-system namespace not found; skipping Longhorn checks")
-		return nil
-	}
-	if !o.longhornVolumesServed() {
+	if installed, err := o.longhornVolumesServed(); err != nil {
+		return err
+	} else if !installed {
 		o.log("Longhorn volume CRDs not found; skipping Longhorn checks")
 		return nil
 	}
@@ -268,10 +265,9 @@ func (o *Operation) waitForLonghornHealth() error {
 
 // warnForLonghornHealth reports unhealthy attached volumes without waiting.
 func (o *Operation) warnForLonghornHealth() error {
-	if r := o.kubectl(Command{Argv: []string{"get", "namespace", "longhorn-system"}, Quiet: true}); r.Status != 0 {
-		return nil
-	}
-	if !o.longhornVolumesServed() {
+	if installed, err := o.longhornVolumesServed(); err != nil {
+		return err
+	} else if !installed {
 		return nil
 	}
 	volumes, err := o.listLonghornVolumes()
@@ -360,7 +356,9 @@ func (o *Operation) listLonghornReplicas() ([]longhornReplica, error) {
 // after another node's outage, and the one-node-down gate after the drain
 // would then wait out its whole timeout with the node cordoned and drained.
 func (o *Operation) checkLonghornReplicaSpread() error {
-	if !o.longhornVolumesServed() {
+	if installed, err := o.longhornVolumesServed(); err != nil {
+		return err
+	} else if !installed {
 		return nil
 	}
 	o.log("checking Longhorn replica spread without %s (%d other nodes)", o.opts.Node, minSurvivingLonghornReplicas)
@@ -381,7 +379,9 @@ func (o *Operation) checkLonghornReplicaSpread() error {
 }
 
 func (o *Operation) waitForLonghornSurvivability() error {
-	if !o.longhornVolumesServed() {
+	if installed, err := o.longhornVolumesServed(); err != nil {
+		return err
+	} else if !installed {
 		return nil
 	}
 	o.log("checking Longhorn one-node-down replica floor (%d)", minSurvivingLonghornReplicas)
@@ -430,7 +430,9 @@ func (o *Operation) waitForNodeStorageDetach() error {
 	node := o.opts.Node
 	timeout := duration(o.opts.DrainTimeout)
 
-	if o.longhornVolumesServed() {
+	if installed, err := o.longhornVolumesServed(); err != nil {
+		return err
+	} else if installed {
 		o.log("waiting for Longhorn volumes to detach from %s", node)
 		deadline := o.now().Add(timeout)
 		for {

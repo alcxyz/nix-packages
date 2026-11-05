@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"nix-deploy/internal/process"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -20,10 +21,6 @@ const statusNotStarted = -1
 // StatusNotStarted is the status of a command refused because the run was
 // already interrupted: it never ran.
 const StatusNotStarted = statusNotStarted
-
-// killGrace matches `timeout --kill-after=5`: a command that ignores SIGTERM
-// at its deadline or interrupt is killed five seconds later.
-const killGrace = 5 * time.Second
 
 // Command is one external program run.
 type Command struct {
@@ -84,7 +81,7 @@ func (r *Runner) Run(ctx context.Context, c Command) Result {
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
+	cmd := exec.Command(c.Argv[0], c.Argv[1:]...)
 	cmd.Stdin = strings.NewReader(c.Stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -95,13 +92,21 @@ func (r *Runner) Run(ctx context.Context, c Command) Result {
 	if c.Quiet {
 		cmd.Stderr = &stderr
 	}
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = killGrace
 
-	err := cmd.Run()
+	err := process.Run(ctx, cmd)
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if c.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		result.Status = 124
+		return result
+	}
+	if ctx.Err() != nil {
+		if cmd.Process == nil {
+			result.Status = statusNotStarted
+		} else {
+			// Once started, even a clean child exit can coincide with an
+			// interrupted acknowledgement of a remote side effect.
+			result.Status = 130
+		}
 		return result
 	}
 	if err == nil {
@@ -114,16 +119,6 @@ func (r *Runner) Run(ctx context.Context, c Command) Result {
 			return result
 		}
 		result.Status = exitErr.ExitCode()
-		return result
-	}
-	// Without a process, an interrupt after the first check kept the
-	// command from starting; a command that ran and exited cleanly
-	// succeeded, though the interrupt was reported.
-	if cmd.Process == nil && ctx.Err() != nil {
-		result.Status = statusNotStarted
-		return result
-	}
-	if cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		return result
 	}
 	fmt.Fprintf(r.Stderr, "error: %s: %v\n", c.Argv[0], err)

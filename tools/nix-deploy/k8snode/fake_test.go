@@ -94,6 +94,8 @@ type fakeCluster struct {
 }
 
 func (f *fakeCluster) run(c Command) Result {
+	c.Argv = slices.DeleteFunc(slices.Clone(c.Argv), func(s string) bool { return s == "--ignore-not-found=true" })
+
 	// The context option is recorded and then answered like any other
 	// call, so the fixtures match command lines without it. Like kubectl, a
 	// flag before a plugin's name fails.
@@ -171,6 +173,12 @@ func withoutManagedFields(n map[string]any) map[string]any {
 func (f *fakeCluster) kubectl(args []string, line string) Result {
 	command := strings.Join(args, " ")
 	switch {
+	case strings.HasPrefix(command, "get customresourcedefinition "):
+		present := (args[2] == "volumes.longhorn.io" && f.longhorn) || (args[2] == "clusters.postgresql.cnpg.io" && f.cnpg)
+		if !present {
+			return Result{}
+		}
+		return serve(map[string]any{"metadata": map[string]string{"name": args[2]}})
 	case len(args) >= 3 && args[0] == "get" && args[1] == "node":
 		n := f.node(args[2])
 		if n == nil {
@@ -244,7 +252,7 @@ func (f *fakeCluster) kubectl(args []string, line string) Result {
 	case len(args) == 7 && strings.HasPrefix(command, "-n longhorn-system get settings.longhorn.io "):
 		value, ok := f.settings[args[4]]
 		if !ok {
-			return Result{Status: 1}
+			return Result{}
 		}
 		return serve(map[string]any{"metadata": map[string]any{"name": args[4]}, "value": value})
 	case len(args) == 8 && strings.HasPrefix(command, "-n longhorn-system patch settings.longhorn.io "):
@@ -256,7 +264,7 @@ func (f *fakeCluster) kubectl(args []string, line string) Result {
 		return Result{Stdout: "setting patched\n"}
 	case command == "-n longhorn-system get backuptargets.longhorn.io default -o json":
 		if f.backup == nil {
-			return Result{Status: 1}
+			return Result{}
 		}
 		return serve(f.backup)
 	case command == "get poddisruptionbudgets.policy --all-namespaces -o json":
@@ -322,7 +330,7 @@ func (f *fakeCluster) podsWhere(match func(map[string]any) bool) []map[string]an
 func (f *fakeCluster) controller(namespace, ref string) Result {
 	c, ok := f.controllers[namespace+"/"+ref]
 	if !ok {
-		return Result{Status: 1, Stderr: "not found\n"}
+		return Result{}
 	}
 	return serve(c)
 }

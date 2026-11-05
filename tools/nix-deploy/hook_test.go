@@ -252,15 +252,15 @@ func TestRebootHookSelfFailures(t *testing.T) {
 		t.Errorf("events: %v", events)
 	}
 
-	// The operator's interrupt then leaves it up: its runners start again
-	// and its turn finishes.
+	// The operator's interrupt can also race with queued shutdown. It does
+	// not restart runners or finish a turn whose outcome is uncertain.
 	f = setup(t)
 	f.rebootCancels = true
 	f.run("op", "--include-self", "--yes")
-	if events := f.hookEvents(); events[len(events)-1] != "host-finish op failed" {
+	if events := f.hookEvents(); events[len(events)-1] != "host-start op self" {
 		t.Errorf("events: %v", events)
 	}
-	if !slices.Contains(f.changes(), "start op") {
+	if slices.Contains(f.changes(), "start op") {
 		t.Errorf("changes: %v", f.changes())
 	}
 

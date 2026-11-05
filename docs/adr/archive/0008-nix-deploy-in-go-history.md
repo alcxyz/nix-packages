@@ -203,3 +203,13 @@ The first rejected alternative read:
   matches packages built for another architecture, so a fleet run recompiled
   up-to-date Raspberry Pi hosts under emulation on the operator. Evaluation
   already gives each target's store path, which is all the plan compares.
+
+## Reservation recovery clarification, 2026-11-05
+
+The supported recovery amendment to [ADR-0019](../0019-shared-deployment-reservations.md)
+replaced this paragraph:
+
+> Serial deployments additionally reserve the group's members on the shared
+> operator endpoint through readiness, without a local fallback. Failed or
+> ambiguous operations retain reservations, as ADR-0019 defines.
+> Controller-local target locks and records remain in use.

@@ -128,7 +128,18 @@
           forgejo-runner-orphan-check = pkgs.callPackage ./tools/forgejo-runner-orphan-check { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
           inherit (pkgs) openzfs_7_1;
-          stash = pkgs.callPackage ./pkgs/stash { };
+          stash = pkgs.callPackage ./pkgs/stash {
+            # The updater validates both consumer fetcher formats even when
+            # the stable package itself still uses the version 2 fetcher.
+            pnpmDepsV3Fetcher =
+              args:
+              unstablePkgs.fetchPnpmDeps (
+                args
+                // {
+                  pnpm = unstablePkgs.pnpm_10;
+                }
+              );
+          };
           zfs-auto-unlock = pkgs.callPackage ./tools/zfs-auto-unlock { };
           devlog = pkgs.callPackage ./tools/devlog { };
           # The pages-only mode of deck as a Docker-format image archive (ADR-0013).

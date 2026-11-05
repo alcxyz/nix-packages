@@ -1,7 +1,7 @@
 # ADR-0008: nix-deploy in Go, with evaluate, plan, build and activate phases
 
 **Status:** Accepted
-**Date:** 2026-10-12
+**Date:** 2026-10-12, updated 2026-11-05 (shared reservations, per [issue #592](https://git.alc.xyz/alcxyz/nix-packages/issues/592#issuecomment-50015))
 **Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots)
 **History:** [replaced text](archive/0008-nix-deploy-in-go-history.md)
 **Applies to:** `tools/nix-deploy/`
@@ -97,6 +97,13 @@ ready command and timeout; the older `serialSystemHosts` fields are a
 one-group shorthand. Groups are independent: a member that fails preflight
 or a pre-check blocks only its own group, groups run one after another, and
 a single-host deploy checks only its own group.
+
+Serial deployments additionally reserve the group's members on the shared
+operator endpoint through readiness, without a local fallback. Failed or
+ambiguous operations retain reservations while work is uncertain. Definitely
+completed failures release after idle-work inspection, as
+[ADR-0019](0019-shared-deployment-reservations.md) defines. Controller-local
+target locks and records remain in use.
 
 The fleet summary adds the time each host spent in evaluation, activation
 and ready gates, and the shared build time (#523). `--json FILE` writes the

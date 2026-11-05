@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -260,8 +262,8 @@ func processAlive(pid int) bool {
 // fuzzel picker
 // ---------------------------------------------------------------------------
 
-func fuzzelPick(items []string, prompt string) (string, error) {
-	cmd := exec.Command("fuzzel", "--dmenu", "--prompt", prompt+" ")
+func fuzzelPick(ctx context.Context, items []string, prompt string) (string, error) {
+	cmd := exec.CommandContext(ctx, "fuzzel", "--dmenu", "--prompt", prompt+" ")
 	cmd.Stdin = strings.NewReader(strings.Join(items, "\n"))
 	out, err := cmd.Output()
 	if err != nil {
@@ -278,6 +280,8 @@ func runStart(args []string) int {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	dir := fs.String("dir", filepath.Join(os.Getenv("HOME"), "Videos", "wcap"), "output directory")
 	fs.Parse(args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if _, err := loadState(); err == nil {
 		log.Println("recording already active (run 'wcap stop' first)")
@@ -325,15 +329,25 @@ func runStart(args []string) int {
 		lines = append(lines, fmt.Sprintf("%d\t%s — %s", inp.Index, label, media))
 	}
 
-	selected, err := fuzzelPick(lines, "Audio stream:")
-	if err != nil {
+	selected, err := fuzzelPick(ctx, lines, "Audio stream:")
+	if err != nil || ctx.Err() != nil {
 		log.Printf("%v\n", err)
+		if createdWcapSink {
+			unloadModule(wcapModuleID)
+		}
+		if ctx.Err() != nil {
+			return 130
+		}
+		return 1
+	}
+	fields := strings.Fields(selected)
+	if len(fields) == 0 {
 		if createdWcapSink {
 			unloadModule(wcapModuleID)
 		}
 		return 1
 	}
-	selectedIdx, err := strconv.Atoi(strings.Fields(selected)[0])
+	selectedIdx, err := strconv.Atoi(fields[0])
 	if err != nil {
 		log.Printf("bad selection: %v\n", err)
 		if createdWcapSink {
@@ -358,71 +372,80 @@ func runStart(args []string) int {
 		return 1
 	}
 
-	// Move stream to wcap-sink.
-	if err := moveSinkInput(target.Index, wcapIdx); err != nil {
-		log.Printf("failed to move stream: %v\n", err)
+	// From routing until state publication, every failure or interrupt rolls
+	// back the whole startup transaction. Successful starts leave managed state.
+	var cmd *exec.Cmd
+	var done chan error
+	started, reaped, saved, committed := false, false, false, false
+	defer func() {
+		if committed {
+			return
+		}
+		if started {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			if !reaped {
+				<-done
+			}
+		}
+		if saved {
+			_ = removeState()
+		}
+		if err := moveSinkInput(target.Index, target.Sink); err != nil {
+			log.Printf("restore stream: %v", err)
+		}
 		if createdWcapSink {
 			unloadModule(wcapModuleID)
 		}
+	}()
+	if err := moveSinkInput(target.Index, wcapIdx); err != nil {
+		log.Printf("failed to move stream: %v", err)
 		return 1
 	}
-	log.Printf("routed stream #%d → wcap-sink\n", target.Index)
-
-	// Prepare output file.
 	if err := os.MkdirAll(*dir, 0755); err != nil {
-		moveSinkInput(target.Index, target.Sink)
-		log.Printf("creating output dir: %v\n", err)
-		if createdWcapSink {
-			unloadModule(wcapModuleID)
-		}
+		log.Printf("creating output dir: %v", err)
 		return 1
 	}
 	outFile := filepath.Join(*dir, time.Now().Format("2006-01-02_150405")+".mp4")
-
-	// Launch gpu-screen-recorder.
-	// -w portal  → xdg-desktop-portal window picker
-	// -a         → audio from wcap-sink monitor
-	cmd := exec.Command("gpu-screen-recorder",
-		"-w", "portal",
-		"-a", "wcap-sink.monitor",
-		"-f", "60",
-		"-o", outFile,
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if ctx.Err() != nil {
+		return 130
+	}
+	cmd = exec.Command("gpu-screen-recorder", "-w", "portal", "-a", "wcap-sink.monitor", "-f", "60", "-o", outFile)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		moveSinkInput(target.Index, target.Sink) // restore on failure
-		log.Printf("starting gpu-screen-recorder: %v\n", err)
-		if createdWcapSink {
-			unloadModule(wcapModuleID)
-		}
+		log.Printf("starting gpu-screen-recorder: %v", err)
 		return 1
 	}
-
-	// Wait briefly — if the process exits immediately, the user cancelled the
-	// portal dialog or something is misconfigured.
-	time.Sleep(2 * time.Second)
-	if !processAlive(cmd.Process.Pid) {
-		moveSinkInput(target.Index, target.Sink)
-		log.Println("gpu-screen-recorder exited immediately — portal cancelled?")
-		if createdWcapSink {
-			unloadModule(wcapModuleID)
-		}
+	started = true
+	done = make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		reaped = true
+		log.Printf("gpu-screen-recorder exited during startup: %v", err)
 		return 1
+	case <-ctx.Done():
+		return 130
+	case <-timer.C:
 	}
-
-	state := &State{
-		RecorderPID:     cmd.Process.Pid,
-		StreamIndex:     target.Index,
-		OriginalSink:    target.Sink,
-		OutputFile:      outFile,
-		WcapSinkModule:  wcapModuleID,
-		CreatedWcapSink: createdWcapSink,
-	}
+	state := &State{RecorderPID: cmd.Process.Pid, StreamIndex: target.Index, OriginalSink: target.Sink, OutputFile: outFile, WcapSinkModule: wcapModuleID, CreatedWcapSink: createdWcapSink}
 	if err := saveState(state); err != nil {
-		log.Printf("warning: could not save state: %v\n", err)
+		log.Printf("could not save state: %v", err)
+		return 1
 	}
-
+	saved = true
+	select {
+	case err := <-done:
+		reaped = true
+		log.Printf("recorder exited before startup committed: %v", err)
+		return 1
+	case <-ctx.Done():
+		return 130
+	default:
+	}
+	committed = true
 	fmt.Printf("recording → %s\n", outFile)
 	return 0
 }

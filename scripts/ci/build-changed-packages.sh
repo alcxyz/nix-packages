@@ -125,19 +125,25 @@ full_matrix=false
 while IFS= read -r path; do
   case "$path" in
     scripts/ci/verify-t3code-providers.sh | scripts/ci/t3code-nix-home.sh | scripts/ci/ephemeral-nix-home.sh)
-      changed_attrs+=(t3code)
+      changed_attrs+=(t3code ai-stack-upstream)
       ;;
     "" | docs/* | README.md | AGENTS.md | LICENSE* | .ignore | .forgejo/* | scripts/ci/* | scripts/forgejo/* | scripts/update-packages/*) ;;
     # Keep these reverse dependencies aligned with the explicit package inputs
     # in flake.nix. A wrapper must be validated when its packaged input changes.
     pkgs/claude-code/*)
-      changed_attrs+=(claude-code t3code)
+      changed_attrs+=(claude-code t3code ai-stack-upstream)
       ;;
     pkgs/codex-cli/*)
-      changed_attrs+=(codex-cli t3code)
+      changed_attrs+=(codex-cli t3code ai-stack-upstream)
       ;;
     tools/gh-app/*)
-      changed_attrs+=(gh-app gh-app-gh t3code)
+      changed_attrs+=(gh-app gh-app-gh t3code ai-stack-upstream)
+      ;;
+    pkgs/t3code/*)
+      changed_attrs+=(t3code ai-stack-upstream)
+      ;;
+    pkgs/codex-app-server/*)
+      changed_attrs+=(codex-app-server ai-stack-upstream)
       ;;
     pkgs/k3s-flannel-node-source/*)
       # This is a package function applied to the consumer's K3s pin, not a

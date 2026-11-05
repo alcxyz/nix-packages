@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -237,12 +238,17 @@ type statusCheck struct {
 	ui *ui
 	// run runs a command without input and returns its standard output,
 	// standard error and exit status; tests replace it.
-	run func(timeout time.Duration, argv ...string) (string, string, int)
+	run        func(timeout time.Duration, argv ...string) (string, string, int)
+	cleanupRun func(timeout time.Duration, argv ...string) (string, string, int)
 }
 
 func runCommand(timeout time.Duration, argv ...string) (string, string, int) {
+	return runCommandContext(nil, timeout, argv...)
+}
+
+func runCommandContext(ctx context.Context, timeout time.Duration, argv ...string) (string, string, int) {
 	var stdout, stderr bytes.Buffer
-	status := command{argv: argv, stdin: bytes.NewReader(nil), stdout: &stdout, stderr: &stderr, timeout: timeout}.run()
+	status := command{ctx: ctx, argv: argv, stdin: bytes.NewReader(nil), stdout: &stdout, stderr: &stderr, timeout: timeout}.run()
 	return stdout.String(), stderr.String(), status
 }
 
@@ -370,14 +376,19 @@ func openStatusCheck(configFile string) (*statusCheck, int, error) {
 	if sshOptions == "" {
 		sshOptions = defaultSSHOptions
 	}
+	return makeStatusCheck(inv, inv.canonical(strings.TrimSpace(hostname)), sshOptions, envOr("DEPLOY_SSH_CHECK_TIMEOUT", "5")), 0, nil
+}
+
+// Both inspection and reboot use the same bounded cleanup runner, so an
+// interrupted reboot can remove its scheduling marks after admission stops.
+func makeStatusCheck(inv *inventory, self, sshOptions, connectTimeout string) *statusCheck {
 	return &statusCheck{
-		inv:            inv,
-		self:           inv.canonical(strings.TrimSpace(hostname)),
-		sshArgs:        strings.Fields(sshOptions),
-		connectTimeout: envOr("DEPLOY_SSH_CHECK_TIMEOUT", "5"),
-		ui:             newUI(inv.HostColors),
-		run:            runCommand,
-	}, 0, nil
+		inv: inv, self: self, sshArgs: strings.Fields(sshOptions), connectTimeout: connectTimeout,
+		ui: newUI(inv.HostColors), run: runCommand,
+		cleanupRun: func(timeout time.Duration, argv ...string) (string, string, int) {
+			return runCommandContext(context.Background(), timeout, argv...)
+		},
+	}
 }
 
 // collect reads the hosts while one kubectl call reads the cluster's nodes.

@@ -714,19 +714,26 @@ func (o *Operation) getJSON(v any, args ...string) error {
 	return o.decodeKubectl(v, false, args)
 }
 
-// readQuiet is getJSON without kubectl's error output, for optional reads.
-// found is false when kubectl fails, which callers handle as the Bash tool's
-// `|| true` fallbacks did. Output kubectl returned but that does not decode
-// is an error: falling back on it would weaken a gate on data that exists.
-func (o *Operation) readQuiet(v any, args ...string) (found bool, err error) {
+// readQuiet permits absence only when a successful --ignore-not-found read
+// returns no object. Authentication, authorization and transport failures block.
+func (o *Operation) readQuiet(v any, args ...string) (bool, error) {
+	args = append(args, "--ignore-not-found=true")
 	r := o.kubectl(Command{Argv: args, Quiet: true})
 	if r.Status != 0 {
+		return false, fmt.Errorf("kubectl %s failed (exit %d)", strings.Join(args, " "), r.Status)
+	}
+	if strings.TrimSpace(r.Stdout) == "" {
 		return false, nil
 	}
 	if err := json.Unmarshal([]byte(r.Stdout), v); err != nil {
 		return false, fmt.Errorf("kubectl %s: invalid JSON: %v", strings.Join(args, " "), err)
 	}
 	return true, nil
+}
+
+func (o *Operation) integrationInstalled(crd string) (bool, error) {
+	var object map[string]any
+	return o.readQuiet(&object, "get", "customresourcedefinition", crd, "-o", "json")
 }
 
 func (o *Operation) decodeKubectl(v any, quiet bool, args []string) error {

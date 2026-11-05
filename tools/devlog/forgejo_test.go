@@ -79,13 +79,12 @@ func TestSummarizeForgejoEventsExpandsTruncatedPush(t *testing.T) {
 		t.Error("expected a compare failure to fail the summary")
 	}
 
-	// A pruned base keeps the listed commits instead of failing every later
-	// run.
+	// A pruned base cannot establish completeness.
 	pruned := func(repo, baseHead, head string, total int) ([]commitRef, error) {
 		return nil, &forgejoStatusError{path: "/compare", code: http.StatusNotFound}
 	}
 	commits, _, _, err = summarizeForgejoEvents([]forgejoEvent{feedEvent(1, "commit_repo", "o/r", push, at)}, pruned)
-	if err != nil || len(commits) != 1 || commits[0].SHA != "e" {
+	if err == nil {
 		t.Errorf("pruned: commits = %+v, err = %v", commits, err)
 	}
 
@@ -150,7 +149,7 @@ func TestExpandedPushAttribution(t *testing.T) {
 				list := []string{own, other, bot, unlinked, missing}
 				want := []string{"own", "unlinked", "missing"}
 				if onlyOthers {
-					list = []string{other, bot, other, bot, other}
+					list = []string{other, bot, strings.Replace(other, `"sha":"other"`, `"sha":"other2"`, 1), strings.Replace(bot, `"sha":"bot"`, `"sha":"bot2"`, 1), strings.Replace(other, `"sha":"other"`, `"sha":"other3"`, 1)}
 					want = nil
 				}
 				requests := 0
@@ -351,7 +350,7 @@ func TestFetchDiffsFailsOnForgejoError(t *testing.T) {
 	}
 }
 
-func TestFetchDiffsToleratesPrunedCommit(t *testing.T) {
+func TestFetchDiffsRefusesPrunedCommit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -359,7 +358,7 @@ func TestFetchDiffsToleratesPrunedCommit(t *testing.T) {
 	client := &forgejoClient{baseURL: srv.URL, token: "t", http: srv.Client()}
 
 	out, err := fetchDiffs([]commitRef{{Source: "forgejo", Repo: "o/r", SHA: "a", Message: "m"}}, client)
-	if err != nil || !strings.Contains(out, "(diff unavailable)") {
+	if err == nil {
 		t.Errorf("out = %q, err = %v", out, err)
 	}
 }

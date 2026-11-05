@@ -59,6 +59,9 @@ func (d *deployer) waitReady(g *serialGroup, host string) bool {
 	}
 	attempts := 0
 	for {
+		if runContext.Err() != nil {
+			return false
+		}
 		advance()
 		remaining := timeout - clock
 		if remaining <= 0 {
@@ -74,7 +77,11 @@ func (d *deployer) waitReady(g *serialGroup, host string) bool {
 		if timeout-clock <= interval {
 			break
 		}
-		time.Sleep(interval)
+		select {
+		case <-runContext.Done():
+			return false
+		case <-time.After(interval):
+		}
 		clock += interval
 	}
 	fmt.Fprintf(os.Stderr, "%s ready gate did not pass within %ds (%d attempt(s)): %s\n",

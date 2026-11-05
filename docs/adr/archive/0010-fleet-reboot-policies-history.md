@@ -1,4 +1,4 @@
-**History of** [ADR-0010](../0010-fleet-reboot-policies.md): text replaced on 2026-10-28.
+**History of** [ADR-0010](../0010-fleet-reboot-policies.md): text replaced on 2026-10-28 and 2026-11-05.
 
 # ADR-0010: Fleet reboots by policy and constraint group
 
@@ -395,3 +395,14 @@ each of those volumes, and nothing in the run's power could change that.
 - **Repairing the spread stays with the operator.** Moving replicas is
   storage policy, outside a reboot's scope, and the cause (here a Longhorn
   reconcile error) needs diagnosis rather than a retry.
+
+## Text replaced on 2026-11-05: ambiguous cancellation
+
+The hook contract assumed an operator interrupt could prove no shutdown had
+been queued. Command cancellation can instead race with its acknowledgement.
+The replaced text read:
+
+> This machine's turn ends with its reboot, which comes after `run-finish`,
+> so it gets `host-finish` only when the reboot does not happen; SIGTERM
+> while its reboot command runs may be the shutdown itself and sends none,
+> while the operator's interrupt leaves it up and finishes its turn.

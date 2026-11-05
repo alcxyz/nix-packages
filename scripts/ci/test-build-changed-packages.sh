@@ -293,7 +293,7 @@ assert_not_called 'mac-only'
 for provider_input in verify-t3code-providers t3code-nix-home ephemeral-nix-home; do
   new_case "provider-input-${provider_input}"
   change_file "scripts/ci/${provider_input}.sh"
-  printf '{"x86_64-linux":["t3code"],"aarch64-darwin":["t3code"]}\n' >exports
+  printf '{"x86_64-linux":["ai-stack-upstream","t3code"],"aarch64-darwin":["t3code"]}\n' >exports
   run_case 0
   assert_called 'build .#packages.x86_64-linux.t3code -L'
 done
@@ -301,7 +301,7 @@ done
 for input in claude-code codex-cli; do
   new_case "reverse-dependency-${input}"
   change_file "pkgs/${input}/default.nix"
-  printf '{"x86_64-linux":["%s","t3code"],"aarch64-darwin":["%s","t3code"]}\n' "$input" "$input" >exports
+  printf '{"x86_64-linux":["ai-stack-upstream","%s","t3code"],"aarch64-darwin":["%s","t3code"]}\n' "$input" "$input" >exports
   run_case 0
   assert_called "build .#packages.x86_64-linux.${input} -L"
   assert_called 'build .#packages.x86_64-linux.t3code -L'
@@ -311,7 +311,7 @@ done
 
 new_case reverse-dependency-gh-app
 change_file tools/gh-app/main.go
-printf '{"x86_64-linux":["gh-app","gh-app-gh","t3code"],"aarch64-darwin":["gh-app","gh-app-gh","t3code"]}\n' >exports
+printf '{"x86_64-linux":["ai-stack-upstream","gh-app","gh-app-gh","t3code"],"aarch64-darwin":["gh-app","gh-app-gh","t3code"]}\n' >exports
 run_case 0
 for attr in gh-app gh-app-gh t3code; do
   assert_called "build .#packages.x86_64-linux.${attr} -L"
@@ -367,7 +367,7 @@ new_case plan-reverse-dependencies
 change_file pkgs/claude-code/default.nix
 export PACKAGE_BUILD_PLAN_ONLY=1 PACKAGE_BUILD_PLAN_FILE=plan
 run_case 0
-printf '%s\n' claude-code t3code >expected-plan
+printf '%s\n' ai-stack-upstream claude-code t3code >expected-plan
 diff -u expected-plan plan
 assert_not_called 'eval .#packages'
 assert_not_called 'build '
@@ -524,7 +524,7 @@ touch "$test_root/.dockerenv"
 export NIX_CI_EPHEMERAL_CONTAINER=1
 export MOCK_RECREATE_HOME_AFTER_BUILD=true
 change_file pkgs/t3code/source.json
-printf '{"x86_64-linux":["t3code"]}\n' >exports
+printf '{"x86_64-linux":["ai-stack-upstream","t3code"]}\n' >exports
 run_case 0
 python3 - <<'PYTEST'
 from pathlib import Path
@@ -545,10 +545,25 @@ assert_not_called 'build .#packages.aarch64-darwin.'
 
 new_case t3-dependency-failure
 change_file pkgs/t3code/default.nix
-printf '{"x86_64-linux":["t3code"]}\n' >exports
+printf '{"x86_64-linux":["ai-stack-upstream","t3code"]}\n' >exports
 export MOCK_FAIL_BUILD='.#packages.x86_64-linux.t3code.resourceMonitor'
 run_case 43
 assert_called 'build .#packages.x86_64-linux.t3code.pnpmDeps --no-link -L'
 assert_not_called 'build .#packages.x86_64-linux.t3code -L'
+
+for input in t3code claude-code codex-cli codex-app-server; do
+ new_case "aggregate-$input"
+ change_file "pkgs/$input/default.nix"
+ printf '{"x86_64-linux":["ai-stack-upstream","t3code","%s"]}\n' "$input" >exports
+ run_case 0
+ assert_called 'build .#packages.x86_64-linux.ai-stack-upstream -L'
+done
+for input in ledger-live zen-browser; do
+ new_case "native-wrapper-$input"
+ change_file "pkgs/$input/default.nix"
+ printf '{"x86_64-linux":["%s"]}\n' "$input" >exports
+ run_case 0
+ assert_called "build .#packages.x86_64-linux.$input -L"
+done
 
 echo 'Changed-package validation regression tests passed.'

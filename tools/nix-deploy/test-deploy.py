@@ -1,6 +1,9 @@
 """Black-box deployment planning tests; every mutating/network command is mocked."""
 
 import json
+import fcntl
+import pty
+import termios
 import os
 from pathlib import Path
 import re
@@ -53,7 +56,7 @@ GROUP_DATA = {
     "serialGroups": [{"hosts": ["d1", "d2"], "readyCommand": "ready-check {host} --dns", "readyTimeoutSeconds": 25}],
 }
 MOCK = r'''
-import json, os, pathlib, re, sys, time
+import json, os, pathlib, re, signal, sys, time
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 store = pathlib.Path(os.environ["MOCK_STORE"])
@@ -72,6 +75,10 @@ elif name == "uname":
     print(os.environ["MOCK_SYSTEM"])
 elif name == "sudo":
     # Never execute the requested privileged command, including absolute paths.
+    if args == ["-n", "bash", "-s"]:
+        assert "# nixfleet activation probe" in sys.stdin.read()
+        print("idle")
+        sys.exit(0)
     sys.exit(1 if args == ["-n", "-v"] else 0)
 elif name == "activate":
     if os.environ.get("MOCK_HM_FAILURE"):
@@ -79,7 +86,24 @@ elif name == "activate":
         sys.exit(4)
 elif name == "ssh":
     remote = args[-1]
-    if remote == "true":
+    if ".operations.lock" in remote:
+        script = sys.stdin.read()
+        if os.environ.get("MOCK_COORDINATION_FAIL"):
+            sys.exit(255)
+        if os.environ.get("MOCK_COORDINATION_UPDATE_FAIL") and "# nixfleet reservation update" in script:
+            sys.exit(255)
+        # Record the script separately so ordering includes precheck/readiness.
+        with open(os.environ["MOCK_LOG"], "a") as out:
+            if "# nixfleet reservation acquire" in script or "# nixfleet reservation release" in script:
+                out.write(json.dumps(["coordination", "acquire" if "# nixfleet reservation acquire" in script else "release"]) + "\n")
+        # Echo the operation's acknowledgement without executing any action.
+        acknowledgement = "nixfleet-authority-ack:" + script.rsplit("nixfleet-authority-ack:", 1)[1].split("'", 1)[0]
+        print("\n" + acknowledgement)
+    elif remote in ("sh -s", "sudo -n sh -s"):
+        script = sys.stdin.read()
+        if "# nixfleet activation probe" in script:
+            print("idle")
+    elif remote == "true":
         if os.environ.get("MOCK_UNREACHABLE", "never.invalid") in args[-2]:
             print("fixture endpoint unavailable", file=sys.stderr)
             sys.exit(255)
@@ -225,12 +249,22 @@ elif name == "nix-store":
     link.symlink_to(args[args.index("--realise") + 1])
     print(link)
 elif name == "ready-check":
+    if os.environ.get("MOCK_READY_INTERRUPT_STATUS"):
+        def interrupted_ready(*_):
+            code = int(os.environ["MOCK_READY_INTERRUPT_STATUS"])
+            with open(os.environ["MOCK_LOG"], "a") as out:
+                out.write(json.dumps(["ready-interrupt-exit", code]) + "\n")
+            sys.exit(code)
+        signal.signal(signal.SIGINT, interrupted_ready)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        with open(os.environ["MOCK_LOG"], "a") as out:
+            out.write(json.dumps(["ready-interrupt-handler", args[0]]) + "\n")
     logged = [json.loads(line) for line in open(os.environ["MOCK_LOG"])]
     def switches(host):
         return [i for i, c in enumerate(logged) if c[0] == "nixos-rebuild" and any(re.search(rf"fixture\d*-{host}-system", a) for a in c)]
     switched = switches(args[0])
     gate_attempt = switched and sum(c == ["ready-check", *args] for c in logged[switched[0]:])
-    if listed("MOCK_READY_HANG", args[0]):
+    if listed("MOCK_READY_HANG", args[0]) or (switched and listed("MOCK_READY_HANG_AFTER_SWITCH", args[0])):
         time.sleep(30)
     if gate_attempt and gate_attempt > 1 and listed("MOCK_READY_HANG_RETRY", args[0]):
         time.sleep(30)
@@ -268,7 +302,7 @@ elif name == "nixos-rebuild":
         time.sleep(30)
     if listed("MOCK_FAIL_HOST", host):
         print("fixture rebuild failure")
-        sys.exit(7)
+        sys.exit(int(os.environ.get("MOCK_FAIL_STATUS", "7")))
     failure = os.environ.get("MOCK_SWITCH_FAILURE")
     if args and args[0] == "switch" and failure:
         print("Pre-switch check 'switchInhibitors' failed" if failure == "inhibited" else "fixture rebuild failure")
@@ -291,7 +325,7 @@ def activations(calls):
     return [
         c for c in calls
         if c[0] in {"nixos-rebuild", "activate"}
-        or (c[0] == "sudo" and len(c) > 2 and c[1] != "-v" and c[1:] != ["-n", "-v"])
+        or (c[0] == "sudo" and len(c) > 2 and c[1] != "-v" and c[1:] not in (["-n", "-v"], ["-n", "bash", "-s"]))
         or (c[0] == "nix" and c[1] == "copy")
         or (c[0] == "ssh" and "/activate" in c[-1])
     ]
@@ -322,10 +356,19 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     # Keep the command search path closed; new operational commands cannot fall
     # through to an installed host tool. Mocks use an absolute Python shebang,
     # the ready command uses bash, and report permissions use GNU ls.
-    for name in ["bash", "ls"]:
+    for name in ["ls", "ps", "readlink"]:
         target = shutil.which(name)
         assert target, name
         (commands / name).symlink_to(target)
+    # Local work inspection is synthetic even when tests run as root.
+    real_bash = shutil.which("bash")
+    assert real_bash
+    (commands / "bash").write_text("#!" + sys.executable + "\nimport os, sys\n"
+        "if sys.argv[1:2] == ['-s']:\n"
+        "    assert '# nixfleet activation probe' in sys.stdin.read()\n"
+        "    print('idle'); sys.exit(0)\n"
+        f"os.execv({real_bash!r}, [{real_bash!r}, *sys.argv[1:]])\n")
+    (commands / "bash").chmod(0o755)
     config = root / "inventory with spaces.json"
     config.write_text(json.dumps(HOST_DATA))
     # The flake deployed is the working directory's; its lock goes into
@@ -621,24 +664,59 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     assert rebuilt(calls) == [] and "unchanged" not in result.stdout and "cannot use the activation record" in result.stderr
     shutil.rmtree(state)
     # An activation that never returns, here interrupted, is retried too.
-    log = root / "commands.jsonl"
-    log.write_text("")
-    shutil.rmtree(root / ".local/state/nix-deploy", ignore_errors=True)
-    env = {"PATH": str(commands), "HOME": str(root), "MOCK_LOG": str(log), "MOCK_STORE": str(store), "MOCK_HOST": "xyz",
-           "MOCK_SYSTEM": "Linux", "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1", "MOCK_REBUILD_HANG": "node"}
-    report = root / "report.json"
-    report.write_text(json.dumps({"failed": False}))
-    interrupted = subprocess.Popen([str(deploy), "--config", str(config), "--no-preflight", "--nixos", "node", "--json", str(report)], cwd=root, env=env,
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    deadline = time.monotonic() + HANG_GUARD
-    while not any(json.loads(line)[0] == "nixos-rebuild" and "switch" in json.loads(line) for line in log.read_text().splitlines()):
-        assert time.monotonic() < deadline and interrupted.poll() is None
-        time.sleep(0.1)
-    os.killpg(interrupted.pid, signal.SIGINT)
-    assert interrupted.wait(timeout=HANG_GUARD) == 130
-    assert json.loads(report.read_text())["failed"]
+    for interruption, expected in [(signal.SIGINT, 130), (signal.SIGTERM, 143)]:
+        log = root / "commands.jsonl"
+        log.write_text("")
+        shutil.rmtree(root / ".local/state/nix-deploy", ignore_errors=True)
+        env = {"PATH": str(commands), "HOME": str(root), "MOCK_LOG": str(log), "MOCK_STORE": str(store), "MOCK_HOST": "xyz",
+               "MOCK_SYSTEM": "Linux", "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1", "MOCK_REBUILD_HANG": "node"}
+        report = root / "report.json"
+        report.write_text(json.dumps({"failed": False}))
+        interrupted = subprocess.Popen([str(deploy), "--config", str(config), "--no-preflight", "--nixos", "node", "--json", str(report)], cwd=root, env=env,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + HANG_GUARD
+        while not any(json.loads(line)[0] == "nixos-rebuild" and "switch" in json.loads(line) for line in log.read_text().splitlines()):
+            assert time.monotonic() < deadline and interrupted.poll() is None
+            time.sleep(0.1)
+        os.kill(interrupted.pid, interruption)
+        assert interrupted.wait(timeout=HANG_GUARD) == expected
+        assert json.loads(report.read_text())["failed"]
     calls, result = run("--no-preflight", "--nixos", "node", keep_state=True, MOCK_CURRENT="node")
     assert rebuilt(calls) == ["node"] and "from this machine failed" in result.stdout
+    # A real synthetic TTY sends Ctrl-C only to the foreground ready command.
+    # It must cancel the controller and prevent every later group activation.
+    config.write_text(json.dumps(GROUP_DATA))
+    log.write_text("")
+    shutil.rmtree(root / ".local/state/nix-deploy", ignore_errors=True)
+    tty_env = {**env, "MOCK_REBUILD_HANG": "", "MOCK_READY_HANG_AFTER_SWITCH": "k1", "MOCK_READY_INTERRUPT_STATUS": "255"}
+    master, slave = pty.openpty()
+    def own_terminal():
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    terminal_run = subprocess.Popen([str(deploy), "--config", str(config), "--all", "--nixos", "--no-preflight"],
+        cwd=root, env=tty_env, stdin=slave, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=own_terminal)
+    os.close(slave)
+    try:
+        deadline = time.monotonic() + HANG_GUARD
+        while True:
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            switched = [i for i, c in enumerate(calls) if c[0] == "nixos-rebuild" and "switch" in c and any("fixture-k1-system" in a for a in c)]
+            if switched and ["ready-interrupt-handler", "k1"] in calls[switched[0]:]:
+                break
+            assert time.monotonic() < deadline and terminal_run.poll() is None
+            time.sleep(0.1)
+        os.write(master, b"\x03")
+        assert terminal_run.wait(timeout=HANG_GUARD) == 130
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        assert ["ready-interrupt-exit", 255] in calls
+        assert not set(rebuilt(calls)) & {"k2", "k3", "d1", "d2"}
+    finally:
+        if terminal_run.poll() is None:
+            os.killpg(os.tcgetpgrp(master), signal.SIGKILL)
+            terminal_run.kill()
+            terminal_run.wait()
+        os.close(master)
+        config.write_text(json.dumps(HOST_DATA))
     # A later failure does not hide an earlier one the host may still run.
     calls, _ = run("--no-preflight", "--nixos", "node", status=7, MOCK_FAIL_HOST="node")
     calls, _ = run("--no-preflight", "--nixos", "node", keep_state=True, status=7, MOCK_FAIL_HOST="node", MOCK_VARIANT="2")
@@ -897,6 +975,22 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     # A gate that never passes is retried every interval until the timeout,
     # then the rest of the serial group is skipped and the run fails.
     started = time.monotonic()
+    calls, result = run("--no-preflight", "--nixos", "k1", status=7, MOCK_FAIL_HOST="k1")
+    assert ["coordination", "release"] in calls and "retained reservation" not in result.stderr
+    calls, result = run("--no-preflight", "--nixos", "k1", status=255, MOCK_FAIL_HOST="k1", MOCK_FAIL_STATUS="255")
+    assert ["coordination", "release"] not in calls
+    assert "retained reservation" in result.stderr and "nixfleet reservations release" in result.stderr
+    calls, _ = run("--no-preflight", "--nixos", "k2", status=1, MOCK_COORDINATION_FAIL="1")
+    assert not rebuilt(calls) and not any(c[0] == "ready-check" for c in calls)
+    failed_report = root / "failed-admission.json"
+    calls, result = run("--no-preflight", "--nixos", "k2", "--json", str(failed_report), status=1, MOCK_COORDINATION_UPDATE_FAIL="1")
+    assert not rebuilt(calls)
+    assert json.loads(failed_report.read_text())["hosts"][0]["system"]["status"] == "failed"
+    calls, _ = run("--no-preflight", "--nixos", "k2")
+    acquire = calls.index(["coordination", "acquire"])
+    release = calls.index(["coordination", "release"])
+    gates = [i for i, c in enumerate(calls) if c[0] == "ready-check"]
+    assert gates and acquire < min(gates) and max(gates) < release
     calls, result = run("--all", "--nixos", "--no-preflight", status=1, MOCK_READY_FAIL_AFTER_SWITCH="k2")
     # Two pauses of DEPLOY_SERIAL_READY_INTERVAL (10s) separate the attempts.
     assert 20 <= time.monotonic() - started < 60

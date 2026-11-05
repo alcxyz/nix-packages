@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"nix-deploy/internal/process"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -24,6 +26,7 @@ const exitTimedOut = 124
 // command describes one external program run. Zero values attach the
 // program's input and output to this process.
 type command struct {
+	ctx     context.Context
 	argv    []string
 	stdin   io.Reader
 	stdout  io.Writer
@@ -34,14 +37,20 @@ type command struct {
 // run executes the command and returns its exit status: 127 when it cannot
 // start, exitTimedOut when its deadline stopped it, and 128 plus the signal
 // number when a signal ended it.
+var runContext = context.Background()
+var canceledStatus atomic.Int32
+
 func (c command) run() int {
-	ctx := context.Background()
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = runContext
+	}
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, c.argv[0], c.argv[1:]...)
+	cmd := exec.Command(c.argv[0], c.argv[1:]...)
 	cmd.Stdin = c.stdin
 	if c.stdin == nil {
 		cmd.Stdin = os.Stdin
@@ -50,21 +59,29 @@ func (c command) run() int {
 	if c.stdout == nil {
 		cmd.Stdout = os.Stdout
 	}
+	// Background commands must fail instead of attempting a terminal SSH
+	// prompt, which job control would suspend indefinitely in their own group.
+	input, attachedInput := c.stdin.(*os.File)
+	if c.stdin == nil {
+		input = os.Stdin
+		attachedInput = true
+	}
+	if !attachedInput || !isTerminal(input) {
+		cmd.Env = append(os.Environ(), "NIX_SSHOPTS=-o BatchMode=yes "+os.Getenv("NIX_SSHOPTS"))
+		if c.argv[0] == "ssh" {
+			cmd.Args = append([]string{"ssh", "-o", "BatchMode=yes"}, c.argv[1:]...)
+		}
+	}
 	cmd.Stderr = c.stderr
 	if c.stderr == nil {
 		cmd.Stderr = os.Stderr
 	}
-	// Only a deadline limits the wait. Without one, wait for output like the
-	// shell would, even when a helper the command started keeps its pipes
-	// open.
-	if c.timeout > 0 {
-		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-		cmd.WaitDelay = killGrace
-	}
-
-	err := cmd.Run()
+	err := process.Run(ctx, cmd)
 	if c.timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return exitTimedOut
+	}
+	if ctx.Err() != nil {
+		return 130
 	}
 	if err == nil {
 		return 0

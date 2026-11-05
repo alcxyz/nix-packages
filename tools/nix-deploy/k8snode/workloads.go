@@ -149,8 +149,8 @@ func (o *Operation) waitForWorkloads() error {
 	return nil
 }
 
-// controllerReplicas reads a controller's spec.replicas, or one when kubectl
-// cannot read it.
+// controllerReplicas reads spec.replicas, or defaults to one only when
+// a successful inspection confirms the controller is absent.
 func (o *Operation) controllerReplicas(w workload) (int, error) {
 	var c controller
 	found, err := o.readQuiet(&c, "-n", w.Namespace, "get", w.ref(), "-o", "json")
@@ -237,8 +237,7 @@ func (o *Operation) unschedulableReplicas(w workload, c controller) (reasons map
 		return reasons, 0, nil
 	}
 	var pods podList
-	found, err := o.readQuiet(&pods, "-n", w.Namespace, "get", "pods", "-o", "json")
-	if err != nil || !found {
+	if err := o.getJSON(&pods, "-n", w.Namespace, "get", "pods", "-o", "json"); err != nil {
 		return reasons, 0, err
 	}
 	// deployments are the Deployments of the ReplicaSets read, by name;

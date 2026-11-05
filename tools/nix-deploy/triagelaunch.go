@@ -296,6 +296,7 @@ func launchTriage(cfg *triageConfig, context, flakeDir, playbook string, warning
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
+	stopControllerSignals()
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: cannot start the agent command %s: %v\n", argv[0], err)
 		return 1

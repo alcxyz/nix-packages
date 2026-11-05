@@ -93,5 +93,8 @@ open(path, 'w').write(content)
 print(f"Patched {path} → {version}")
 PYEOF
 
+# Native wrapper builds run locally before publication (ADR-0003).
+nix eval --raw .#packages.x86_64-linux.zen-browser.drvPath >/dev/null
+
 echo "updated=true"  >> "$GITHUB_OUTPUT"
 echo "version=$v"    >> "$GITHUB_OUTPUT"

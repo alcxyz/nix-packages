@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -36,7 +37,7 @@ func (d *deployer) offerTriage(status int, terminals bool, in io.Reader, out io.
 	fmt.Fprint(out, "deploy: start nixfleet triage on this run? [y/N] ")
 	// isTerminal accepts any character device but the null device, so the
 	// answer is bounded: a device such as /dev/zero must not hang the read.
-	line, err := bufio.NewReader(io.LimitReader(in, maxAnswerBytes)).ReadString('\n')
+	line, err := readPromptLine(runContext, bufio.NewReader(io.LimitReader(in, maxAnswerBytes)))
 	if err != nil {
 		// End of input, a read error or an answer without a newline within
 		// the limit declines; end the prompt's line.
@@ -48,4 +49,27 @@ func (d *deployer) offerTriage(status int, terminals bool, in io.Reader, out io.
 		triage([]string{"--config", d.configFile, d.record.dir})
 	}
 	return status
+}
+
+// A canceled prompt must return even when a terminal has no pending input.
+// The one blocked reader ends with the CLI or when its input is closed.
+func readPromptLine(ctx context.Context, reader *bufio.Reader) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	type result struct {
+		line string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() { line, err := reader.ReadString('\n'); done <- result{line, err} }()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case result := <-done:
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		return result.line, result.err
+	}
 }

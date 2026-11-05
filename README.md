@@ -119,7 +119,26 @@ selection. The cheap CI checks can also run locally, for example
 `scripts/ci/validate-package-platforms.sh`, `nix flake check --no-build
 --all-systems` and the `scripts/ci/test-*` regression tests.
 
+The local selector includes `ai-stack-upstream` whenever T3 Code or any provider
+changes. The native wrapper updaters evaluate their changed derivation before
+reporting success; authors build `ledger-live` and `zen-browser` locally through
+the same selector. Shared CI continues to perform cheap checks only.
+
 ### Runtime-configured deployment
+
+Serial activation requires noninteractive SSH to the inventory's operator
+endpoint using its system user and, when configured, passwordless `sudo -n`. Shared reservations cover
+prechecks through readiness and have no local fallback. Definite failed
+activations release automatically after inspection confirms no work remains.
+Cleanup inspects the controller locally with root visibility (`sudo -n` when
+needed), so the controller needs no inbound SSH. Unavailable inspection retains
+the reservation.
+Ambiguous activations retain protection, with an exact recovery command. Use
+`nixfleet reservations` to list held work and `nixfleet reservations release ID`
+to inspect and release a stopped invocation. Unknown inspection requires explicit
+`--confirm-stopped`; positively active work always refuses release. Authority
+operations require `flock` (included in the base NixOS utilities). See [ADR-0019](docs/adr/0019-shared-deployment-reservations.md).
+
 
 `nix run .#nix-deploy -- --config ./inventory.json --help` selects deployment
 inventory explicitly. `NIX_DEPLOY_CONFIG` supplies the same default for direct

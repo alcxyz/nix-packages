@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -82,14 +81,6 @@ func (e *forgejoStatusError) Error() string {
 	return fmt.Sprintf("Forgejo %s returned %d", e.path, e.code)
 }
 
-// isForgejoNotFound reports a permanent miss, such as a commit pruned after
-// its branch was deleted. Retrying cannot fix it, so callers degrade instead
-// of failing every later run.
-func isForgejoNotFound(err error) bool {
-	var se *forgejoStatusError
-	return errors.As(err, &se) && se.code == http.StatusNotFound
-}
-
 type forgejoEvent struct {
 	ID      int64     `json:"id"`
 	OpType  string    `json:"op_type"`
@@ -152,8 +143,7 @@ type forgejoCommit struct {
 }
 
 func toCommitRefs(repo, user string, list []forgejoCommit) []commitRef {
-	// An empty successful expansion must stay non-nil: nil tells expandPush's
-	// caller to fall back to the unfiltered feed commits after a pruned base.
+	// A complete expansion may have no attributable commits.
 	commits := make([]commitRef, 0, len(list))
 	for _, rc := range list {
 		// Unlinked authors are retained because the user's email may not be
@@ -178,20 +168,38 @@ func toCommitRefs(repo, user string, list []forgejoCommit) []commitRef {
 // reported on earlier days is skipped by the reported-commit record.
 func (c *forgejoClient) fetchPushCommits(repo, baseHead, head string, total int) ([]commitRef, error) {
 	if baseHead != "" {
-		body, err := c.get("/repos/" + repo + "/compare/" + baseHead)
-		if err != nil {
-			return nil, err
+		var list []forgejoCommit
+		seen := map[string]bool{}
+		for page := 1; page <= forgejoFeedMaxPages; page++ {
+			body, err := c.get(fmt.Sprintf("/repos/%s/compare/%s?page=%d&limit=%d", repo, baseHead, page, forgejoFeedPageSize))
+			if err != nil {
+				return nil, err
+			}
+			var result struct {
+				Commits []forgejoCommit `json:"commits"`
+			}
+			if err := json.Unmarshal(body, &result); err != nil {
+				return nil, err
+			}
+			for _, commit := range result.Commits {
+				if commit.SHA == "" || seen[commit.SHA] {
+					return nil, fmt.Errorf("incomplete or repeated Forgejo compare page")
+				}
+				seen[commit.SHA] = true
+				list = append(list, commit)
+			}
+			if len(list) == total {
+				return toCommitRefs(repo, c.user, list), nil
+			}
+			if len(list) > total || len(result.Commits) == 0 {
+				return nil, fmt.Errorf("incomplete Forgejo compare")
+			}
 		}
-		var result struct {
-			Commits []forgejoCommit `json:"commits"`
-		}
-		if err := json.Unmarshal(body, &result); err != nil {
-			return nil, fmt.Errorf("parse Forgejo compare: %w", err)
-		}
-		return toCommitRefs(repo, c.user, result.Commits), nil
+		return nil, fmt.Errorf("Forgejo compare pagination limit reached")
 	}
 
 	var list []forgejoCommit
+	seen := map[string]bool{}
 	for page := 1; len(list) < total; page++ {
 		if page > forgejoFeedMaxPages {
 			return nil, fmt.Errorf("history of %s@%s exceeds %d pages", repo, head, forgejoFeedMaxPages)
@@ -214,7 +222,19 @@ func (c *forgejoClient) fetchPushCommits(repo, baseHead, head string, total int)
 		if len(batch) == 0 {
 			break
 		}
-		list = append(list, batch...)
+		for _, commit := range batch {
+			if len(list) == total {
+				break
+			}
+			if commit.SHA == "" || seen[commit.SHA] {
+				return nil, fmt.Errorf("incomplete or repeated Forgejo history page")
+			}
+			seen[commit.SHA] = true
+			list = append(list, commit)
+		}
+	}
+	if len(list) < total {
+		return nil, fmt.Errorf("incomplete Forgejo push history")
 	}
 	if len(list) > total {
 		list = list[:total]
@@ -293,6 +313,9 @@ func summarizeForgejoEvents(events []forgejoEvent, pushCommits pushCommitsFunc) 
 
 	for _, e := range sorted {
 		if e.OpType == "commit_repo" {
+			if e.Content == "" {
+				continue
+			}
 			var push struct {
 				Commits []struct {
 					Sha1    string
@@ -305,7 +328,7 @@ func summarizeForgejoEvents(events []forgejoEvent, pushCommits pushCommitsFunc) 
 				}
 			}
 			if err := json.Unmarshal([]byte(e.Content), &push); err != nil {
-				continue
+				return nil, "", "", fmt.Errorf("invalid Forgejo push: %w", err)
 			}
 			if push.Len > len(push.Commits) {
 				all, err := expandPush(e.Repo.FullName, push.CompareURL, push.HeadCommit.Sha1, len(push.Commits), push.Len, pushCommits)
@@ -338,7 +361,7 @@ func summarizeForgejoEvents(events []forgejoEvent, pushCommits pushCommitsFunc) 
 		}
 		var fields []string
 		if err := json.Unmarshal([]byte(e.Content), &fields); err != nil || len(fields) == 0 {
-			continue
+			return nil, "", "", fmt.Errorf("invalid Forgejo activity record %d", e.ID)
 		}
 		key := e.Repo.FullName + "#" + fields[0]
 		item, ok := items[key]
@@ -358,26 +381,17 @@ func summarizeForgejoEvents(events []forgejoEvent, pushCommits pushCommitsFunc) 
 	return commits, formatForgejoItems(prs, prOrder), formatForgejoItems(issues, issueOrder), nil
 }
 
-// expandPush lists all commits of a push the feed truncated to its newest few.
-// It returns nil to keep the listed commits when the push's base was pruned,
-// which retrying cannot fix, so it must not block later runs.
+// expandPush refuses a truncated push when its full history is unavailable.
 func expandPush(repo, compareURL, head string, listed, total int, pushCommits pushCommitsFunc) ([]commitRef, error) {
 	_, baseHead, ok := strings.Cut(compareURL, "/compare/")
-	// Forgejo sets a head on every push (all 2609 pushes over 30 days
-	// checked), so a missing one fails rather than drop commits silently.
 	if !ok && head == "" {
-		return nil, fmt.Errorf("push to %s lists %d of %d commits and has neither a compare URL nor a head commit", repo, listed, total)
+		return nil, fmt.Errorf("push to %s lists %d of %d commits without a head", repo, listed, total)
 	}
 	all, err := pushCommits(repo, baseHead, head, total)
-	switch {
-	case err == nil:
-		return all, nil
-	case isForgejoNotFound(err):
-		fmt.Fprintf(os.Stderr, "warning: cannot list the commits of a push to %s; using %d of %d listed commits\n", repo, listed, total)
-		return nil, nil
-	default:
+	if err != nil {
 		return nil, fmt.Errorf("list commits of push to %s: %w", repo, err)
 	}
+	return all, nil
 }
 
 func formatForgejoItems(items map[string]*forgejoItem, order []string) string {

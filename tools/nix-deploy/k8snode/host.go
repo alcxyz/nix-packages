@@ -95,8 +95,11 @@ func (o *Operation) rebootHost() error {
 	}
 	o.log("rebooting %s", target)
 	r := o.ssh(Command{Argv: []string{"-T", target, rebootCommand}, Passthrough: true})
+	if r.Status == statusNotStarted {
+		return fmt.Errorf("remote reboot command was not started; %s remains cordoned", o.opts.Node)
+	}
 	if r.Status != 0 && r.Status != 255 {
-		return fmt.Errorf("remote reboot command failed before reboot started; %s remains cordoned", o.opts.Node)
+		return fmt.Errorf("remote reboot command did not complete (exit %d); reboot outcome unknown; %s remains cordoned", r.Status, o.opts.Node)
 	}
 	return nil
 }

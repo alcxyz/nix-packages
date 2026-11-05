@@ -14,11 +14,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"nix-deploy/bootcheck"
+	"nix-deploy/internal/process"
 	"nix-deploy/k8snode"
 )
 
@@ -311,13 +311,7 @@ func runReboot(args []string) int {
 	if sshOptions == "" {
 		sshOptions = defaultSSHOptions
 	}
-	f := newFleetReboot(inv, self, opts, &statusCheck{
-		inv:            inv,
-		self:           self,
-		sshArgs:        strings.Fields(sshOptions),
-		connectTimeout: values.sshCheckTimeout,
-		run:            runCommand,
-	})
+	f := newFleetReboot(inv, self, opts, makeStatusCheck(inv, self, sshOptions, values.sshCheckTimeout))
 	f.ui = newUI(inv.HostColors)
 	f.readyInterval = values.readyInterval
 	f.terminal = stdinIsTerminal()
@@ -333,7 +327,6 @@ func runReboot(args []string) int {
 	go func() {
 		sig := <-signals
 		received <- sig
-		f.terminated.Store(sig == syscall.SIGTERM)
 		cancel()
 	}()
 
@@ -382,10 +375,6 @@ type fleetReboot struct {
 	hook func(ctx context.Context, command string, env []string) error
 	// hookLock keeps hook calls from overlapping.
 	hookLock sync.Mutex
-	// terminated is set when SIGTERM, as a shutdown sends, interrupted the
-	// run, rather than the operator's interrupt.
-	terminated atomic.Bool
-
 	// outputLock keeps lines from concurrent hosts whole.
 	outputLock sync.Mutex
 	// nodeLock keeps node reboots from overlapping, even across groups: two
@@ -417,9 +406,9 @@ func newFleetReboot(inv *inventory, self string, opts rebootOptions, status *sta
 			return k8snode.New(ctx, opts, runner).Run()
 		},
 		sudo: func(ctx context.Context, args ...string) error {
-			cmd := exec.CommandContext(ctx, "sudo", args...)
+			cmd := exec.Command("sudo", args...)
 			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stderr, os.Stderr
-			return cmd.Run()
+			return process.Run(ctx, cmd)
 		},
 		hook: runHookCommand,
 	}
@@ -1231,7 +1220,15 @@ func (f *fleetReboot) readPlacement() (map[string]*placement, error) {
 // kubectl runs a kubectl command in the inventory's context and returns its
 // output, or an error from the last line it wrote to stderr.
 func (f *fleetReboot) kubectl(args ...string) (string, error) {
-	stdout, stderr, status := f.status.run(kubectlTimeout, f.status.kubectl(args...)...)
+	return f.kubectlRun(false, args...)
+}
+
+func (f *fleetReboot) kubectlRun(cleanup bool, args ...string) (string, error) {
+	run := f.status.run
+	if cleanup && f.status.cleanupRun != nil {
+		run = f.status.cleanupRun
+	}
+	stdout, stderr, status := run(kubectlTimeout, f.status.kubectl(args...)...)
 	switch {
 	case status == exitTimedOut:
 		return "", fmt.Errorf("kubectl did not answer within %s", kubectlTimeout)
@@ -1329,7 +1326,7 @@ func (f *fleetReboot) markPending(p *rebootPlan) {
 // until that succeeds, so the end of the run tries again; a mark or node
 // that is gone already counts as removed, by kubectl's exact messages.
 func (f *fleetReboot) unmark(node string) error {
-	_, err := f.kubectl("taint", "nodes", node, k8snode.RebootPendingTaint+":PreferNoSchedule-")
+	_, err := f.kubectlRun(true, "taint", "nodes", node, k8snode.RebootPendingTaint+":PreferNoSchedule-")
 	if err != nil {
 		message := err.Error()
 		gone := strings.HasSuffix(message, fmt.Sprintf("taint %q not found", k8snode.RebootPendingTaint+":PreferNoSchedule")) ||
@@ -1762,14 +1759,9 @@ func (h *hostReboot) runSelf() (outcome, reason string) {
 		return h.failure(errStopped)
 	case r.Status == 0:
 		// The reboot was queued; an interrupt now does not undo it.
-	case h.ctx.Err() != nil && !h.f.terminated.Load():
-		// The operator interrupted the command, say at a sudo prompt; the
-		// machine stays up.
-		h.startRunners()
-		return h.failure(errStopped)
-	case h.ctx.Err() != nil:
-		// The shutdown may already be stopping this run; its runner units
-		// are left to the shutdown.
+	case h.ctx.Err() != nil || r.Status == 124 || r.Status >= 128:
+		// A started command may already have queued shutdown, even when
+		// cancellation wins the race with its clean exit acknowledgement.
 		mayBeRebooting = true
 		return h.failure(errStopped)
 	default:
@@ -2023,7 +2015,7 @@ func (h *hostReboot) rebootNode() (bool, error) {
 	// its runner units start again. A host that went down does not need it.
 	current := h.readBootID(context.WithoutCancel(h.ctx))
 	if status != 0 {
-		if current == h.bootID {
+		if h.ctx.Err() == nil && current == h.bootID {
 			h.startRunners()
 		}
 		return false, fmt.Errorf("the node reboot failed (status %d); the host is left as it is", status)
@@ -2049,13 +2041,22 @@ func (h *hostReboot) rebootPlain() error {
 		Argv:    h.sshCommand("10", h.privileged("systemctl reboot --no-block")),
 		Timeout: rebootCommandBound,
 	})
-	// ssh's status 255 is accepted: the connection may drop as the host
-	// goes down.
-	if r.Status != 0 && r.Status != 255 {
+	if r.Status == k8snode.StatusNotStarted {
 		h.startRunners()
+		return errStopped
+	}
+	if h.ctx.Err() != nil || r.Status == 124 || (r.Status >= 128 && r.Status != 255) {
+		// An old boot ID can still answer while a queued shutdown is pending.
+		// Do not start runners when acknowledgement of the reboot is uncertain.
+		h.log("reboot command did not complete; outcome unknown, runner units remain stopped")
 		if h.ctx.Err() != nil {
 			return errStopped
 		}
+		return fmt.Errorf("reboot outcome is unknown (ssh exited with status %d)", r.Status)
+	}
+	// ssh's status 255 is accepted: the connection may drop as the host goes down.
+	if r.Status != 0 && r.Status != 255 {
+		h.startRunners()
 		return fmt.Errorf("the reboot command failed (ssh exited with status %d); the host was not rebooted", r.Status)
 	}
 
@@ -2109,12 +2110,10 @@ func (h *hostReboot) rebootPlain() error {
 	return fmt.Errorf("%s did not return with a new boot ID within %ds", endpoint, h.f.opts.node.SSHTimeoutSeconds)
 }
 
-// interrupted ends a reboot wait that an interrupt stopped. A host that
-// still answers on its old boot did not reboot, so its runners start again.
+// interrupted ends a reboot wait without changing runners: an old boot can
+// still answer while a queued shutdown is pending.
 func (h *hostReboot) interrupted() error {
-	if id, status := h.probeBootID(context.WithoutCancel(h.ctx), "5"); status == 0 && id == h.bootID {
-		h.startRunners()
-	}
+	h.log("reboot wait interrupted; outcome unknown, runner units remain stopped")
 	return errStopped
 }
 

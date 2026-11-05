@@ -67,7 +67,9 @@ func (d *deployer) startSudoKeepalive() (func(), bool) {
 		return nil, false
 	}
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		ticker := time.NewTicker(sudoRefresh)
 		defer ticker.Stop()
 		for {
@@ -81,7 +83,7 @@ func (d *deployer) startSudoKeepalive() (func(), bool) {
 			}
 		}
 	}()
-	return func() { close(done) }, true
+	return func() { close(done); <-stopped }, true
 }
 
 func (d *deployer) deployAll(mode string) int {
@@ -270,6 +272,14 @@ func (d *deployer) activateSystems(changed []target, built map[string]string, bl
 // one. The first switch, gate or check failure stops the group's rollout so
 // its remaining members are left untouched.
 func (d *deployer) switchGroup(group *serialGroup, changed map[string]bool, built map[string]string, failure string, r *report) {
+	var shared *reservation
+	if failure == "" {
+		var err error
+		shared, err = d.reserveGroup(group)
+		if err != nil {
+			failure = err.Error()
+		}
+	}
 	if failure == "" && group.ReadyCommand != "" {
 		d.ui.section("serial group pre-check")
 		if notReady, ok := d.precheck(group, group.Hosts); !ok {
@@ -306,8 +316,21 @@ func (d *deployer) switchGroup(group *serialGroup, changed map[string]bool, buil
 		}
 		started := time.Now()
 		streams, log := d.switchLogged(t)
+		if !shared.start(host) {
+			log.Close()
+			d.failed.finish(t, false)
+			r.record("system", host, "failed")
+			failure = "cannot record shared activation start"
+			continue
+		}
 		status := d.activateSystem(host, path, streams, true)
 		log.Close()
+		if !shared.ended(status) {
+			d.failed.finish(t, false)
+			r.record("system", host, "failed")
+			failure = "shared activation result could not be recorded"
+			continue
+		}
 		r.addTime(t, "activate", time.Since(started))
 		if status != 0 {
 			d.failed.finish(t, false)
@@ -327,6 +350,9 @@ func (d *deployer) switchGroup(group *serialGroup, changed map[string]bool, buil
 			continue
 		}
 		r.record("system", host, "ok")
+	}
+	if shared != nil && !shared.finish(failure != "") && failure == "" {
+		failure = "shared deployment reservation retained or release failed"
 	}
 	if failure != "" {
 		r.failed = true

@@ -4,12 +4,14 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 base_ref="${GITHUB_BASE_REF:-${GITEA_BASE_REF:-${FORGEJO_BASE_REF:-}}}"
 flavors=(t3code)
+standalone_selected=false
 if [[ -n "${PACKAGE_BUILD_SELECTED_FILE:-}" ]]; then
   [[ -f "$PACKAGE_BUILD_SELECTED_FILE" ]] || {
     echo "Selected package list is missing: $PACKAGE_BUILD_SELECTED_FILE" >&2
     exit 2
   }
   grep -Fqx t3code "$PACKAGE_BUILD_SELECTED_FILE" || flavors=()
+  if grep -Fqx codex-app-server "$PACKAGE_BUILD_SELECTED_FILE"; then standalone_selected=true; fi
 elif [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
   plan_file=$(mktemp)
   trap 'rm -f "$plan_file"' EXIT
@@ -21,8 +23,9 @@ elif [[ -n "$base_ref" && "${T3CODE_VERIFY_ALWAYS:-false}" != true ]]; then
     "$script_dir/build-changed-packages.sh"
 
   grep -Fqx -e '*' -e t3code "$plan_file" || flavors=()
+  if grep -Fqx -e '*' -e codex-app-server "$plan_file"; then standalone_selected=true; fi
 fi
-if ((${#flavors[@]} == 0)); then
+if ((${#flavors[@]} == 0)) && [[ "$standalone_selected" != true ]]; then
   echo "No T3 Code provider inputs changed; skipping provider closure verification."
   exit 0
 fi
@@ -56,8 +59,36 @@ app_server_version=$(nix eval --raw .#codex-app-server.version)
 # The Forgejo runner builds without sandboxing. Some provider/resource builds
 # create /homeless-shelter, so isolate them and clean between Nix invocations
 # before assembling the already-cached T3 Code closure.
-nix_build .#claude-code --no-link
-nix_build .#codex-cli --no-link
+claude_out=$(nix_build .#claude-code --no-link --print-out-paths)
+codex_out=$(nix_build .#codex-cli --no-link --print-out-paths)
+app_server_out=$(nix_build .#codex-app-server --no-link --print-out-paths)
+
+# Run installed executables with no access to the operator's home, settings or
+# credentials. env -i also excludes credential-bearing inherited variables.
+verify_provider() {
+  local executable=$1 expected=$2 label=$3 runtime isolated
+  isolated=$(mktemp -d)
+  mkdir -p "$isolated/config" "$isolated/cache" "$isolated/data" "$isolated/state"
+  if ! runtime=$(env -i HOME="$isolated" XDG_CONFIG_HOME="$isolated/config" \
+    XDG_CACHE_HOME="$isolated/cache" XDG_DATA_HOME="$isolated/data" \
+    XDG_STATE_HOME="$isolated/state" PATH="$PATH" "$executable" --version); then
+    rm -rf "$isolated"
+    echo "$label runtime version check failed" >&2
+    return 1
+  fi
+  rm -rf "$isolated"
+  # Compare a whole whitespace-delimited version token, never a regex prefix.
+  local token
+  for token in $runtime; do
+    [[ "$token" == "$expected" ]] && return 0
+  done
+  echo "$label reports $runtime; expected $expected" >&2
+  return 1
+}
+verify_provider "$claude_out/bin/claude" "$claude_version" 'Claude Code'
+verify_provider "$codex_out/bin/codex" "$codex_version" 'Codex CLI'
+verify_provider "$app_server_out/bin/codex-app-server" "$app_server_version" 'Codex app server'
+
 for flavor in "${flavors[@]}"; do
   embedded_claude=$(nix eval --raw ".#${flavor}.embeddedProviderVersions.claudeCode")
   embedded_codex=$(nix eval --raw ".#${flavor}.embeddedProviderVersions.codexCli")

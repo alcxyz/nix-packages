@@ -141,8 +141,14 @@ func generateDaily(repoPath string, date time.Time, src activitySources) (bool, 
 	// GitHub mirrors of Forgejo repositories carry the same commits.
 	commits = withoutReported(mergeCommits(commits, ghCommits), reportedCommits(repoPath, date))
 
-	ghPRs, _ := fetchSearchItems(src.ghUser, date, "pr")
-	ghIssues, _ := fetchSearchItems(src.ghUser, date, "issue")
+	ghPRs, err := fetchSearchItems(src.ghUser, date, "pr")
+	if err != nil {
+		return false, fmt.Errorf("fetch GitHub PR activity: %w", err)
+	}
+	ghIssues, err := fetchSearchItems(src.ghUser, date, "issue")
+	if err != nil {
+		return false, fmt.Errorf("fetch GitHub issue activity: %w", err)
+	}
 	prs = joinLines(prs, ghPRs)
 	issues = joinLines(issues, ghIssues)
 
@@ -173,10 +179,64 @@ func generateDaily(repoPath string, date time.Time, src activitySources) (bool, 
 	return true, nil
 }
 
+// GitHub search exposes at most 1000 results. Missing metadata, unstable
+// totals, repeated pages and incomplete searches cannot establish a whole day.
+func completeSearch(kind, query string) (string, error) {
+	var all []json.RawMessage
+	seen := map[string]bool{}
+	total := -1
+	for page := 1; page <= 10; page++ {
+		out, err := run("gh", "api", fmt.Sprintf("search/%s?q=%s&per_page=100&page=%d", kind, query, page))
+		if err != nil {
+			return "", err
+		}
+		var result struct {
+			Total      *int              `json:"total_count"`
+			Incomplete *bool             `json:"incomplete_results"`
+			Items      []json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			return "", err
+		}
+		if result.Total == nil || result.Incomplete == nil || *result.Incomplete || *result.Total < 0 || *result.Total > 1000 || result.Items == nil {
+			return "", fmt.Errorf("incomplete GitHub %s search", kind)
+		}
+		if total >= 0 && total != *result.Total {
+			return "", fmt.Errorf("GitHub search changed during pagination")
+		}
+		total = *result.Total
+		for _, item := range result.Items {
+			var id struct {
+				SHA string `json:"sha"`
+				URL string `json:"url"`
+			}
+			if err := json.Unmarshal(item, &id); err != nil {
+				return "", err
+			}
+			key := id.URL + id.SHA
+			if key == "" || seen[key] {
+				return "", fmt.Errorf("GitHub search has missing or repeated identities")
+			}
+			seen[key] = true
+			all = append(all, item)
+		}
+		if len(all) == total {
+			data, err := json.Marshal(struct {
+				Items []json.RawMessage `json:"items"`
+			}{all})
+			return string(data), err
+		}
+		if len(all) > total || len(result.Items) == 0 {
+			return "", fmt.Errorf("truncated GitHub search")
+		}
+	}
+	return "", fmt.Errorf("GitHub search pagination limit reached")
+}
+
 func fetchCommitData(user string, date time.Time) ([]commitRef, error) {
 	start, end := devlogWindow(date)
 	query := fmt.Sprintf("author:%s+committer-date:%s..%s", user, start.Format("2006-01-02"), end.Format("2006-01-02"))
-	out, err := run("gh", "api", fmt.Sprintf("search/commits?q=%s&per_page=100", query))
+	out, err := completeSearch("commits", query)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +304,7 @@ func joinLines(parts ...string) string {
 func fetchSearchItems(user string, date time.Time, itemType string) (string, error) {
 	start, end := devlogWindow(date)
 	query := fmt.Sprintf("author:%s+type:%s+updated:%s..%s", user, itemType, start.Format("2006-01-02"), end.Format("2006-01-02"))
-	out, err := run("gh", "api", fmt.Sprintf("search/issues?q=%s&per_page=100", query))
+	out, err := completeSearch("issues", query)
 	if err != nil {
 		return "", err
 	}
@@ -281,8 +341,7 @@ const (
 	maxTotalDiffLines = 4000
 )
 
-// A Forgejo diff error fails the run, like the feed, except for a pruned
-// commit; GitHub diffs stay best effort as before.
+// A failed diff request from either configured source fails generation.
 func fetchDiffs(commits []commitRef, forgejo *forgejoClient) (string, error) {
 	var diffs strings.Builder
 	total := 0
@@ -296,7 +355,7 @@ func fetchDiffs(commits []commitRef, forgejo *forgejoClient) (string, error) {
 		switch c.Source {
 		case "forgejo":
 			detail, err = forgejo.fetchDiff(c.Repo, c.SHA)
-			if err != nil && !isForgejoNotFound(err) {
+			if err != nil {
 				return "", fmt.Errorf("diff %s@%s: %w", c.Repo, c.SHA, err)
 			}
 		default:
@@ -304,7 +363,7 @@ func fetchDiffs(commits []commitRef, forgejo *forgejoClient) (string, error) {
 			detail, err = run("gh", "api", fmt.Sprintf("repos/%s/commits/%s", c.Repo, c.SHA), "--jq", jq)
 		}
 		if err != nil {
-			detail = "(diff unavailable)"
+			return "", fmt.Errorf("diff %s@%s: %w", c.Repo, c.SHA, err)
 		} else {
 			limit := maxDiffLines
 			if remaining := maxTotalDiffLines - total; remaining < limit {

@@ -1,7 +1,8 @@
 # ADR-0009: Devlog attribution and gap-fill deduplication
 
 **Status:** Accepted
-**Date:** 2026-10-14
+**Date:** 2026-10-14, updated 2026-11-05
+**History:** [replaced text](archive/0009-devlog-attribution-and-gap-fill-history.md)
 **Applies to:** `tools/devlog/`
 
 ## Context
@@ -22,9 +23,12 @@ for both cases; the user approved the following policies before implementation.
   existing later daily entry's reported-commit record. Exclude the date being
   generated. The first written entry retains the commit, even if a gap filled
   later has an earlier date; existing entries are not rewritten.
-- Preserve the existing source and inclusion rules, including the listed-feed
-  fallback when a push's base has been pruned. A successful expansion that
-  filters out all commits must not trigger that fallback.
+- Every configured activity source is required. GitHub searches paginate and
+  reject incomplete results, missing completeness metadata and totals beyond
+  the search limit. Forgejo push expansion must retrieve the whole push before
+  attribution filtering. A pruned base or truncated response fails the daily
+  generation instead of persisting a partial day. A complete expansion that
+  filters out all commits is still a successful empty result.
 
 ## Alternatives considered
 
@@ -42,3 +46,5 @@ for both cases; the user approved the following policies before implementation.
 Unlinked authors can still include work by others; their identity is unknown.
 Gap fills read more existing entries as the journal grows, but avoid rewriting
 published history. Deduplication remains based on commit SHA across sources.
+
+Source outages or unavailable history leave a day unwritten for a later retry.

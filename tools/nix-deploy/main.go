@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -82,6 +83,7 @@ const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]
        nixfleet off|on [OPTIONS] <host>
        nixfleet status [--config FILE] [--all | <host>...] [--json FILE]
        nixfleet runners [status | restart] [OPTIONS] [--all | <host>...]
+       nixfleet reservations [list | release ID] [--config FILE] [--confirm-stopped]
        nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]
 
 Subcommands:
@@ -106,6 +108,7 @@ Subcommands:
            it needs a restart, or (restart) restart the units a switch left
            on an older definition once their running jobs finish; see
            nixfleet runners --help.
+  reservations  List held deployment reservations or safely release stopped work.
   triage   Write context.md for a recorded deploy run, by default the newest
            that failed: its facts, failed targets, their logs and first
            errors, or with --warnings the evaluation warnings of the newest
@@ -120,8 +123,43 @@ Installed as deploy, k8s-node-power or runners, this program is that
 command; runners is nixfleet runners.
 `
 
+// Interactive triage is the last controller action and owns terminal signals.
+// Tests that call launchTriage directly have no controller handler to stop.
+var stopControllerSignals = func() {}
+
 func main() {
-	os.Exit(dispatch(filepath.Base(os.Args[0]), os.Args[1:]))
+	// Every subcommand's external commands share the controller's cancellation.
+	ctx, cancel := context.WithCancel(context.Background())
+	runContext = ctx
+	stopControllerSignals = controllerSignals(ctx, cancel)
+	status := dispatch(filepath.Base(os.Args[0]), os.Args[1:])
+	stopControllerSignals()
+	if interrupted := canceledStatus.Load(); interrupted != 0 {
+		status = int(interrupted)
+	}
+	cancel()
+	os.Exit(status)
+}
+
+func controllerSignals(ctx context.Context, cancel context.CancelFunc) func() {
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	signalContext, stopSignals := context.WithCancel(ctx)
+	signalDone := make(chan struct{})
+	go func() {
+		defer close(signalDone)
+		select {
+		case sig := <-interrupts:
+			canceledStatus.CompareAndSwap(0, int32(128+int(sig.(syscall.Signal))))
+			cancel()
+		case <-signalContext.Done():
+		}
+	}()
+	return func() {
+		signal.Stop(interrupts)
+		stopSignals()
+		<-signalDone
+	}
 }
 
 // dispatch runs the command the program was invoked as: deploy and
@@ -156,6 +194,8 @@ func dispatch(name string, args []string) int {
 		return runPower("nixfleet", args)
 	case "status":
 		return runStatus(args[1:])
+	case "reservations":
+		return runReservations(args[1:])
 	case "runners":
 		return runRunners("nixfleet runners", args[1:])
 	case "triage":
@@ -279,27 +319,6 @@ func runDeploy(args []string) int {
 		d.pruneDeployedRoots()
 	}
 	defer d.releaseRoots()
-	// Ctrl-C reaches the running commands too; release the roots before
-	// exiting so an interrupted run does not pin its closures.
-	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		received := <-interrupts
-		d.releaseRoots()
-		// The run's results are incomplete; do not leave an older report.
-		if d.jsonPath != "" {
-			writeFailedJSON(d.jsonPath)
-		}
-		removeReportTemps()
-		// The run record stays as it is: without an end in run.json, it shows
-		// the run did not finish.
-		fmt.Fprintf(os.Stderr, "deploy: interrupted by %v\n", received)
-		status := 130
-		if received == syscall.SIGTERM {
-			status = 143
-		}
-		os.Exit(status)
-	}()
 	var exit int
 	if opts.all {
 		exit = d.deployAll(opts.mode)
@@ -312,7 +331,9 @@ func runDeploy(args []string) int {
 	// The run and its record are finished: an interrupt no longer rewrites
 	// the report, the agent triage may launch takes the terminal's
 	// interrupts itself, and the roots need not outlive the run.
-	signal.Stop(interrupts)
+	if runContext.Err() != nil {
+		return 130
+	}
 	d.releaseRoots()
 	return d.offerTriage(exit, isTerminal(os.Stdin) && isTerminal(os.Stdout), os.Stdin, os.Stdout, runTriage)
 }

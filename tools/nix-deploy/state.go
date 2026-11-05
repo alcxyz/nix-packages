@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // failedActivations remembers, on this machine, generations whose activation
@@ -109,7 +111,7 @@ func (f *failedActivations) hold(t target) bool {
 	if err == nil {
 		if syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 			fmt.Fprintf(os.Stderr, "deploy: waiting for another deploy run to finish activating %s %s\n", t.phase, t.host)
-			err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+			err = waitFileLock(file, syscall.LOCK_EX)
 		}
 		if err != nil {
 			file.Close()
@@ -154,7 +156,7 @@ func (f *failedActivations) withRecord(write bool, change func(map[string][]stri
 		if write {
 			mode = syscall.LOCK_EX
 		}
-		err = syscall.Flock(int(lockFile.Fd()), mode)
+		err = waitFileLock(lockFile, mode)
 	}
 
 	entries := map[string][]string{}
@@ -224,4 +226,25 @@ func replaceFile(path string, data []byte) error {
 		err = closeErr
 	}
 	return err
+}
+
+// A signal also interrupts waiting for another invocation's protection.
+func waitFileLock(file *os.File, mode int) error {
+	for {
+		if err := runContext.Err(); err != nil {
+			return err
+		}
+		err := syscall.Flock(int(file.Fd()), mode|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return err
+		}
+		select {
+		case <-runContext.Done():
+			return runContext.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }

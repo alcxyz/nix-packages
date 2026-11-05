@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -64,9 +65,18 @@ func ensurePoolImported(ctx context.Context, pool string) error {
 func ensureKeystoreMounted(ctx context.Context, pool string, keyFile string) error {
 	ds := pool + "/keystore"
 	log.Printf("Ensuring keystore dataset %s is mounted", ds)
-	// Ignore error if already mounted; we'll detect missing key file later anyway.
-	if err := runCmd(ctx, "zfs", "mount", ds); err != nil {
-		log.Printf("Warning: zfs mount %s failed: %v", ds, err)
+	mounted, err := runCmdOutput(ctx, "zfs", "get", "-H", "-o", "value", "mounted", ds)
+	if err != nil {
+		return fmt.Errorf("inspect keystore mount: %w", err)
+	}
+	if strings.TrimSpace(mounted) != "yes" {
+		if err := runCmd(ctx, "zfs", "mount", ds); err != nil {
+			return fmt.Errorf("mount keystore: %w", err)
+		}
+		mounted, err = runCmdOutput(ctx, "zfs", "get", "-H", "-o", "value", "mounted", ds)
+		if err != nil || strings.TrimSpace(mounted) != "yes" {
+			return fmt.Errorf("keystore is not mounted")
+		}
 	}
 	dir := filepath.Dir(keyFile)
 	if !fileExists(dir) {
@@ -129,6 +139,9 @@ func unlockPoolOnce(ctx context.Context, cfg *Config, pool PoolConfig) error {
 	}
 
 	status, err := getKeyStatus(ctx, pool.Name)
+	if err != nil {
+		return fmt.Errorf("inspect key status: %w", err)
+	}
 	if err == nil && status == "available" {
 		log.Printf("Pool %s already unlocked", pool.Name)
 		return nil
@@ -184,36 +197,53 @@ func main() {
 		log.Fatalf("parse config: %v", err)
 	}
 
-	if len(cfg.Pools) == 0 {
-		log.Fatalf("config has no pools")
+	if err := runConfig(&cfg, *timeout); err != nil {
+		log.Print(err)
+		os.Exit(1)
 	}
-	if len(cfg.IdentityFiles) == 0 {
-		log.Fatalf("config has no identityFiles")
-	}
+}
 
+// Validate the entire inventory before importing or unlocking even one pool.
+func validateConfig(cfg *Config, timeout time.Duration) error {
+	if timeout <= 0 {
+		return fmt.Errorf("timeout must be positive")
+	}
+	if len(cfg.Pools) == 0 || len(cfg.IdentityFiles) == 0 {
+		return fmt.Errorf("pools and identityFiles must not be empty")
+	}
+	names := map[string]bool{}
+	for _, p := range cfg.Pools {
+		if !regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]*$`).MatchString(p.Name) || names[p.Name] || !filepath.IsAbs(p.EncryptedKeyFile) {
+			return fmt.Errorf("invalid or duplicate pool configuration")
+		}
+		names[p.Name] = true
+	}
+	for _, path := range cfg.IdentityFiles {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("identity paths must be absolute")
+		}
+	}
+	return nil
+}
+
+func runConfig(cfg *Config, timeout time.Duration) error {
+	if err := validateConfig(cfg, timeout); err != nil {
+		return err
+	}
 	var hadErr bool
 	for _, p := range cfg.Pools {
-		if p.Name == "" || p.EncryptedKeyFile == "" {
-			log.Printf("Skipping pool with incomplete config: %+v", p)
-			continue
-		}
-		if err := unlockPoolWithTimeout(&cfg, p, *timeout); err != nil {
-			log.Printf("ERROR: unlocking pool %s failed: %v", p.Name, err)
+		if err := unlockPoolWithTimeout(cfg, p, timeout); err != nil {
+			log.Printf("unlock failed: %v", err)
 			hadErr = true
 		}
 	}
-
 	if hadErr {
-		os.Exit(1)
+		return fmt.Errorf("not all configured pools unlocked")
 	}
-
-	// All pools unlocked successfully; ensure all datasets are mounted.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
 	if err := runCmd(ctx, "zfs", "mount", "-a"); err != nil {
-		log.Printf("WARNING: 'zfs mount -a' failed: %v", err)
-	} else {
-		log.Printf("'zfs mount -a' completed successfully")
+		return fmt.Errorf("mount datasets: %w", err)
 	}
+	return nil
 }

@@ -27,3 +27,4 @@ and retired ADRs. ADR numbers are never reused.
 | [ADR-0016](0016-nixfleet-triage.md) | nixfleet triage: run records and an agent playbook for failed deploys and warnings | `tools/nix-deploy/` |
 | [ADR-0017](0017-nixfleet-runner-status-and-restarts.md) | nixfleet runner status and restarts | `tools/nix-deploy/` |
 | [ADR-0018](0018-passkey-credential-approvals.md) | Approve credential requests with a pinned passkey, relayed through deck | `tools/credential-approval/`, `tools/deck/` |
+| [ADR-0019](0019-shared-deployment-reservations.md) | Shared deployment reservations | `tools/nix-deploy/` |

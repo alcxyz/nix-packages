@@ -320,7 +320,15 @@ func TestResumedMaintenanceKeepsCordonOnFailure(t *testing.T) {
 func TestRemoteRebootFailureLeavesNodeCordoned(t *testing.T) {
 	f := newHealthyCluster(t)
 	f.rebootExit = 1
-	runFailure(t, f, "reboot", nil, "remote reboot command failed before reboot started; server-a remains cordoned")
+	runFailure(t, f, "reboot", nil, "remote reboot command did not complete (exit 1); reboot outcome unknown; server-a remains cordoned")
+	mustNotCall(t, f, `^kubectl uncordon`)
+}
+
+func TestRemoteRebootInterruptedOutcomeIsUnknown(t *testing.T) {
+	f := withAgent(t, newHealthyCluster(t))
+	f.rebootExit = 130
+	output := runFailure(t, f, "reboot", nil, "reboot outcome unknown; server-a remains cordoned")
+	mustContain(t, output, "node-self-fence is still stopped")
 	mustNotCall(t, f, `^kubectl uncordon`)
 }
 
@@ -861,7 +869,7 @@ func TestRebootWithAgent(t *testing.T) {
 func TestStoppedAgentReportedOnExit(t *testing.T) {
 	f := withAgent(t, newHealthyCluster(t))
 	f.rebootExit = 1
-	runFailure(t, f, "reboot", nil, "remote reboot command failed",
+	runFailure(t, f, "reboot", nil, "remote reboot command did not complete",
 		"node-self-fence is still stopped on server-a; start it with systemctl start node-self-fence before retrying maintenance")
 }
 

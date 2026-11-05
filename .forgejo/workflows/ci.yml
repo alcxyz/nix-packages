@@ -109,6 +109,7 @@ jobs:
           python3 scripts/ci/test-probe-ai-updates.py
           scripts/ci/test-ai-tools-updater.sh
           python3 scripts/ci/test-t3code-updater.py
+          python3 scripts/ci/test-round1-updaters.py
 
       - name: Test Nix GC maintenance
         # The same script contract as checks.nix-gc-maintenance-contract, run

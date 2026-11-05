@@ -2,6 +2,7 @@
   buildGoModule,
   fetchFromGitHub,
   fetchPnpmDeps ? null,
+  pnpmDepsV3Fetcher ? fetchPnpmDeps,
   lib,
   nixosTests,
   nodejs,
@@ -144,6 +145,21 @@ buildGoModule (
 
     passthru = {
       inherit frontend;
+      frontendDepsV2 = pnpm_10.fetchDeps {
+        inherit (frontend) pname version src;
+        fetcherVersion = 2;
+        hash = finalAttrs.pnpmHash;
+      };
+      frontendDepsV3 =
+        if pnpmDepsV3Fetcher == null then
+          throw "Stash hash refresh requires the version 3 pnpm fetcher"
+        else
+          pnpmDepsV3Fetcher {
+            inherit (frontend) pname version src;
+            pnpm = pnpm_10;
+            fetcherVersion = 3;
+            hash = finalAttrs.pnpmHashV3;
+          };
       updateScript = ./update.py;
       tests = {
         inherit (nixosTests) stash;

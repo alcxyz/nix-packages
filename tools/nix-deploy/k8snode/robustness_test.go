@@ -2,6 +2,7 @@ package k8snode
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -92,15 +93,15 @@ func TestUndecodableOptionalReadsFailClosed(t *testing.T) {
 		t.Fatal("undecodable Deployment counted as portable")
 	}
 
-	// kubectl failing keeps the Bash fallback.
+	// Failed inspection must never become a permissive fallback.
 	f.respond = func(c Command, line string) (Result, bool) {
 		if strings.HasSuffix(line, "get deployment/fixture -o json") {
 			return Result{Status: 1}, true
 		}
 		return Result{}, false
 	}
-	if replicas, err := o.controllerReplicas(fixture); err != nil || replicas != 1 {
-		t.Fatalf("unreadable controller: %d, %v; want the fallback of one", replicas, err)
+	if _, err := o.controllerReplicas(fixture); err == nil {
+		t.Fatal("failed controller inspection was accepted")
 	}
 }
 
@@ -116,4 +117,30 @@ func TestUndecodableBackupTargetFails(t *testing.T) {
 	}
 	o, _ := newOperation(f, options(t, "reboot", "--require-longhorn-backup-target", "server-a"))
 	expectFailure(t, o.waitForLonghornHealth(), "invalid JSON")
+}
+
+func TestIntegrationInspectionErrorsBlockMaintenance(t *testing.T) {
+	for _, query := range []string{
+		"get customresourcedefinition volumes.longhorn.io",
+		"get customresourcedefinition clusters.postgresql.cnpg.io",
+		"-n longhorn-system get volumes.longhorn.io",
+		"get clusters.postgresql.cnpg.io --all-namespaces",
+	} {
+		for _, status := range []int{1, 124, 127} {
+			t.Run(fmt.Sprintf("%s/%d", query, status), func(t *testing.T) {
+				f := newHealthyCluster(t)
+				f.cnpg = true
+				f.respond = func(c Command, line string) (Result, bool) {
+					if strings.Contains(line, query) {
+						return Result{Status: status, Stderr: "synthetic inspection failure"}, true
+					}
+					return Result{}, false
+				}
+				o, output := newOperation(f, options(t, "reboot", "server-a"))
+				expectRunFailure(t, o, output, "failed")
+				mustNotCall(t, f, `^kubectl cordon `)
+				mustNotCall(t, f, `^kubectl drain `)
+			})
+		}
+	}
 }

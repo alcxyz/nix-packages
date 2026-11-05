@@ -9,6 +9,30 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.31.0 (2026-11-05)
+
+- Serial deployments from every controller reserve the group's members on the
+  inventory's operator host before checking readiness, and hold them through
+  activation and readiness. SSH or reservation failures block the rollout.
+  Ambiguous activations retain durable reservations, so a disconnected
+  controller cannot admit a second activation. Definitely completed failures
+  release automatically when controller and member work inspections report idle.
+- `nixfleet reservations` lists held IDs, group, controller, process, age and
+  reason. Its release command verifies stopped work, refuses positive activity,
+  requires explicit confirmation for unavailable inspection, rechecks ownership
+  and audits releases. Blocked deployments print the exact recovery command.
+- Terminal and parent-only interrupts reach every subcommand's command context.
+  Noninteractive SSH refuses credential prompts instead of hanging in a
+  background process group.
+- Interrupted retries keep incomplete run records, so triage still selects the
+  latest completed failure. Background jobs do not claim the terminal.
+- A cancelled in-flight reboot has an unknown outcome and leaves runners
+  stopped; only a command known not to have started permits immediate cleanup.
+- Interrupts and deadlines cancel command process groups and wait for forced
+  termination before releasing local protection. Parent-only signals are handled.
+- Maintenance fails on failed integration discovery or resource inspection.
+  A successful absent-object read is the only optional-resource fallback.
+
 ## 0.30.0 (2026-11-05)
 
 - `nixfleet runners restart` restarts the members of a serial group one at a

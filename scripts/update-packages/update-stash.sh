@@ -38,34 +38,18 @@ src_hash=$(nix-prefetch-url --unpack \
   "https://github.com/stashapp/stash/archive/refs/tags/v${latest_version}.tar.gz")
 src_hash=$(nix hash convert --hash-algo sha256 --to sri "$src_hash")
 
-# The package reads pnpmHash with nixpkgs' version 2 pnpm fetcher and
-# pnpmHashV3 with the top-level version 3 fetcher; refresh the field the pinned
-# nixpkgs actually uses, found by matching the current fixed-output hash.
-current_pnpm_hash=$(nix eval --raw .#stash.frontend.pnpmDeps.outputHash)
-pnpm_field=$(python3 - "$VERSION_FILE" "$current_pnpm_hash" <<'PYEOF'
+python3 - "$VERSION_FILE" "$latest_version" "$git_hash" "$src_hash" "$FAKE_HASH" <<'PYEOF'
 import json
 import sys
 
-path, current = sys.argv[1:]
-data = json.load(open(path))
-fields = [name for name in ("pnpmHash", "pnpmHashV3") if data.get(name) == current]
-if len(fields) != 1:
-    sys.exit("cannot tell which pnpm hash field the package uses")
-print(fields[0])
-PYEOF
-)
-
-python3 - "$VERSION_FILE" "$latest_version" "$git_hash" "$src_hash" "$FAKE_HASH" "$pnpm_field" <<'PYEOF'
-import json
-import sys
-
-path, version, git_hash, src_hash, fake_hash, pnpm_field = sys.argv[1:]
+path, version, git_hash, src_hash, fake_hash = sys.argv[1:]
 data = json.load(open(path))
 data.update({
     "version": version,
     "gitHash": git_hash,
     "srcHash": src_hash,
-    pnpm_field: fake_hash,
+    "pnpmHash": fake_hash,
+    "pnpmHashV3": fake_hash,
     "vendorHash": fake_hash,
 })
 open(path, "w").write(json.dumps(data, indent=2) + "\n")
@@ -77,16 +61,19 @@ PYEOF
 # Fetch the source first, so a wrong source hash fails here instead of being
 # reported by the dependency fetches below.
 realise_fetch_only .#stash.src "$src_hash"
-pnpm_hash=$(collect_fod_hash .#stash.frontend.pnpmDeps "$pnpm_field")
-python3 - "$VERSION_FILE" "$pnpm_hash" "$pnpm_field" <<'PYEOF'
+for pair in 'pnpmHash frontendDepsV2' 'pnpmHashV3 frontendDepsV3'; do
+  read -r pnpm_field fetcher <<<"$pair"
+  pnpm_hash=$(collect_fod_hash ".#stash.$fetcher" "$pnpm_field")
+  python3 - "$VERSION_FILE" "$pnpm_hash" "$pnpm_field" <<'PYEOF'
 import json
 import sys
-
-path, pnpm_hash, pnpm_field = sys.argv[1:]
+path, value, field = sys.argv[1:]
 data = json.load(open(path))
-data[pnpm_field] = pnpm_hash
+data[field] = value
 open(path, "w").write(json.dumps(data, indent=2) + "\n")
 PYEOF
+  realise_fetch_only ".#stash.$fetcher" "$pnpm_hash"
+done
 
 vendor_hash=$(collect_fod_hash .#stash.goModules vendorHash)
 python3 - "$VERSION_FILE" "$vendor_hash" <<'PYEOF'
