@@ -7,27 +7,27 @@
 }:
 forgejo-runner.overrideAttrs (old: {
   pname = "forgejo-runner-cancellation";
-  version = "13.2.0";
+  version = "13.2.1-alc.1";
   src = fetchFromGitea {
-    domain = "code.forgejo.org";
-    owner = "forgejo";
-    repo = "runner";
-    rev = "v13.2.0";
-    hash = "sha256-2P3lWzC3yxcyiBltFDC1dwwv8Xx2XxEGSa16MdjnV38=";
+    domain = "git.alc.xyz";
+    owner = "alcxyz";
+    repo = "forgejo-runner";
+    rev = "v13.2.1-alc.1";
+    hash = "sha256-DbZ3hXgldWzXiMkxMxBS1HVSO+FK01TXchmIEbxqUqc=";
   };
-  vendorHash = "sha256-iyXO3LYTr4v1OoD9PS5ksEDIkCIq8hgwgtkLR0bzUZg=";
+  vendorHash = "sha256-6ao0x5rPZmyrvvGVLTSTjtrV3UbTqeUeV0OpHDqriHc=";
+  meta = (old.meta or { }) // {
+    homepage = "https://git.alc.xyz/alcxyz/forgejo-runner";
+    changelog = "https://git.alc.xyz/alcxyz/forgejo-runner/releases/tag/v13.2.1-alc.1";
+  };
   ldflags = [
     "-s"
     "-w"
-    "-X code.forgejo.org/forgejo/runner/v13/internal/pkg/ver.version=v13.2.0"
+    "-X code.forgejo.org/forgejo/runner/v13/internal/pkg/ver.version=v13.2.1-alc.1"
   ];
-  # pause.patch: neither the runner nor Forgejo can stop a runner taking new
-  # jobs without also starting the countdown to cancelling its running ones
-  # (ADR-0017).
-  patches = (old.patches or [ ]) ++ [
-    ./cancellation-cleanup.patch
-    ./pause.patch
-  ];
+  # Cancellation cleanup and daemon pause/drain support live in the maintained
+  # source distribution (ADR-0017); keep inherited packaging patches only.
+  patches = old.patches or [ ];
   checkFlags = [
     "-skip ${
       lib.concatStringsSep "|" [

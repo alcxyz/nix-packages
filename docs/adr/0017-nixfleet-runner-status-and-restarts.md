@@ -1,7 +1,7 @@
 # ADR-0017: nixfleet runner status and restarts
 
 **Status:** Accepted
-**Date:** 2026-11-02, updated 2026-11-05 (recorded reboot runner recovery)
+**Date:** 2026-11-02, updated 2026-11-06 (maintained runner source; reboot recovery recorded 2026-11-05)
 **History:** [replaced text](archive/0017-nixfleet-runner-status-and-restarts-history.md)
 **Applies to:** `tools/nix-deploy/` (`nixfleet status`, `nixfleet runners`), and the host side in nix-config's runner module
 
@@ -63,8 +63,9 @@ provides, readable without root:
   running ones finish with no time limit, and reports `paused tasks=<running>`
   as its systemd status text. The pause is one file per runner,
   `/run/nixfleet-runners/paused/<unit>`, that the runner watches through
-  `FORGEJO_RUNNER_PAUSE_FILE`, a patch in this repository's
-  `forgejo-runner-cancellation`. Once every paused runner reports no tasks, it
+  `FORGEJO_RUNNER_PAUSE_FILE`, implemented in the
+  [maintained runner distribution](https://git.alc.xyz/alcxyz/forgejo-runner)
+  consumed by this repository's `forgejo-runner-cancellation` package. Once every paused runner reports no tasks, it
   restarts the flagged units in one `systemctl restart`, checks that they run
   the deployed definition, and removes the pauses; a pause also ends with the
   unit, however it ends. It gives up and restarts nothing when a wait outlasts
@@ -170,7 +171,8 @@ Forgejo side stay manual.
 - A paused runner takes no new jobs until its running ones finish, up to an
   hour. Jobs queue rather than fail, on the other hosts' runners when they have
   room.
-- The patch has to be carried through runner upgrades.
+- The maintained runner distribution carries the cancellation and pause fixes
+  through upgrades; this package pins its reviewed releases.
 - A runner must already run the patched build to be restarted this way. The
   first time, or on a host still on an older build, the unit fails and says so,
   and a plain `systemctl restart` of its units is the way through: it stops

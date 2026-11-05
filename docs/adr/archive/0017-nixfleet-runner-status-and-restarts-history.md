@@ -1,4 +1,4 @@
-**History of** [ADR-0017](../0017-nixfleet-runner-status-and-restarts.md): text replaced on 2026-11-05.
+**History of** [ADR-0017](../0017-nixfleet-runner-status-and-restarts.md): text replaced on 2026-11-05 and 2026-11-06.
 
 Replaced because waiting for an idle host starved on a busy one: xev's restart
 gave up as busy three times in a row while its runners kept taking jobs.
@@ -50,3 +50,14 @@ before any drain:
 
 > starts the runner units status lists, and fails a host whose runner report
 > is an error rather than reboot runners it cannot see.
+
+## Source distribution change on 2026-11-06
+
+The pause and cancellation fixes moved into the maintained runner distribution,
+so the package no longer carries those fixes as local patch files. Replaced
+source ownership text:
+
+  `FORGEJO_RUNNER_PAUSE_FILE`, a patch in this repository's
+  `forgejo-runner-cancellation`.
+
+- The patch has to be carried through runner upgrades.
