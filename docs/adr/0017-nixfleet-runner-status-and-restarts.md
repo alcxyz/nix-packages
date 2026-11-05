@@ -1,7 +1,8 @@
-# ADR-0017: nixfleet runner status and restarts once idle
+# ADR-0017: nixfleet runner status and restarts
 
 **Status:** Accepted
-**Date:** 2026-11-02
+**Date:** 2026-11-02, updated 2026-11-05
+**History:** [replaced text](archive/0017-nixfleet-runner-status-and-restarts-history.md)
 **Applies to:** `tools/nix-deploy/` (`nixfleet status`, `nixfleet runners`), and the host side in nix-config's runner module
 
 ## Context
@@ -54,14 +55,22 @@ provides, readable without root:
   status after its output: another version, a failed command or a report
   without that exit record is an error, never healthy runners or none.
 - **`forgejo-runner-restart.service`**, a root oneshot, restarts the flagged
-  units in one `systemctl restart` once the whole host is idle: no Podman
-  store reset runs, no runner is starting or stopping, no job container runs
-  on a running engine, and no runner took a task within the last 5 minutes.
-  The whole host, because restarting the resource policy or an API restarts
-  the runners that require it. While busy it waits, up to 60 minutes; then
-  it gives up and nothing is restarted, so it never cancels a job on
-  purpose. A job taken between the last check and the stop gets the runner's
-  graceful stop. Its progress and result (`waiting`, `restarting`, `done`,
+  units once their running jobs finish. It waits until no Podman store reset
+  runs and no runner is starting or stopping, then pauses the runners the
+  restart touches: the flagged ones, or all of them when an API or the resource
+  policy is flagged, since restarting those restarts the runners that require
+  them. Other runners keep working. A paused runner takes no new job, lets its
+  running ones finish with no time limit, and reports `paused tasks=<running>`
+  as its systemd status text. The pause is one file per runner,
+  `/run/nixfleet-runners/paused/<unit>`, that the runner watches through
+  `FORGEJO_RUNNER_PAUSE_FILE`, a patch in this repository's
+  `forgejo-runner-cancellation`. Once every paused runner reports no tasks, it
+  restarts the flagged units in one `systemctl restart`, checks that they run
+  the deployed definition, and removes the pauses; a pause also ends with the
+  unit, however it ends. It gives up and restarts nothing when a wait outlasts
+  its limit, by default the job timeout plus 5 minutes, and fails when a
+  running runner has not reported the pause within 60 seconds, which means it
+  runs a build without the patch. Its progress and result (`waiting`, `restarting`, `done`,
   `nothing`, `busy`, `failed`) go to the world-readable
   `/run/nixfleet-runners/restart`, which the status command reports. It
   leaves the runner hold as it is: a restarted runner whose gate refuses the
@@ -104,6 +113,18 @@ ordinary `systemctl stop`, which the hold leaves alone, and a resume is
   unplanned times, a bad runner configuration would reach every runner
   without anyone watching, and the hold would gain a second job. The host
   unit can be started that way later without changing the contract.
+- **Wait for an idle host, with the runners still polling.** Needs no patch,
+  but a busy host may never get idle: on 2026-11-04 and 2026-11-05 xev gave up
+  three times in a row.
+- **Restart at once and let the stop drain.** A stopping runner stops polling
+  and finishes its jobs, so this needs no patch either. But the stop cancels
+  jobs after the shutdown timeout, 120 seconds on xyz, and a switch waits for a
+  restart job that is still stopping a runner, because it starts the active
+  targets.
+- **A pause in Forgejo.** Gitea skips a disabled runner on the server side
+  (go-gitea/gitea#36776), and Forgejo would need no runner patch for the same
+  thing. Forgejo has no such state up to 17.0.1, and its API can only read and
+  delete a runner. The patch can go once it does.
 - **`restartIfChanged = true` on the units.** A switch would restart a
   runner with a running job, which the runner then cancels after its
   shutdown timeout (two minutes on xyz).
@@ -128,5 +149,11 @@ ordinary `systemctl stop`, which the hold leaves alone, and a resume is
 - The status format is a contract between two repositories: a change that
   breaks it bumps its version, and nixfleet must learn the new version
   before hosts print it.
-- A busy host may need several runs, or a quieter time, before its restart
-  goes through; the restart never trades a job for it.
+- A paused runner takes no new jobs until its running ones finish, up to an
+  hour. Jobs queue rather than fail, on the other hosts' runners when they have
+  room.
+- The patch has to be carried through runner upgrades.
+- A runner must already run the patched build to be restarted this way. The
+  first time, or on a host still on an older build, the unit fails and says so,
+  and a plain `systemctl restart` of its units is the way through: it stops
+  polling and finishes jobs up to the shutdown timeout.

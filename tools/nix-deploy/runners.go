@@ -36,19 +36,20 @@ recorded, needs a restart.
            which nothing undoes) or why it needs the restart. Then the
            runner hold's reason, when one applies, and the last restart run.
   restart  Restarts, on each selected host, the units that need it, once
-           every runner on the host is idle: the host's restart unit
+           their running jobs finish: the host's restart unit
            (forgejo-runner-restart.service, started through sudo -n where
-           the inventory says so) waits until no Podman store reset runs,
-           no runner is starting or stopping, no job container runs and no
-           runner took a task for a few minutes, then restarts them in one
-           systemctl restart. Restarting the resource policy or an engine
-           API also restarts the runners that require it, so the whole host
-           must be idle. When it stays busy for the host's wait limit (60
-           minutes by default) the host gives up and nothing is restarted:
-           no job is cancelled on purpose. A job taken between the last
-           check and the stop gets the runner's graceful stop. The hosts
-           run concurrently. The unit goes on when nixfleet is interrupted
-           or loses its connection; nixfleet status shows its result.
+           the inventory says so) waits until no Podman store reset runs
+           and no runner is starting or stopping, then pauses the runners it
+           touches. A paused runner takes no new job and finishes its running
+           ones. Then it restarts the units in one systemctl restart and ends
+           the pause. Restarting the resource policy or an engine API also
+           restarts the runners that require it, so those pause as well.
+           When a wait outlasts the host's limit (the job timeout and 5
+           minutes by default) the host gives up and nothing is restarted, and
+           a runner on a build that cannot pause fails the run. The hosts run
+           concurrently, so restart them one at a time to keep CI admitting
+           jobs. The unit goes on when nixfleet is interrupted or loses its
+           connection; nixfleet status shows its result.
 
            The plan comes first: what each host would restart and why, or
            why it is skipped. --dry-run stops there. Otherwise a terminal is
@@ -69,8 +70,8 @@ busy or failed.
 `
 
 // Bounds of a restart run. The host bounds its own wait; nixfleet waits
-// that long and for the restart itself: a runner that took a job after the
-// last idle check may take up to its stop timeout.
+// that long and for the restart itself: a runner may finish its jobs for up
+// to its stop timeout.
 const (
 	restartMargin       = 2 * time.Hour
 	restartPollInterval = 30 * time.Second
@@ -300,7 +301,7 @@ func (t *restartTarget) describe() string {
 	case t.joins:
 		return "a restart already runs (" + describeRestart(t.before) + "); following it"
 	}
-	return fmt.Sprintf("restart once idle, waiting up to %s:", formatWait(t.wait))
+	return fmt.Sprintf("restart once running jobs finish, waiting up to %s:", formatWait(t.wait))
 }
 
 func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
@@ -336,7 +337,7 @@ func (f *fleetRestart) run(states []hostStatus, opts runnersOptions) int {
 		if len(work) > 1 {
 			hosts = fmt.Sprintf("%d hosts", len(work))
 		}
-		if !f.ask("restart the runner units of " + hosts + " once idle? [y/N] ") {
+		if !f.ask("restart the runner units of " + hosts + " once their running jobs finish? [y/N] ") {
 			f.log("nothing restarted")
 			return 1
 		}

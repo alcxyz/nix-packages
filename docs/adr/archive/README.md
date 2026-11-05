@@ -20,3 +20,4 @@ The root `.ignore` hides this directory from `rg` and `fd`; use `rg -u` or
 | [ADR-0011 history](0011-revkit-agent-review-toolkit-history.md) | revkit, an agent review toolkit with isolated reviewers | History of [ADR-0011](../0011-revkit-agent-review-toolkit.md), text replaced 2026-10-28 |
 | [ADR-0013 history](0013-deck-page-collections-history.md) | Operator-authored page collections in Deck | History of [ADR-0013](../0013-deck-page-collections.md), text replaced 2026-10-28 |
 | [ADR-0016 history](0016-nixfleet-triage-history.md) | nixfleet triage: run records and an agent playbook for failed deploys and warnings | History of [ADR-0016](../0016-nixfleet-triage.md), text replaced 2026-10-31 |
+| [ADR-0017 history](0017-nixfleet-runner-status-and-restarts-history.md) | nixfleet runner status and restarts | History of [ADR-0017](../0017-nixfleet-runner-status-and-restarts.md), text replaced 2026-11-05 |

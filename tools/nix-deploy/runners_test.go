@@ -240,11 +240,11 @@ func TestRunnersRestart(t *testing.T) {
 	// The units a host restarts follow it, one per line.
 	unitLine := func(unit, reason string) string { return fmt.Sprintf("    %-40s %s", unit, reason) }
 	for _, want := range []string{
-		"[xyz] restart once idle, waiting up to 1h:\n" +
+		"[xyz] restart once running jobs finish, waiting up to 1h:\n" +
 			unitLine("forgejo-actions-runner.service", "started from an older definition") + "\n" +
 			unitLine("forgejo-runner-resource-policy.service", "no start record"),
 		"[node] nothing to restart",
-		"[solo] restart once idle, waiting up to 1h:\n" + unitLine("forgejo-actions-runner.service", "started from an older definition"),
+		"[solo] restart once running jobs finish, waiting up to 1h:\n" + unitLine("forgejo-actions-runner.service", "started from an older definition"),
 		"[k1] no restart unit (the host has no nixfleet-runner-status); restart its runners by hand",
 		`[spare] the host reports no usable restart unit (""); restart its runners by hand`,
 		"[mac] unreachable: ssh: unreachable",

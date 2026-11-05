@@ -157,8 +157,8 @@ type runnerStatus struct {
 	// Hold is the runner hold's state and reason (none while no reason
 	// applies); nil without a report.
 	Hold *runnerHold `json:"hold"`
-	// RestartUnit restarts the units that need it once the runners are
-	// idle, waiting up to RestartWaitSeconds.
+	// RestartUnit restarts the units that need it once their running jobs
+	// finish, waiting up to RestartWaitSeconds before it gives up.
 	RestartUnit        string `json:"restartUnit,omitempty"`
 	RestartWaitSeconds int    `json:"restartWaitSeconds,omitempty"`
 	// LastRestart is the restart unit's latest run; nil before its first.

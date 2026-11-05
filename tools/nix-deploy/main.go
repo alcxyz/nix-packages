@@ -104,7 +104,7 @@ Subcommands:
            runner units; see nixfleet status --help.
   runners  List every CI runner unit with why it does not run and whether
            it needs a restart, or (restart) restart the units a switch left
-           on an older definition once the host's runners are idle; see
+           on an older definition once their running jobs finish; see
            nixfleet runners --help.
   triage   Write context.md for a recorded deploy run, by default the newest
            that failed: its facts, failed targets, their logs and first

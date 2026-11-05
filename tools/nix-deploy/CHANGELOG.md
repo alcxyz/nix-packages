@@ -9,6 +9,12 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.29.1 (2026-11-05)
+
+- `nixfleet runners restart` and its help say that a restart happens once the
+  running jobs finish, since hosts now pause their runners instead of waiting
+  for an idle moment (ADR-0017).
+
 ## 0.29.0 (2026-11-03)
 
 - The Go node power command replaces the Bash tool (#552): the
