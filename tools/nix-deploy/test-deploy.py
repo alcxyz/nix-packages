@@ -7,6 +7,7 @@ import termios
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -706,7 +707,18 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
             assert time.monotonic() < deadline and terminal_run.poll() is None
             time.sleep(0.1)
         os.write(master, b"\x03")
-        assert terminal_run.wait(timeout=HANG_GUARD) == 130
+        # A terminal reads what it is sent. On Darwin the controller stays in
+        # exit until the test reads or closes the master, so wait() alone hangs.
+        deadline = time.monotonic() + HANG_GUARD
+        while terminal_run.poll() is None:
+            assert time.monotonic() < deadline
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    if not os.read(master, 4096):
+                        time.sleep(0.1)
+                except OSError:
+                    time.sleep(0.1)
+        assert terminal_run.returncode == 130
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         assert ["ready-interrupt-exit", 255] in calls
         assert not set(rebuilt(calls)) & {"k2", "k3", "d1", "d2"}

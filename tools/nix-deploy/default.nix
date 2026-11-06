@@ -3,6 +3,7 @@
   bash,
   buildGoModule,
   coreutils,
+  darwin,
   git,
   hostname,
   kubectl-cnpg,
@@ -28,7 +29,7 @@ in
 buildGoModule (finalAttrs: {
   pname = "nixfleet";
   # Bump with every change to the tool and record it in CHANGELOG.md.
-  version = "0.32.0";
+  version = "0.32.1";
 
   src = ./.;
 
@@ -54,7 +55,10 @@ buildGoModule (finalAttrs: {
   ++ lib.optionals stdenv.hostPlatform.isLinux [
     acl
     procps
-  ];
+  ]
+  # Controller identity reads ps. A deployed Darwin host finds its system ps on
+  # the inherited PATH, but the build PATH has no /bin.
+  ++ lib.optionals stdenv.hostPlatform.isDarwin [ darwin.ps ];
 
   # One program answers to nixfleet, deploy, k8s-node-power and runners, by
   # the name it is invoked as. The black-box contract mocks deployment commands, so it

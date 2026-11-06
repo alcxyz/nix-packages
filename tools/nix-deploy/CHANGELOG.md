@@ -9,6 +9,12 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.32.1 (2026-11-06)
+
+- The package builds on Darwin again. Its build now provides `ps` to the tests,
+  which controller identity has needed since 0.31.0, and the contract test
+  reads its terminal while the controller exits instead of hanging.
+
 ## 0.32.0 (2026-11-05)
 
 - Reboot runs record the active runner subset and controller identity on the
