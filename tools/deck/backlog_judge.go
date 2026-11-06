@@ -272,7 +272,7 @@ func (b *Backlog) judge(ctx context.Context, issue BacklogIssue, related map[str
 		// Each automatic call, a backup's included, keeps the reserve.
 		allowCall = func() bool { return b.deck.takeCallAbove(b.reserve()) }
 	}
-	out, model, err := callModel(ctx, b.deck.runModel, models, prompt, allowCall)
+	out, model, err := callModel(withModelKind(ctx, "verdict"), b.deck.runModel, models, prompt, allowCall)
 	if errors.Is(err, errBudget) {
 		return err
 	}

@@ -198,7 +198,7 @@ func TestBuildPromptMarksUntrustedData(t *testing.T) {
 
 func TestCLIArgs(t *testing.T) {
 	c := strings.Join(claudeArgs("haiku", "low"), " ")
-	for _, want := range []string{"-p --model haiku --effort low", "--safe-mode", "--restricted", "--tools  ", "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"} {
+	for _, want := range []string{"-p --model haiku --effort low", "--safe-mode", "--restricted", "--tools  ", "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands", "--output-format json"} {
 		if !strings.Contains(c, want) {
 			t.Errorf("claude args %q lack %q", c, want)
 		}
@@ -346,6 +346,100 @@ transport = "api"
 				if !strings.Contains(line, "level=INFO") || !strings.Contains(line, "skipped=") || !strings.Contains(line, "openai/codex-model") {
 					t.Errorf("standard info line lacks its skipped entries: %s", line)
 				}
+			}
+		})
+	}
+}
+
+func TestParseClaudeResult(t *testing.T) {
+	out := []byte(`{"type":"result","is_error":false,"result":"{\"a\":1}","usage":{"input_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4,"output_tokens":5}}`)
+	got, err := parseClaudeResult(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != `{"a":1}` || got.Usage != (claudeUsage{Input: 2, CacheWrite: 3, CacheRead: 4, Output: 5}) {
+		t.Errorf("got %+v", got)
+	}
+	failed, err := parseClaudeResult([]byte(`{"type":"result","is_error":true,"result":"limit","usage":{"input_tokens":7}}`))
+	if err != nil || !failed.IsError || failed.Usage.Input != 7 {
+		t.Errorf("a reported error must keep what it spent: %+v, %v", failed, err)
+	}
+	limited, err := parseClaudeResult([]byte(`{"type":"result","is_error":true,"result":"thread text","api_error_status":429}`))
+	if err != nil || !strings.Contains(limited.errorHint(), "429") || strings.Contains(limited.errorHint(), "thread text") {
+		t.Errorf("hint %q, err %v", limited.errorHint(), err)
+	}
+	if hint := (claudeResult{}).errorHint(); hint != "" {
+		t.Errorf("no status, hint %q", hint)
+	}
+	for _, out := range []string{"plain text", "null", "{}", `{"type":"system"}`} {
+		if _, err := parseClaudeResult([]byte(out)); err == nil {
+			t.Errorf("%q is not a result", out)
+		}
+	}
+}
+
+func TestRecordModelUsage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deck", "model-usage.jsonl")
+	at := time.Unix(1800000000, 500_000_000)
+	ctx := withModelKind(context.Background(), "summary")
+	for range 2 {
+		if err := recordModelUsage(path, at, modelKindOf(ctx), "haiku", claudeUsage{Input: 1, CacheWrite: 2, CacheRead: 3, Output: 4}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"at":1800000000.5,"kind":"summary","model":"haiku","input":1,"cache_write":2,"cache_read":3,"output":4}` + "\n"
+	if string(data) != want+want {
+		t.Errorf("got %s", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v", info.Mode().Perm())
+	}
+}
+
+func TestRunModelCLIFailures(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "claude")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	usage := `"usage":{"input_tokens":1,"output_tokens":2}`
+	for _, tc := range []struct {
+		name, body string
+		fails      bool
+		recorded   bool
+	}{
+		{"success", `echo '{"type":"result","result":"fine",` + usage + `}'`, false, true},
+		{"reported error", `echo '{"type":"result","is_error":true,"result":"limit",` + usage + `}'`, true, true},
+		{"failed exit with a result", `echo '{"type":"result","is_error":true,` + usage + `}'; exit 1`, true, true},
+		{"failed exit without one", `exit 1`, true, false},
+		{"no result text", `echo '{"type":"result",` + usage + `}'`, true, true},
+		{"not a result", `echo '{"type":"system"}'`, true, false},
+		{"result without usage", `echo '{"type":"result","result":"fine"}'`, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(state, "deck", "model-usage.jsonl")
+			os.Remove(path)
+			if err := os.WriteFile(script, []byte("#!/bin/sh\n"+tc.body+"\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out, err := runModelCLI(withModelKind(context.Background(), "summary"), ModelConfig{Provider: "anthropic", Model: "haiku"}, "p")
+			if (err != nil) != tc.fails {
+				t.Errorf("err %v", err)
+			}
+			if !tc.fails && string(out) != "fine" {
+				t.Errorf("out %q", out)
+			}
+			_, statErr := os.Stat(path)
+			if (statErr == nil) != tc.recorded {
+				t.Errorf("recorded: %v", statErr)
 			}
 		})
 	}

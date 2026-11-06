@@ -83,12 +83,18 @@ The call is
 ```sh
 claude -p --model M --effort E --safe-mode --restricted --tools "" \
   --strict-mcp-config --disable-slash-commands --no-session-persistence \
-  --permission-mode dontAsk --output-format text
+  --permission-mode dontAsk --output-format json
 ```
 
 in an empty directory, with only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`,
 `TMPDIR` and `LANG` from deck's environment. Every command and model call
 runs in its own process group, killed as a whole at its deadline.
+
+Since a call saves no session, deck appends what each one spent to
+`$XDG_STATE_HOME/deck/model-usage.jsonl`, one JSON line of the time, `summary`
+or `verdict`, the model and its token counts, with no prompt or answer. Only a
+call that reaches a result reports its usage, so one killed at its deadline or
+crashing partway isn't counted, and the file can undercount.
 
 ## Configuration
 

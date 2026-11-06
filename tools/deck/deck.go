@@ -1008,7 +1008,7 @@ func (d *Deck) summarizeThread(ctx context.Context, in InstanceConfig, t Invento
 		return d.recordFailure(ctx, key, t, seen, err, false)
 	}
 
-	out, model, err := callModel(ctx, d.runModel, d.models[role], prompt, d.takeCall)
+	out, model, err := callModel(withModelKind(ctx, "summary"), d.runModel, d.models[role], prompt, d.takeCall)
 	if errors.Is(err, errBudget) {
 		return err
 	}

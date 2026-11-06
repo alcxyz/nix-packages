@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -140,7 +142,7 @@ func claudeArgs(model, effort string) []string {
 		"--safe-mode", "--restricted", "--tools", "",
 		"--strict-mcp-config", "--disable-slash-commands",
 		"--no-session-persistence", "--permission-mode", "dontAsk",
-		"--output-format", "text",
+		"--output-format", "json",
 	)
 }
 
@@ -202,10 +204,128 @@ func runModelCLI(ctx context.Context, m ModelConfig, prompt string) ([]byte, err
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := runGroup(cmd); err != nil {
-		return nil, fmt.Errorf("%s: %w%s", cmd.Args[0], err, stderrHint(stderr.Bytes()))
+	runErr := runGroup(cmd)
+	// A failed call that got as far as a result spent tokens too.
+	result, parseErr := parseClaudeResult(stdout.Bytes())
+	if parseErr == nil {
+		noteModelUsage(modelKindOf(ctx), m.Model, result.Usage)
 	}
-	return stdout.Bytes(), nil
+	if runErr != nil {
+		return nil, fmt.Errorf("%s: %w%s%s", cmd.Args[0], runErr, result.errorHint(), stderrHint(stderr.Bytes()))
+	}
+	if parseErr != nil {
+		return nil, fmt.Errorf("%s: %w", cmd.Args[0], parseErr)
+	}
+	if result.IsError {
+		return nil, fmt.Errorf("%s: reported an error%s", cmd.Args[0], result.errorHint())
+	}
+	if result.Result == "" {
+		return nil, fmt.Errorf("%s: empty result", cmd.Args[0])
+	}
+	return []byte(result.Result), nil
+}
+
+// noteModelUsage records a call's spend. A failure costs the record, never the call.
+func noteModelUsage(kind, model string, usage claudeUsage) {
+	if usage == (claudeUsage{}) {
+		return
+	}
+	path, err := defaultModelUsagePath()
+	if err == nil {
+		err = recordModelUsage(path, time.Now(), kind, model, usage)
+	}
+	if err != nil {
+		slog.Warn("model usage not recorded", "err", err.Error())
+	}
+}
+
+// claudeUsage is what one call spent, as Claude Code reports it. A call keeps
+// no session, so this report is the only record of it.
+type claudeUsage struct {
+	Input      int64 `json:"input_tokens"`
+	CacheWrite int64 `json:"cache_creation_input_tokens"`
+	CacheRead  int64 `json:"cache_read_input_tokens"`
+	Output     int64 `json:"output_tokens"`
+}
+
+type claudeResult struct {
+	Type    string      `json:"type"`
+	Result  string      `json:"result"`
+	IsError bool        `json:"is_error"`
+	Usage   claudeUsage `json:"usage"`
+	// APIStatus tells a limit from an outage. The result text could too, but
+	// an error must not carry thread text, as with stderrHint.
+	APIStatus any `json:"api_error_status"`
+}
+
+func (r claudeResult) errorHint() string {
+	if r.APIStatus == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (API status %v)", r.APIStatus)
+}
+
+func parseClaudeResult(out []byte) (claudeResult, error) {
+	var result claudeResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		return claudeResult{}, fmt.Errorf("parse result: %w", err)
+	}
+	if result.Type != "result" {
+		return claudeResult{}, errors.New("output is not a result")
+	}
+	return result, nil
+}
+
+type modelKindKey struct{}
+
+// withModelKind names what a call is for, in its usage record.
+func withModelKind(ctx context.Context, kind string) context.Context {
+	return context.WithValue(ctx, modelKindKey{}, kind)
+}
+
+func modelKindOf(ctx context.Context) string {
+	kind, _ := ctx.Value(modelKindKey{}).(string)
+	return kind
+}
+
+func defaultModelUsagePath() (string, error) {
+	dir := os.Getenv("XDG_STATE_HOME")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(dir, "deck", "model-usage.jsonl"), nil
+}
+
+// recordModelUsage appends one line of numbers: no prompt and no answer.
+func recordModelUsage(path string, at time.Time, kind, model string, usage claudeUsage) error {
+	line, err := json.Marshal(struct {
+		At         float64 `json:"at"`
+		Kind       string  `json:"kind"`
+		Model      string  `json:"model"`
+		Input      int64   `json:"input"`
+		CacheWrite int64   `json:"cache_write"`
+		CacheRead  int64   `json:"cache_read"`
+		Output     int64   `json:"output"`
+	}{float64(at.UnixMilli()) / 1000, kind, model, usage.Input, usage.CacheWrite, usage.CacheRead, usage.Output})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(append(line, '\n')); err != nil {
+		file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 // callModel runs the first model and, while one fails, the next. Each entry
