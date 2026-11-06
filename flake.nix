@@ -127,6 +127,7 @@
           forgejo-runner-cancellation = unstablePkgs.callPackage ./pkgs/forgejo-runner-cancellation { };
           forgejo-runner-orphan-check = pkgs.callPackage ./tools/forgejo-runner-orphan-check { };
           ndrop = pkgs.callPackage ./pkgs/ndrop { };
+          hyprscratch = pkgs.callPackage ./pkgs/hyprscratch { };
           inherit (pkgs) openzfs_7_1;
           stash = pkgs.callPackage ./pkgs/stash {
             # The updater validates both consumer fetcher formats even when

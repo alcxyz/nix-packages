@@ -1,0 +1,117 @@
+--- a/src/scratchpad.rs
++++ b/src/scratchpad.rs
+@@ -19,8 +19,8 @@
+     fn new(title: &str, name: &str) -> Result<HyprlandState> {
+         let mut monitors = HashMap::new();
+         Monitors::get()?.into_iter().for_each(|x| {
+-            monitors.insert(x.name.clone(), x.active_workspace.name.clone());
+-            monitors.insert(x.id.to_string(), x.active_workspace.name.clone());
++            monitors.insert(x.name.clone(), x.active_workspace.address.clone());
++            monitors.insert(x.id.to_string(), x.active_workspace.address.clone());
+         });
+
+         let active_workspace = Workspace::get_active()?;
+@@ -166,7 +166,7 @@
+         let first_title = &state.clients_with_title[0];
+         move_to_special(first_title, &state.special_workspace);
+
+-        if !self.options.hide && first_title.workspace.id == state.active_workspace.id {
++        if !self.options.hide && first_title.workspace.address == state.active_workspace.address {
+             state.toggle_special()?;
+         }
+         Ok(())
+@@ -209,15 +209,15 @@
+         Ok(())
+     }
+
+-    fn get_workspace_name(&self, state: &HyprlandState) -> String {
++    fn get_workspace_address(&self, state: &HyprlandState) -> String {
+         let monitor = match &self.options.monitor {
+             Some(m) => m,
+-            None => return state.active_workspace.name.clone(),
++            None => return state.active_workspace.address.clone(),
+         };
+
+         state.monitors.get(monitor).cloned().unwrap_or_else(|| {
+             let _ = log(format!("Monitor {monitor} not found"), Warn);
+-            state.active_workspace.name.clone()
++            state.active_workspace.address.clone()
+         })
+     }
+
+@@ -238,7 +238,7 @@
+             .filter(|cl| !self.is_on_workspace(cl, state))
+         {
+             dispatchers().move_to_workspace_silent(
+-                WorkspaceIdentifierWithSpecial::Name(&self.get_workspace_name(state)),
++                WorkspaceIdentifierWithSpecial::Name(&self.get_workspace_address(state)),
+                 Some(WindowIdentifier::Address(client.address.clone())),
+             )?;
+
+@@ -282,7 +282,7 @@
+
+         if let Some(ac) = &state.active_client {
+             if !self.matches_client(ac)
+-                && ac.workspace.id == state.active_workspace.id
++                && ac.workspace.address == state.active_workspace.address
+                 && ac.floating
+             {
+                 auto_hide(ac, titles);
+@@ -295,9 +295,9 @@
+             state
+                 .monitors
+                 .values()
+-                .any(|name| *name == client.workspace.name)
++                .any(|address| *address == client.workspace.address)
+         } else {
+-            state.active_workspace.id == client.workspace.id
++            state.active_workspace.address == client.workspace.address
+         }
+     }
+
+--- a/src/event.rs
++++ b/src/event.rs
+@@ -29,7 +29,7 @@
+         if let (Ok(clients), Ok(active)) = (Clients::get(), Workspace::get_active()) {
+             clients
+                 .iter()
+-                .filter(|cl| cl.address == data.window_address && active.id != data.workspace_id)
++                .filter(|cl| cl.address == data.window_address && cl.workspace.address != active.address)
+                 .filter(|cl| is_known(ephemeral_titles, cl))
+                 .for_each(|cl| {
+                     dispatchers()
+--- a/src/dispatchers.rs
++++ b/src/dispatchers.rs
+@@ -77,7 +77,11 @@
+                 call("movetoworkspacesilent", &args)
+             }
+             ConfigLanguage::Lua => {
+-                let ws_arg = lua_str(&ws.to_string());
++                let ws_arg = match &ws {
++                    // Lua selectors use raw workspace addresses in Hyprland 0.57.
++                    WorkspaceIdentifierWithSpecial::Name(address) => lua_str(address),
++                    _ => lua_str(&ws.to_string()),
++                };
+                 let win_field = match &win {
+                     Some(w) => format!(", window={}", lua_str(&w.to_string())),
+                     None => String::new(),
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -138,7 +138,7 @@
+ }
+
+ pub fn hide_special(cl: &Client) {
+-    if let Some(("special", workspace)) = cl.workspace.name.split_once(":") {
++    if let Some(("special", workspace)) = cl.workspace.address.split_once(":") {
+         dispatchers()
+             .toggle_special_workspace(Some(workspace.into()))
+             .log_err(file!(), line!());
+@@ -146,7 +146,7 @@
+ }
+
+ pub fn is_on_special(cl: &Client) -> bool {
+-    cl.workspace.name.contains("special")
++    cl.workspace.address.contains("special")
+ }
+
+ pub fn move_floating(titles: &HashMap<String, String>) -> Result<()> {
