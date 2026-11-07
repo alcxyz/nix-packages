@@ -9,23 +9,28 @@
 <link rel="stylesheet" href="/static/base.css">
 <link rel="stylesheet" href="/static/library.css">
 <script src="/static/theme.js"></script>
+{{if .Tiles}}<script src="/static/tiles.js" defer></script>{{end}}
 </head>
 <body class="lib" data-deck="index">
-<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a><span data-deck-theme></span></nav></header>
+{{template "shell" (nav .URL)}}
 <main class="lib-main">
 <header class="lib-head">
-  <nav class="lib-crumbs" aria-label="Breadcrumb"><a href="/">Deck</a><span aria-current="page">{{.Title}}</span></nav>
   <h1>{{.Title}}</h1>
-  <p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}, {{if .HasPinned}}pinned first, then {{end}}newest first.</p>
+  <p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}{{if .Tiles}}, live ones first{{else if .HasPinned}}, pinned first, then newest first{{else}}, newest first{{end}}.</p>
 </header>
-{{range .Months}}
+{{with .Tiles}}
+<ul class="deck-tiles">{{range .}}
+  {{template "tile" .}}{{end}}
+</ul>
+{{end}}
+{{range .Others}}
 <section class="lib-month">
   <h2>{{.Label}}</h2>
   <ul class="lib-list">{{range .Pages}}
     <li><a class="lib-entry" href="{{.URL}}"><time datetime="{{.Date}}"><b>{{.Day}}</b>{{.Month}}</time><span class="lib-entry-text"><span class="lib-entry-title">{{.Title}}</span>{{if .Summary}}<span class="lib-entry-summary">{{.Summary}}</span>{{end}}</span></a></li>{{end}}
   </ul>
 </section>
-{{else}}<p class="lib-empty">No pages yet.</p>
+{{else}}{{if not .Tiles}}<p class="lib-empty">No pages yet.</p>{{end}}
 {{end}}
 </main>
 </body>

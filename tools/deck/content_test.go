@@ -63,7 +63,7 @@ func TestContentIndexes(t *testing.T) {
 		t.Fatalf("library: %d %s", library.Code, library.Body.String())
 	}
 	body := library.Body.String()
-	for _, want := range []string{`href="/threads/"`, `href="/examples/"`, `href="/notes/"`, `href="/static/base.css"`, `data-deck="index"`} {
+	for _, want := range []string{`href="/threads/"`, `href="/examples/"`, `href="/notes/"`, `href="/static/base.css"`, `data-deck="live"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("library missing %s: %s", want, body)
 		}

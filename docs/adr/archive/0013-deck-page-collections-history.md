@@ -1,4 +1,4 @@
-**History of** [ADR-0013](../0013-deck-page-collections.md): text replaced on 2026-10-28.
+**History of** [ADR-0013](../0013-deck-page-collections.md): text replaced on 2026-10-28 and 2026-11-07.
 
 # ADR-0013: Operator-authored page collections in Deck
 
@@ -251,3 +251,14 @@ data file returned 404 and the page could not load it.
   amendment) does not support writer-refreshed files yet: each sync swaps in a
   fresh revision without them. Such a setup needs its own decision, for
   example a data directory outside the checkout.
+
+## Text replaced on 2026-11-07
+
+The shared assets bullet, before `shell.js` joined the shared assets
+([#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)):
+
+- **Bundles may reference `theme.css`, `theme.js` and `base.css` at
+  `/static/`** besides their own local files. These three files are the only
+  assets a bundle takes from outside its own directory; everything else stays
+  local. The content security policy is unchanged, since the assets come from
+  the same origin and contain no inline code.

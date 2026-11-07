@@ -17,6 +17,13 @@ import (
 var webFS embed.FS
 
 var templateFuncs = template.FuncMap{
+	// nav gives the shell's links with the page at the given path marked;
+	// newHandler binds it to the server, so a template parsed alone renders
+	// the shell without links.
+	"nav":   func(current string) NavView { return NavView{} },
+	"lower": strings.ToLower,
+	// today dates the overview, for example Saturday 7 November.
+	"today": func() string { return time.Now().Format("Monday 2 January") },
 	"iso": func(t time.Time) string {
 		if t.IsZero() {
 			return ""
@@ -63,6 +70,7 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 		return nil, err
 	}
 	s := &Server{deck: d, tmpl: tmpl, log: log}
+	tmpl.Funcs(template.FuncMap{"nav": s.nav})
 	static, err := fs.Sub(webFS, "web/static")
 	if err != nil {
 		return nil, err
@@ -95,6 +103,8 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	if d.cfg.Consent != nil {
 		s.consentRoutes(app)
 	}
+	// The shell's links for bundles (shell.js), in both modes.
+	app.HandleFunc("GET "+navPath, s.navJSON)
 	collections := *d.cfg.Collections
 
 	// Reserve the dashboard namespace, including its method errors. Content

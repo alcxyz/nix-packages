@@ -8,14 +8,12 @@ header.top {
   z-index: 1;
   background: var(--deck-bg);
   border-bottom: 1px solid var(--deck-line);
-  padding: 0.55rem 1rem;
+  padding: 0.55rem var(--deck-space-5);
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 0.9rem;
   align-items: center;
 }
-header.top > a { font-size: var(--deck-text-sm); color: var(--deck-muted); text-decoration: none; }
-header.top > a:hover { color: var(--deck-text); }
 header.top h1 { font-size: var(--deck-text-lg); margin: 0; }
 
 .filters { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; flex: 1; }

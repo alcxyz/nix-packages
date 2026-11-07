@@ -1,9 +1,10 @@
 # deck
 
 Deck also serves operator-authored interactive briefings in read-only page
-collections, and optionally a live backlog view (below). The root index links
-to the thread dashboard, the backlog view when configured, and each
-collection. A second deck process without thread instances can serve the
+collections, and optionally a live backlog view (below). The root index is
+an overview: what waits on you in the threads, approvals and backlog, a live
+tile for each page that ships one, and the other collections. Every page
+shares one top bar linking the overview, the views and each collection. A second deck process without thread instances can serve the
 collections alone, from a Git checkout, on a host that stays up (see
 [Dashboard and pages-only modes](#dashboard-and-pages-only-modes)).
 See [ADR-0013](../../docs/adr/0013-deck-page-collections.md) for content ownership.
@@ -280,10 +281,10 @@ HTML uses local stylesheet and script files, for example
 `<link rel="stylesheet" href="style.css">` and
 `<script src="app.js" defer></script>`. The existing content security policy
 does not permit inline script, inline style attributes or external assets.
-Bundles may also use Deck's shared colour scheme toggle and design
-stylesheet, the only assets a bundle takes from outside its own directory.
+Bundles may also use Deck's shared colour scheme toggle, design stylesheet
+and shell, the only assets a bundle takes from outside its own directory.
 Load them in `<head>`: the stylesheets in this order before the bundle's own,
-and the script without `defer`, so the choice applies before the first paint.
+and `theme.js` without `defer`, so the choice applies before the first paint.
 Name the page's purpose on `<body>`:
 
 ```html
@@ -295,6 +296,43 @@ Name the page's purpose on `<body>`:
 <body data-deck="sheet">
 ```
 
+To share Deck's top bar, mark the bundle's own bar with `data-deck-shell` and
+load `<script src="/static/shell.js" defer></script>` after `theme.js`; it
+needs `defer`, since it looks for the bar once, when it runs. The
+script replaces the marked bar with Deck's shell, built from `/nav.json`, and
+keeps the bar's `data-deck-theme` toggle; without it, or on an older Deck,
+the bundle's own bar stays.
+
+A page that answers a question at a glance, such as a live report, can ship a
+`tile.js`: an ES module whose default export takes a context and returns its
+tile. Deck then shows the tile on the overview and on the collection index,
+and refreshes it every five minutes:
+
+```js
+// ctx.json(name) fetches a file in this bundle; a missing file rejects with
+// err.status === 404. ctx.url(name) resolves a path against the bundle.
+export default async function tile(ctx) {
+  const data = await ctx.json("data.json");
+  return {
+    status: "ok",              // or "watch" (worth a look) or "act" (needs action)
+    headline: "No queue: jobs waited 2 s at p90 in 24 h.",
+    metrics: [{ label: "Wait p90 (24h)", value: "2 s" }],  // up to 3, values of 7 characters or fewer
+    series: { label: "Queue wait p90 per day", values: [10, 14, 1] },  // optional, oldest first
+    updated: data.generated_at, // when the data was made, ISO 8601, or null
+    staleAfter: 15,             // minutes; older data shows as stale and at least "watch"
+  };
+}
+```
+
+Without script, or before the module answers, the tile shows the page's
+title and summary. A tile that does not answer in 30 seconds shows as
+unavailable. Deck imports each `tile.js` once per page load and calls it on
+every refresh (a module that failed to load is imported again under a new
+URL), so a changed module shows after a reload. Keep `tile.js` in one file:
+the browser caches a module it imports under that module's own address, so
+one that failed to load stays failed until a reload; a `null` in `values`
+is a missing point and stays out of the line. Keep the status in line with what the page itself flags.
+
 The script draws a light, dark and system toggle in the bottom right corner,
 or inside an element marked `data-deck-theme` if the page has one; give it a
 slot where it does not cover content. It keeps the choice per browser, shared
@@ -305,8 +343,8 @@ the system. It sets `data-theme="light"` or `"dark"` on `<html>`.
 
 - **Purpose.** `data-deck` is one of the following. It sets the page's text
   size, line height and width (`--deck-size`, `--deck-width`):
-  - `live`: a dense overview;
-  - `index`: a list to find and open;
+  - `live`: a dense overview, on the grey canvas on screen;
+  - `index`: a list to find and open, on the canvas too;
   - `sheet`: a worksheet to read and decide;
   - `slides`: presentation frames;
   - `tool`: an interactive page.
@@ -335,6 +373,12 @@ the system. It sets `data-theme="light"` or `"dark"` on `<html>`.
   - `deck-kpi` with `deck-kpi-value`;
   - `deck-table` (`num` cells);
   - `deck-kicker`, `deck-muted`, `deck-num` and `deck-wrap`;
+  - `deck-shell` (from `shell.js`), `deck-tiles` with `deck-tile` (from
+    `tiles.js`), `deck-dot` and `deck-spark`, coloured by a `data-status`
+    of `ok`, `watch` or `act` on an ancestor;
+  - `deck-seg`, a segmented control such as a time window, with
+    `aria-pressed` on the chosen button;
+  - `deck-sr` hides text visually but keeps it for screen readers;
   - `deck-noprint` hides an element on paper.
 
 Use the tokens rather than fixed colours, and colour only what carries
@@ -356,7 +400,8 @@ their frame size, tools as a list without controls.
 `/static/` exists only on Deck. A standalone export or PDF build of a bundle
 ships its own copy of `base.css`. A bundle that uses `base.css` needs a Deck
 release that serves it, so publish it after that release is deployed.
-`/static/` is reserved: no collection can use that name.
+`/static/` is reserved: no collection can use that name, and `/nav.json` is
+no collection slug.
 
 Bundles are trusted application content; Deck supplies authentication, not an
 untrusted-content execution sandbox. All pages and assets require the same
@@ -392,6 +437,11 @@ and groups, with the same content security policy. One authenticating proxy
 in front of both, on one origin, routes the dashboard views' paths (such as
 `/threads/` and `/backlog/`) to the dashboard process and every other path to
 the pages process; the dashboard process can then set `collections = false`.
+Each process's top bar lists only what that process knows: in this split the
+dashboard's bar lacks the collections, and the pages process's bar, its
+overview and `/nav.json` have no Approvals link and no counts, since the
+pages-only mode relays no approvals. One process serving both shows the full
+bar.
 
 A pages-only configuration:
 

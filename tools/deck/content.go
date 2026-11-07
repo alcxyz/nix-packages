@@ -27,8 +27,11 @@ type ContentPage struct {
 	Summary string `json:"summary"`
 	// Pinned keeps a page that stays current, such as a live report, ahead of
 	// the dated ones in its collection.
-	Pinned bool   `json:"pinned"`
-	URL    string `json:"-"`
+	Pinned bool `json:"pinned"`
+	// Tile is set when the bundle ships tile.js, the module the overview and
+	// the collection index call for its live tile (ADR-0013).
+	Tile bool   `json:"-"`
+	URL  string `json:"-"`
 }
 
 type CollectionView struct {
@@ -44,6 +47,28 @@ type LibraryView struct {
 	// ConsentPath is the approvals page's path, empty when it is off.
 	ConsentPath string
 	Collections []CollectionView
+	// Needs counts what waits on the owner in the in-process views; empty
+	// in the pages-only mode.
+	Needs []NeedView
+	// Tiles are the pages that ship tile.js, across collections, and
+	// TileCollections the collections that hold them, which the overview
+	// links beside the tiles rather than listing in the library.
+	Tiles           []ContentPage
+	TileCollections []CollectionView
+	// Library is the collections without tiles, for the overview's library.
+	Library []CollectionView
+}
+
+// NeedView is one count in the overview's "Needs you" row, linking to the
+// view filtered to it.
+type NeedView struct {
+	Count int
+	Label string
+	URL   string
+	// Tone colours a count above zero: attn, danger, ok or "" for neutral.
+	Tone string
+	// Known is false while the view has not read its facts yet.
+	Known bool
 }
 
 // MonthGroup is a calendar month of a collection's pages, for its index.
@@ -85,6 +110,41 @@ func (c CollectionView) Recent() []ContentPage {
 		return c.Pages[:recentPages]
 	}
 	return c.Pages
+}
+
+// Tiles returns the pages that ship tile.js, in index order.
+func (c CollectionView) Tiles() []ContentPage {
+	var tiles []ContentPage
+	for _, page := range c.Pages {
+		if page.Tile {
+			tiles = append(tiles, page)
+		}
+	}
+	return tiles
+}
+
+// Others returns the pages without a tile, for the dated list below the
+// tiles, grouped like Months.
+func (c CollectionView) Others() []MonthGroup {
+	var rest CollectionView
+	for _, page := range c.Pages {
+		if !page.Tile {
+			rest.Pages = append(rest.Pages, page)
+		}
+	}
+	return rest.Months()
+}
+
+// HasTiles reports whether any page in the collection has a tile; the
+// overview links such a collection beside its tiles instead of in the
+// library.
+func (c CollectionView) HasTiles() bool {
+	for _, page := range c.Pages {
+		if page.Tile {
+			return true
+		}
+	}
+	return false
 }
 
 // HasPinned reports whether the collection pins any page; they sort first.
@@ -182,6 +242,9 @@ func readContentPage(dir *os.Root) (ContentPage, error) {
 		return ContentPage{}, fmt.Errorf("page index: %w", err)
 	}
 	index.Close()
+	if info, err := dir.Lstat("tile.js"); err == nil && info.Mode().IsRegular() {
+		page.Tile = true
+	}
 	return page, nil
 }
 
@@ -318,7 +381,16 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 				view.Collections = append(view.Collections, collection)
 			}
 			sort.Slice(view.Collections, func(i, j int) bool { return view.Collections[i].Name < view.Collections[j].Name })
+			for _, collection := range view.Collections {
+				if tiles := collection.Tiles(); len(tiles) > 0 {
+					view.Tiles = append(view.Tiles, tiles...)
+					view.TileCollections = append(view.TileCollections, collection)
+				} else {
+					view.Library = append(view.Library, collection)
+				}
+			}
 		}
+		view.Needs = s.needs()
 		s.renderLibrary(w, "library.html", view)
 		return
 	}

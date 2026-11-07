@@ -12,10 +12,9 @@
 <script src="{{.BasePath}}static/consent.js" defer></script>
 </head>
 <body data-deck="tool">
+{{template "shell" (nav "/consent/")}}
 <header class="top">
-  <a href="/consent/">Approvals</a>
   <h1 id="consent-title">Approve a request</h1>
-  <span data-deck-theme></span>
 </header>
 <main id="consent" data-consent-id="{{.ID}}">
   <noscript><p class="notice">Approving needs JavaScript, to sign the request with your passkey.</p></noscript>

@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -104,22 +102,7 @@ type consentListView struct {
 }
 
 func (s *Server) consentList(w http.ResponseWriter, r *http.Request) {
-	view := consentListView{BasePath: s.deck.cfg.BasePath}
-	entries, err := os.ReadDir(s.deck.cfg.Consent.SpoolDir)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		s.log.Error("consent: cannot read the spool", "err", err.Error())
-	}
-	for _, entry := range entries {
-		id, ok := strings.CutSuffix(entry.Name(), ".request.json")
-		if !ok {
-			continue
-		}
-		if _, request, ok := s.openConsentRequest(id); ok {
-			view.Requests = append(view.Requests, *request)
-		}
-	}
-	sort.Slice(view.Requests, func(i, j int) bool { return view.Requests[i].CreatedAt > view.Requests[j].CreatedAt })
-	s.render(w, "consent-list.html", view)
+	s.render(w, "consent-list.html", consentListView{BasePath: s.deck.cfg.BasePath, Requests: s.pendingConsent()})
 }
 
 func (s *Server) consentEnroll(w http.ResponseWriter, r *http.Request) {

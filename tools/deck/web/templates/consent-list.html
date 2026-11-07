@@ -11,10 +11,9 @@
 <script src="{{.BasePath}}static/theme.js"></script>
 </head>
 <body data-deck="tool">
+{{template "shell" (nav "/consent/")}}
 <header class="top">
-  <a href="/">Deck</a>
   <h1>Approvals</h1>
-  <span data-deck-theme></span>
 </header>
 <main>
 {{if .Requests}}

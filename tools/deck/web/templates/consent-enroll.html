@@ -12,10 +12,9 @@
 <script src="{{.BasePath}}static/consent.js" defer></script>
 </head>
 <body data-deck="tool">
+{{template "shell" (nav "/consent/")}}
 <header class="top">
-  <a href="/consent/">Approvals</a>
   <h1>Create the approval passkey</h1>
-  <span data-deck-theme></span>
 </header>
 <main id="consent-enroll">
   <p>This creates a passkey for this site on the device or password manager you pick. deck keeps nothing. An approval counts only once its public key below is pinned in the host's configuration.</p>

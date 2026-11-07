@@ -12,8 +12,8 @@
 <script src="{{.BasePath}}static/deck.js" defer></script>
 </head>
 <body data-deck="live" data-base="{{.BasePath}}">
+{{template "shell" (nav .BasePath)}}
 <header class="top">
-  {{if ne .BasePath "/"}}<a href="/">Deck</a>{{end}}
   <h1>Threads</h1>
   <form class="filters" role="search" id="filters">
     <input type="search" id="f-text" placeholder="Search title, project, next action" aria-label="Search">
@@ -26,7 +26,6 @@
     </select>
     <label class="check"><input type="checkbox" id="f-new"> New only</label>
   </form>
-  <span data-deck-theme></span>
   <p class="notice" id="notice" hidden></p>
 </header>
 <main id="content">

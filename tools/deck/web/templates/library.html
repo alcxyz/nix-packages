@@ -9,37 +9,44 @@
 <link rel="stylesheet" href="/static/base.css">
 <link rel="stylesheet" href="/static/library.css">
 <script src="/static/theme.js"></script>
+<script src="/static/tiles.js" defer></script>
 </head>
-<body class="lib" data-deck="index">
-<header class="lib-bar"><a class="lib-brand" href="/">Deck</a><nav aria-label="Deck"><a href="{{.BasePath}}">Threads</a>{{if .BacklogPath}} <a href="{{.BacklogPath}}">Backlog</a>{{end}}{{if .ConsentPath}} <a href="{{.ConsentPath}}">Approvals</a>{{end}}<span data-deck-theme></span></nav></header>
+<body class="lib" data-deck="live">
+{{template "shell" (nav "/")}}
 <main class="lib-main">
-<header class="lib-head">
-  <h1>Deck</h1>
-  <p>Briefings, offers and worksheets, beside the live thread dashboard.</p>
+<header class="ov-head">
+  <h1>Overview</h1>
+  <p>{{today}}</p>
 </header>
-<ul class="lib-grid">
-  <li class="lib-card lib-dashboard">
-    <a class="lib-cover" href="{{.BasePath}}"><span class="lib-kicker">Dashboard</span><h2>Threads</h2><p>Which threads wait on you, have stalled or are ready to settle.</p></a>
-  </li>
-{{if .BacklogPath}}
-  <li class="lib-card lib-dashboard">
-    <a class="lib-cover" href="{{.BacklogPath}}"><span class="lib-kicker">Dashboard</span><h2>Backlog</h2><p>Which issues may be done or have gone stale, and which pull requests are ready.</p></a>
-  </li>
+{{with .Needs}}
+<section class="ov-section" aria-labelledby="ov-needs">
+  <h2 class="ov-label" id="ov-needs">Needs you</h2>
+  <ul class="ov-needs">{{range .}}
+    <li><a class="ov-need{{if and .Known .Count}} {{.Tone}}{{else}} quiet{{end}}" href="{{.URL}}"><b>{{if .Known}}{{.Count}}{{else}}…{{end}}</b><span>{{.Label}}</span></a></li>{{end}}
+  </ul>
+</section>
 {{end}}
-{{if .ConsentPath}}
-  <li class="lib-card lib-dashboard">
-    <a class="lib-cover" href="{{.ConsentPath}}"><span class="lib-kicker">Dashboard</span><h2>Approvals</h2><p>Credential requests waiting for your passkey.</p></a>
-  </li>
+{{with .Tiles}}
+<section class="ov-section" aria-labelledby="ov-live">
+  <div class="ov-section-head"><h2 class="ov-label" id="ov-live">Live</h2>{{range $.TileCollections}}<a href="{{.URL}}">All {{len .Pages}} {{.Title | lower}} pages</a>{{end}}</div>
+  <ul class="deck-tiles">{{range .}}
+    {{template "tile" .}}{{end}}
+  </ul>
+</section>
 {{end}}
-{{range .Collections}}
-  <li class="lib-card">
-    <a class="lib-cover" href="{{.URL}}"><span class="lib-kicker">Collection</span><h2>{{.Title}}</h2><p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}</p></a>
-    {{with .Recent}}<ul class="lib-recent">{{range .}}
-      <li><a href="{{.URL}}">{{.Title}}</a><time datetime="{{.Date}}">{{.DisplayDate}}</time></li>{{end}}
-    </ul>{{end}}
-  </li>
+{{with .Library}}
+<section class="ov-section" aria-labelledby="ov-library">
+  <h2 class="ov-label" id="ov-library">Library</h2>
+  <ul class="lib-grid">{{range .}}
+    <li class="lib-card">
+      <a class="lib-cover" href="{{.URL}}"><h3>{{.Title}}</h3><span>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}</span></a>
+      {{with .Recent}}<ul class="lib-recent">{{range .}}
+        <li><a href="{{.URL}}">{{.Title}}</a><time datetime="{{.Date}}">{{.DisplayDate}}</time></li>{{end}}
+      </ul>{{end}}
+    </li>{{end}}
+  </ul>
+</section>
 {{end}}
-</ul>
 {{if not .Collections}}<p class="lib-empty">No collections yet.</p>{{end}}
 </main>
 </body>

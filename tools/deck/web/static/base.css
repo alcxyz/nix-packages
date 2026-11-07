@@ -30,6 +30,10 @@
   --deck-danger: #b91c1c;
   --deck-danger-soft: #fdecec;
 
+  /* The quiet canvas behind index and live pages, so their cards stand out
+     without shadows; documents stay on --deck-bg. */
+  --deck-canvas: #f4f4f6;
+
   /* Dark panels that stay dark in both schemes: dashboard cards, covers */
   --deck-hero: #18181b;
   --deck-hero-text: #ffffff;
@@ -90,6 +94,7 @@
     --deck-ok-soft: #0f2d29;
     --deck-danger: #fca5a5;
     --deck-danger-soft: #361717;
+    --deck-canvas: #0e0e10;
     --deck-hero: #1f1f23;
     --deck-hero-text: #ffffff;
     --deck-hero-muted: #b4b4bc;
@@ -106,6 +111,11 @@ body[data-deck="index"] { --deck-width: 64rem; }
 body[data-deck="sheet"] { --deck-width: 78rem; }
 body[data-deck="slides"] { --deck-size: 16px; --deck-leading: 1.45; --deck-width: none; }
 body[data-deck="tool"] { --deck-width: 54rem; }
+
+/* Index and live pages sit on the canvas on screen; print stays white. */
+@media screen {
+  body[data-deck="index"], body[data-deck="live"] { --deck-bg: var(--deck-canvas); }
+}
 
 /* Base elements */
 :where(body[data-deck]) {
@@ -225,6 +235,195 @@ body[data-deck="tool"] { --deck-width: 54rem; }
 .deck-table td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--deck-line); vertical-align: top; }
 .deck-table .num { text-align: right; font-family: var(--deck-mono); font-variant-numeric: tabular-nums; }
 
+.deck-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* The shell: one top bar on every deck page and on bundles that load
+   shell.js. It runs the full width with a fixed inset, so it stays put
+   between pages of different widths. */
+.deck-shell {
+  display: flex;
+  align-items: center;
+  gap: var(--deck-space-2) var(--deck-space-5);
+  min-height: 52px;
+  padding: 0 var(--deck-space-5);
+  background: var(--deck-surface);
+  border-bottom: 1px solid var(--deck-line);
+  font: 14px/1.2 var(--deck-sans);
+  color: var(--deck-text);
+}
+.deck-shell-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--deck-text);
+  text-decoration: none;
+}
+.deck-shell-brand::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--deck-accent);
+  box-shadow: inset -5px -5px 0 var(--deck-accent-text);
+}
+.deck-shell-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.deck-shell-nav::-webkit-scrollbar { display: none; }
+.deck-shell-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+  padding: 0.4rem 0.65rem;
+  border-radius: var(--deck-radius);
+  color: var(--deck-text-2);
+  font-weight: 550;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.deck-shell-nav a:hover { background: var(--deck-surface-2); color: var(--deck-text); }
+.deck-shell-nav a[aria-current="page"] { background: var(--deck-accent-soft); color: var(--deck-accent-text); }
+/* The collections follow the views after a rule. */
+.deck-shell-nav a:not(.collection) + a.collection { margin-left: calc(var(--deck-space-3) + 1px); position: relative; }
+.deck-shell-nav a:not(.collection) + a.collection::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--deck-space-2) - 1px);
+  top: 25%;
+  height: 50%;
+  border-left: 1px solid var(--deck-line-strong);
+}
+.deck-shell-count {
+  min-width: 1.4em;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--deck-surface-2);
+  color: var(--deck-text-2);
+  font: 600 var(--deck-text-xs)/1.5 var(--deck-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.deck-shell-count.attn { background: var(--deck-attn-soft); color: var(--deck-attn); }
+.deck-shell-theme { flex: none; margin-left: auto; }
+@media (max-width: 720px) {
+  .deck-shell { flex-wrap: wrap; padding: var(--deck-space-2) var(--deck-space-4) 0; }
+  /* The links scroll sideways; the fade says there are more. */
+  .deck-shell-nav { order: 3; flex-basis: 100%; margin: 0 calc(-1 * var(--deck-space-2)); padding-bottom: var(--deck-space-1); -webkit-mask-image: linear-gradient(to right, #000 85%, transparent); mask-image: linear-gradient(to right, #000 85%, transparent); }
+}
+
+/* Status dot: ok, watch (attention) or act (danger); grey while unknown. */
+.deck-dot {
+  display: inline-block;
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--deck-line-strong);
+}
+[data-status="ok"] .deck-dot { background: var(--deck-ok); }
+[data-status="watch"] .deck-dot { background: var(--deck-attn); }
+[data-status="act"] .deck-dot { background: var(--deck-danger); }
+
+/* Live tiles (ADR-0013): tiles.js fills them from each page's tile.js. A
+   tile that needs a look carries a status bar along its top edge. */
+.deck-tiles {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+  gap: var(--deck-space-3);
+}
+.deck-tiles > li { display: flex; min-width: 0; }
+.deck-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--deck-space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--deck-space-4);
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  color: var(--deck-text);
+  text-decoration: none;
+}
+.deck-tile:hover { border-color: var(--deck-line-strong); }
+.deck-tile:hover .deck-tile-title { color: var(--deck-accent-text); }
+.deck-tile[data-status="watch"] { box-shadow: inset 0 3px 0 var(--deck-attn); }
+.deck-tile[data-status="act"] { box-shadow: inset 0 3px 0 var(--deck-danger); }
+.deck-tile-head { display: flex; align-items: center; gap: var(--deck-space-2); min-width: 0; }
+.deck-tile-title { font-weight: 650; font-size: var(--deck-text-base); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-tile-fresh { margin-left: auto; flex: none; font: var(--deck-text-xs) var(--deck-mono); color: var(--deck-muted); font-variant-numeric: tabular-nums; }
+.deck-tile-fresh.stale { color: var(--deck-attn); font-weight: 600; }
+.deck-tile-headline {
+  color: var(--deck-text-2);
+  font-size: var(--deck-text-md);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+[data-status="pending"] .deck-tile-headline { color: var(--deck-muted); }
+.deck-tile-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--deck-space-3); }
+.deck-tile-metrics:empty, .deck-tile-spark:empty { display: none; }
+.deck-metric { display: flex; flex-direction: column; min-width: 0; }
+.deck-metric b {
+  font: 700 var(--deck-text-lg)/1.2 var(--deck-mono);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deck-metric span { font-size: var(--deck-text-xs); color: var(--deck-muted); line-height: 1.3; }
+.deck-metric.watch b { color: var(--deck-attn); }
+.deck-metric.act b { color: var(--deck-danger); }
+.deck-metric.ok b { color: var(--deck-ok); }
+.deck-tile-spark { display: flex; flex-direction: column; gap: 2px; margin-top: auto; }
+.deck-tile-spark small { font-size: 11px; color: var(--deck-muted); }
+
+/* Sparkline: a series as a line over a soft area, no axes. */
+.deck-spark { display: block; width: 100%; height: 36px; overflow: visible; }
+.deck-spark-line { fill: none; stroke: var(--deck-c1); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.deck-spark-area { fill: var(--deck-accent-soft); stroke: none; }
+.deck-spark-end { fill: var(--deck-c1); }
+[data-status="watch"] .deck-spark-line { stroke: var(--deck-attn); }
+[data-status="watch"] .deck-spark-end { fill: var(--deck-attn); }
+[data-status="watch"] .deck-spark-area { fill: var(--deck-attn-soft); }
+[data-status="act"] .deck-spark-line { stroke: var(--deck-danger); }
+[data-status="act"] .deck-spark-end { fill: var(--deck-danger); }
+[data-status="act"] .deck-spark-area { fill: var(--deck-danger-soft); }
+
+/* Segmented control: one choice of a few, such as a time window. */
+.deck-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius);
+  background: var(--deck-surface);
+}
+.deck-seg button { border: 0; border-radius: var(--deck-radius-sm); background: transparent; font-weight: 550; padding: 0.25rem 0.6rem; }
+.deck-seg button[aria-pressed="true"] { background: var(--deck-accent-soft); color: var(--deck-accent-text); }
+
 /* The colour scheme toggle from theme.js, in the page's own colours. */
 body[data-deck] .deck-theme { border-color: var(--deck-line-strong); background: var(--deck-surface); color: var(--deck-text-2); font-family: var(--deck-sans); }
 body[data-deck] .deck-theme button { font-weight: 400; }
@@ -235,5 +434,5 @@ body[data-deck] .deck-theme button:focus-visible { outline-color: var(--deck-acc
   :where(body[data-deck]) { background: #ffffff; }
   .deck-noprint { display: none !important; }
   /* Keep status and accent fills, which carry meaning, on paper. */
-  .deck-badge, .deck-chip, .deck-kpi, .deck-card.hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .deck-badge, .deck-chip, .deck-kpi, .deck-card.hero, .deck-tile, .deck-dot { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }

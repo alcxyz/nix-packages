@@ -1,7 +1,7 @@
 # ADR-0015: One design for deck's views and page bundles, chosen by purpose
 
 **Status:** Accepted
-**Date:** 2026-10-25
+**Date:** 2026-10-25, updated 2026-11-07 (the shell, live tiles and the canvas, per [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786))
 **Applies to:** `tools/deck/web/`, page bundles served by deck
 
 ## Context
@@ -18,8 +18,8 @@ already gave every page one colour scheme toggle. Tracked in
 
 The pages serve five purposes, which differ in density and output:
 
-- **Live overview** (thread dashboard, backlog): glanced at often, dense, with
-  status colour carrying meaning.
+- **Live overview** (Deck's overview, thread dashboard, backlog, live
+  reports): glanced at often, dense, with status colour carrying meaning.
 - **Index** (library, collection pages): find and open a page.
 - **Worksheet** (internal decision sheets): read and decide, sometimes printed.
 - **Presentation** (client frames): shown on screen or exported to PDF at a
@@ -48,7 +48,8 @@ The pages serve five purposes, which differ in density and output:
   - a type scale and spacing;
   - base element rules;
   - shared components: card, chip, badge, button, KPI tile, table, kicker,
-    the toggle.
+    the toggle, and the shell, live tile, status dot, sparkline and
+    segmented control below.
 
   Dark values follow `theme.js` under the screen-only attribute rule from
   ADR-0013, so print stays light.
@@ -57,6 +58,22 @@ The pages serve five purposes, which differ in density and output:
   Base element rules apply only under that attribute and carry no specificity
   (`:where()`). A page's own stylesheet therefore always wins, and a page
   without the attribute is unaffected by loading the file.
+- **One shell on every page.** A full-width top bar with a fixed inset, so it
+  stays put between pages of different widths: the brand, the overview, the
+  views and then the collections after a rule, the current page in the
+  accent's soft fill, counts as small pills, and the toggle at the end. At
+  phone width the links scroll sideways under the brand. Views keep their own
+  toolbar below it; the shell is left off paper.
+- **Index and live pages sit on a canvas** (`--deck-canvas`, a light grey
+  in the light scheme and the page colour in the dark one) on screen, so
+  their cards and tiles stand out without shadows. Worksheets, presentations
+  and tools stay on the page colour, and print stays white.
+- **Live tiles and status.** A tile shows a status dot, its title, how old its
+  data is, a one-line answer, up to three figures in the monospaced face and
+  a sparkline. On tiles, `act` takes the danger colour and `watch` the
+  attention colour; a tile or count that needs a look carries a bar along one
+  edge in that colour, like the new-row marker, and stale data shows its age
+  in the attention colour.
 - **Views and bundles keep their own layout CSS.** `deck.css` and
   `library.css` lay out the views on the shared tokens and components. Bundles
   do the same for what is particular to them: slide frames, charts, worksheet
@@ -97,5 +114,9 @@ The pages serve five purposes, which differ in density and output:
   bundle ships its own copy of `base.css` beside the export.
 - `deck.css` and `library.css` no longer define colours; new colours belong
   in `base.css` as tokens.
+- Deck's views, its indexes and bundles that load `shell.js` share one top
+  bar, so moving between them keeps the same navigation in the same place
+  when one process serves them all; with the pages run apart, each process's
+  bar lists what that process knows ([ADR-0013](0013-deck-page-collections.md)).
 - The live views' "new since your last visit" marker is an accent bar
   instead of a tint, so status colours stay readable on new rows.

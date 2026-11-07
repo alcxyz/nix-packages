@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-22
-**Amended:** 2026-10-24 (content from Git, pages-only mode), 2026-10-25 (shared colour scheme assets), 2026-10-25 (shared design stylesheet), 2026-10-26 (JSON data assets), 2026-11-04 (pinned pages)
+**Amended:** 2026-10-24 (content from Git, pages-only mode), 2026-10-25 (shared colour scheme assets), 2026-10-25 (shared design stylesheet), 2026-10-26 (JSON data assets), 2026-11-04 (pinned pages), 2026-11-07 (overview, live tiles and the shell, [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786))
 **History:** [replaced text](archive/0013-deck-page-collections-history.md)
 **Applies to:** `tools/deck/`
 
@@ -29,14 +29,18 @@ design ([#661](https://git.alc.xyz/alcxyz/nix-packages/issues/661)).
 
 A bundle can be a live report: its script loads a data file that a process
 outside Deck rewrites on a schedule, such as a timer that fetches activity
-from another service's read-only API.
+from another service's read-only API. With several of them, seeing whether
+any shows a problem meant opening each one, and every page had its own top
+bar ([#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)).
 
 ## Decision
 
 ### Collections and bundles
 
 Deck serves read-only collections of operator-authored static page bundles.
-The root index links to the thread dashboard and the available collections.
+The root index is Deck's overview: it links to the thread dashboard and the
+available collections, counts what waits on the owner in the views the
+process runs, and shows a live tile for each page that ships one (below).
 Each collection has an index and pages at `/<collection>/<slug>/`; dated slugs
 can preserve individual proposals or assessments without replacing older ones.
 
@@ -103,6 +107,39 @@ revision needs no restart and a partly written checkout is never served.
 - **An image of the pages mode** is built from the Nix package, so a cluster
   can run it without a Nix toolchain.
 
+### Live tiles
+
+- **A bundle that ships a top-level `tile.js` gets a live tile** on the
+  overview and on its collection index. Deck only notes that the file exists,
+  a regular file like any other asset, and never reads the bundle's data.
+- **The browser computes the tile.** `/static/tiles.js` imports `tile.js` as
+  an ES module and calls its default export with a context that fetches the
+  bundle's own files (`json(name)`, which reports a missing file as status
+  404, and `url(name)`). The module returns a status (`ok`, `watch` or `act`),
+  a one-line answer, up to three short figures, an optional series for a
+  sparkline, when its data was made and after how many minutes it counts as
+  stale. The runtime marks stale data at least `watch`, puts the tiles that
+  need a look first and refreshes them every five minutes while the page is
+  visible. Without script a tile shows the page's title and summary.
+- **A tile runs as the page it sits on.** Its module runs on the overview with
+  the same origin as every bundle script, inside the same trust boundary
+  (above), so it adds no new trust.
+
+### The shell
+
+- **One top bar on every page** ([ADR-0015](0015-deck-design-system.md)):
+  Deck's views, the overview and the collection indexes render the overview,
+  the views and the collections that have a page, with the current one
+  marked and counts on Threads (waiting on the owner) and Approvals (pending).
+- **`/nav.json` serves the same links to bundles**, with the counts, behind
+  the same token check, in both modes; the pages-only mode has no counts. It
+  is no collection slug, so no collection can claim it.
+- **A bundle opts in** by marking its own top bar with `data-deck-shell` and
+  loading `/static/shell.js` with `defer` after `theme.js`. The script
+  replaces the marked bar with the shell and keeps the bar's colour scheme
+  toggle. Without the script, or where `/nav.json` fails, the bundle's own
+  bar stays.
+
 ### Shared theme and design assets
 
 - **Deck serves shared theme assets at `/static/`.** `theme.js` resolves a
@@ -114,10 +151,10 @@ revision needs no restart and a partly written checkout is never served.
   one origin gives every page the same choice.
 - **Deck also serves `/static/base.css`**, which carries the design's tokens
   and shared components ([ADR-0015](0015-deck-design-system.md)).
-- **Bundles may reference `theme.css`, `theme.js` and `base.css` at
-  `/static/`** besides their own local files. These three files are the only
-  assets a bundle takes from outside its own directory; everything else stays
-  local. The content security policy is unchanged, since the assets come from
+- **Bundles may reference `theme.css`, `theme.js`, `base.css` and
+  `shell.js` at `/static/`** besides their own local files. These four files
+  are the only assets a bundle takes from outside its own directory;
+  everything else stays local. The content security policy is unchanged, since the assets come from
   the same origin and contain no inline code.
 - **Load order:** `theme.css`, then `base.css`, then the bundle's own
   stylesheets. `base.css` applies its element rules only to a page that names
@@ -164,6 +201,15 @@ revision needs no restart and a partly written checkout is never served.
   it mislabels data as script and hides the bundle's real contract.
 - **A Deck API that proxies the other service.** Rejected: Deck would hold
   that service's credentials, against its filesystem-only design.
+- **Tiles from a summary file that each refresher writes and Deck renders.**
+  Every refresher and Deck would share a schema, a change to a tile would
+  need a refresher deploy, and Deck would read operator data it otherwise
+  only serves. A `tile.js` beside the page keeps the tile with the code that
+  already understands that page's data.
+- **Deck computing tiles from each page's `data.json`.** Deck would have to
+  know every report's schema.
+- **A frame per tile.** Heavier, and the `frame-ancestors 'none'` policy
+  forbids it.
 
 ## Consequences
 
@@ -189,6 +235,17 @@ revision needs no restart and a partly written checkout is never served.
   release is deployed.
 - Standalone exports and PDF builds of a bundle ship their own copy of
   `base.css`, since `/static/` exists only on Deck.
+- A tile or a change to one is a bundle change, with no Deck release. The
+  overview fetches each tiled page's data every five minutes while it is
+  open.
+- A collection with tiles is linked beside the overview's tiles rather than
+  listed in its library.
+- A bundle that loads `shell.js` keeps its own top bar on a Deck release
+  without the shell.
+- Each process's shell lists what that process knows. With the pages and the
+  dashboard run apart, the dashboard's bar lacks the collections when its
+  collections are off, and the pages process's bar and `/nav.json` have no
+  Approvals link and no counts; one process serving both shows the full bar.
 - Bundle authors must not leave private JSON in a bundle they would not serve,
   as with any other asset.
 - A data file written on one host is served only by the Deck process that
