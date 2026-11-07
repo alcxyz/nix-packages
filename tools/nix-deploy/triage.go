@@ -14,6 +14,7 @@ import (
 )
 
 const triageUsage = `Usage: nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]
+       nixfleet triage [--config FILE] [--no-launch] [--warnings] --from-host HOST <copy>
 
 Writes context.md for a recorded deploy run (ADR-0016): the run's facts, its
 failed targets with the step that failed, the paths of their logs, what each
@@ -42,6 +43,20 @@ argument, a prompt naming context.md, the playbook shipped with nixfleet and
 the addendum, and exits with the agent's status. The agent's environment has
 NIXFLEET_TRIAGE=1, so a deploy it runs does not offer triage again.
 
+triageHost names the inventory host whose agent triages every host's runs.
+On another host, where it would launch the agent, triage first checks over
+SSH (BatchMode, DEPLOY_SSH_CHECK_TIMEOUT) that this host reaches the triage
+host and that the triage host reaches back, one line each with its time.
+When the triage host is unreachable, the agent runs here as without the
+setting. When it cannot reach back, triage prints sshHint, the hint
+saying how to let it, and hands over anyway, telling the agent. It copies
+the run record to $XDG_STATE_HOME/nix-deploy/handoffs/<this host>/<run> on
+the triage host (nixfleet triage --receive there) and runs
+nixfleet triage --from-host <this host> <copy> there over ssh -t, which
+launches the triage host's own agent in its own checkout of the flake: the
+directory at the place of the run's flake directory relative to the home
+directory. With --no-launch it runs only the checks.
+
 With --warnings, the run is the newest finished one whatever its result
 (or the one named), and context.md lists each distinct "evaluation
 warning:" and "trace: warning:" message of its evaluation logs with the
@@ -57,6 +72,11 @@ Options:
   --config FILE   Read the inventory from FILE instead of NIX_DEPLOY_CONFIG.
   --no-launch     Write context.md only.
   --warnings      Triage the warnings of a run instead of its failures.
+  --from-host HOST
+                  Launch the agent on a run record HOST handed over, given
+                  as the copy's path; its context.md is not written again.
+  --receive HOST  Unpack a run record HOST hands over from standard input,
+                  given its run ID, and print the copy's path.
 
 A target's baseline is the flake.lock of the newest earlier run of the same
 flake directory that shows it ok or unchanged (a build-only run proves no
@@ -76,6 +96,11 @@ type triageOptions struct {
 	noLaunch   bool
 	warnings   bool
 	run        string
+	// fromHost and receive are the two halves of a hand-off on the triage
+	// host: the source host whose copied record to triage, and the source
+	// host whose record to receive on standard input, with run its ID.
+	fromHost string
+	receive  string
 }
 
 func parseTriageArgs(args []string) (triageOptions, error) {
@@ -89,6 +114,16 @@ func parseTriageArgs(args []string) (triageOptions, error) {
 			opts.noLaunch = true
 		case arg == "--warnings":
 			opts.warnings = true
+		case arg == "--from-host" || arg == "--receive":
+			if i+1 >= len(args) || !safeName.MatchString(args[i+1]) {
+				return opts, fmt.Errorf("%s requires a host name", arg)
+			}
+			i++
+			if arg == "--from-host" {
+				opts.fromHost = args[i]
+			} else {
+				opts.receive = args[i]
+			}
 		case arg == "--config":
 			if i+1 >= len(args) || args[i+1] == "" {
 				return opts, fmt.Errorf("--config requires a file")
@@ -107,6 +142,14 @@ func parseTriageArgs(args []string) (triageOptions, error) {
 		default:
 			opts.run = arg
 		}
+	}
+	switch {
+	case opts.fromHost != "" && opts.receive != "":
+		return opts, fmt.Errorf("--from-host and --receive exclude each other")
+	case opts.receive != "" && (opts.run == "" || opts.noLaunch || opts.warnings):
+		return opts, fmt.Errorf("--receive takes only a run ID")
+	case opts.fromHost != "" && opts.run == "":
+		return opts, fmt.Errorf("--from-host requires the copied run record")
 	}
 	return opts, nil
 }
@@ -133,6 +176,18 @@ func runTriage(args []string) int {
 	}
 	for _, warning := range warnings {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: warning: %s\n", warning)
+	}
+	if opts.receive != "" {
+		dest, err := receiveHandoff(opts.receive, opts.run, os.Stdin, opts.configFile, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
+			return 1
+		}
+		fmt.Println(dest)
+		return 0
+	}
+	if opts.fromHost != "" {
+		return triageFromHost(opts, cfg, unreadable)
 	}
 	var checkouts map[string]string
 	if cfg != nil {
@@ -166,6 +221,13 @@ func runTriage(args []string) int {
 	if unreadable {
 		launch, reason = false, "the inventory could not be read"
 	}
+	// A host other than the triage host hands the run over when it would
+	// launch the agent; with --no-launch it only runs the SSH checks.
+	if !unreadable && (launch || opts.noLaunch) {
+		if status, handed := handOverRun(cfg, opts, dir, launch); handed {
+			return status
+		}
+	}
 	if !launch {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: not launching an agent: %s\n", reason)
 		return 0
@@ -184,7 +246,7 @@ func runTriage(args []string) int {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
 		return 1
 	}
-	return launchTriage(cfg, path, info.FlakeDir, playbook, opts.warnings)
+	return launchTriage(cfg, path, info.FlakeDir, playbook, opts.warnings, "")
 }
 
 // selectRun returns the absolute directory of the run named by an ID or a
@@ -568,7 +630,7 @@ func writeTriageContext(dir string, checkouts map[string]string, configFile stri
 		}
 		writeLockedInputs(&out, inputs, own, unlocked, only, inputsPath)
 	}
-	writeOwnInputs(&out, lock, checkouts)
+	writeOwnInputs(&out, "Own inputs", lock, checkouts)
 
 	path := filepath.Join(dir, "context.md")
 	// replaceFile creates the file 0600 and renames it into place.

@@ -262,7 +262,7 @@ func TestTriageLaunch(t *testing.T) {
 	}
 	flake := t.TempDir()
 	cfg := &triageConfig{AgentCommand: []string{agent, "--mode", "x y"}, PlaybookAddendum: "/private/addendum.md"}
-	if status := launchTriage(cfg, "/runs/r/context.md", flake, "/share/playbook.md", false); status != 7 {
+	if status := launchTriage(cfg, "/runs/r/context.md", flake, "/share/playbook.md", false, ""); status != 7 {
 		t.Errorf("exit status %d, want 7", status)
 	}
 	data, err := os.ReadFile(record)
@@ -279,7 +279,7 @@ func TestTriageLaunch(t *testing.T) {
 			t.Errorf("prompt %q lacks %q", lines[3], want)
 		}
 	}
-	if status := launchTriage(cfg, "/c", filepath.Join(flake, "gone"), "/p", false); status != 1 {
+	if status := launchTriage(cfg, "/c", filepath.Join(flake, "gone"), "/p", false, ""); status != 1 {
 		t.Errorf("a missing flake directory gave %d", status)
 	}
 }

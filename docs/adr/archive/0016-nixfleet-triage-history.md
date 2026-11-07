@@ -563,3 +563,25 @@ never activates, pushes, merges or reboots without the operator's approval.
 
 - Every command keeps the terminal or pipe it had before run records, so
   what deploy and the commands it runs print is unchanged. The price is
+  that single-host Home Manager, boot-mode and nix-darwin activations, which
+  keep the terminal, leave no activation log; their result is still in
+  `report.json`, and a fleet run logs Home Manager activations.
+
+## Text replaced on 2026-11-07 (release 0.34.0, nix-packages#787)
+
+The passages the hand-off to the triage host replaced, each as it stood. Additions that replaced no text are not repeated.
+
+### Date line
+
+**Date:** 2026-10-27, updated 2026-11-07 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673; the first sessions' findings in 0.33.0, per nix-packages#783)
+
+### Phase 2 introduction
+
+`nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]` writes a
+0600 `context.md` into a run directory, prints its path and then launches
+the operator's agent on it. It reads only a finished run: one that no longer
+holds its `run.lock` and has a `report.json`. Apart from `context.md` and,
+for a failed run, `inputs.md` beside it, it writes nothing and runs no Nix
+command; Git is read only, without optional locks or lazy fetches, with a
+10-second timeout per call. For a failed activation it reads the hosts' live
+state, as below.

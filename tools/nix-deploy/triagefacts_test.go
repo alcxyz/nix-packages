@@ -261,7 +261,7 @@ func TestOwnInputsFoldAbsentAndShowLocalIdentity(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	checkouts := map[string]string{"here": repo, "away": missing, "gone": missing}
 	var out strings.Builder
-	writeOwnInputs(&out, lockData(t, map[string]lockedInput{}), checkouts)
+	writeOwnInputs(&out, "Own inputs", lockData(t, map[string]lockedInput{}), checkouts)
 	text := out.String()
 	for _, want := range []string{
 		"- Repository-local Git identity: user.name forgejo-actions.",

@@ -9,6 +9,31 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.34.0 (2026-11-07)
+
+Triage hands runs from other hosts to the triage host (nix-packages#787).
+
+- The inventory's triage object takes an optional `triageHost`, the host
+  whose agent triages every host's runs, and `sshHint`, a line saying how
+  to let it reach this host. The triage host itself and inventories without
+  the field behave as before.
+- On another host, `nixfleet triage` checks that it reaches the triage host
+  over SSH and that the triage host reaches back, one line each with its
+  duration (`--no-launch` runs only the checks). It copies the run record to
+  the triage host's `nix-deploy/handoffs/<host>/<run>` with
+  `nixfleet triage --receive` there and runs
+  `nixfleet triage --from-host <host> <copy>` there over `ssh -t`, which
+  launches the triage host's own agent in its checkout of the flake at the
+  same place relative to the home directory.
+- An unreachable triage host, one that cannot take the run (an older
+  nixfleet, no agent command, no checkout) or a flake directory outside the
+  home directory keeps triage local, with the reason printed. When the
+  triage host cannot reach back, triage prints the hint and hands over
+  anyway, telling the agent.
+- The copy's context gains a hand-off section naming the source host and how
+  to reach it, and the triage host's own input checkouts; the prompt names
+  the source host. The playbook gains a section on runs from another host.
+
 ## 0.33.0 (2026-11-07)
 
 Findings of the first three triage sessions (nix-packages#783).

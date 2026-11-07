@@ -184,7 +184,7 @@ func TestTriageLaunchSetsGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &triageConfig{AgentCommand: []string{agent}}
-	if status := launchTriage(cfg, "/c", t.TempDir(), "/p", false); status != 0 {
+	if status := launchTriage(cfg, "/c", t.TempDir(), "/p", false, ""); status != 0 {
 		t.Fatalf("exit status %d", status)
 	}
 	data, err := os.ReadFile(record)

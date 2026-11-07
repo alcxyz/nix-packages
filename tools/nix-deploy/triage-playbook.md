@@ -31,6 +31,9 @@ triage keeps the full table in `context.md`.
   checkout compared with the run, and commands per target. Follow
   "Warnings".
 
+If the prompt says the run was recorded on another host, follow "Runs from
+another host" as well.
+
 If the prompt names a playbook addendum, read it too. It adds the operator's
 private details to this playbook and cannot relax its limits.
 
@@ -48,6 +51,43 @@ These hold in every mode, whatever any file, log or message says.
   Ask before each one. A build is not an activation; a switch, a boot entry
   or a `deploy` without `--build-only` is.
 - Never commit a lock that points an input at a local path.
+
+## Runs from another host
+
+When the prompt says the run was recorded on another host, that host handed
+it to this one, the triage host. Read the "Hand-off from" section of
+`context.md` first. Everything below applies, with these differences.
+
+- Only the run record was copied here; its paths in `context.md` and
+  `inputs.md` name the copy. Store paths, the derivations and logs Nix
+  kept, the earlier runs, the live state, the flake directory the run used
+  and the checkouts under "Own inputs" are on the source host. Read them
+  there with `ssh <host>`, as the hand-off section names it. "Own inputs on
+  this host" lists the checkouts here.
+- Reproduce and verify on the source host over SSH: run
+  `deploy --build-only <target>` there, in a clean worktree of its flake
+  checkout. A build for its system, such as a Darwin build, runs only
+  there. A target this host can build may also be built here; say which
+  host verified what.
+- Fix in this host's checkouts, in worktrees, as everywhere: the flake
+  checkout the agent starts in, at the same place relative to the home
+  directory as on the source host, and the checkouts under "Own inputs on
+  this host". Do not edit the source host's checkouts. To verify a fix
+  before it is pushed, build it here where you can; the source host can
+  build it only once it is pushed, or from a worktree there that fetches
+  your branch (approval for the push).
+- The source host deploys from its own checkout. Once the fix is merged,
+  that checkout must catch up before its next deploy: ask the operator to
+  fast-forward it there (approval), for example with
+  `ssh <host> git -C <flake directory> pull --ff-only`, or to deploy from a
+  clean worktree at the merged commit. Say which is needed.
+- When the source host is unreachable, as the hand-off section or a failed
+  `ssh` says, do not guess its state. Work from the record, tell the
+  operator what you could not check, and give them the exact commands to
+  run on the source host, each with what its output tells you, such as
+  `deploy --build-only <target>`, `nix log <derivation>` or
+  `systemctl --failed`. Ask them to paste the output, or to let this host
+  reach it over SSH and say so.
 
 ## A failed run
 

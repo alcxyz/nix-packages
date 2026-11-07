@@ -15,11 +15,15 @@ import (
 
 // triageConfig is the optional triage object of the inventory (ADR-0016):
 // the agent command triage launches, the local checkouts of the operator's
-// own flake inputs by input name, and a private playbook addendum.
+// own flake inputs by input name, a private playbook addendum, the host
+// other hosts hand their runs to, and a hint shown when that host cannot
+// reach back.
 type triageConfig struct {
 	AgentCommand     []string
 	InputCheckouts   map[string]string
 	PlaybookAddendum string
+	TriageHost       string
+	SSHHint          string
 }
 
 // errInventoryUnreadable is an inventory that cannot be read or is not a
@@ -101,6 +105,14 @@ func parseTriageConfig(raw json.RawMessage, home string) (*triageConfig, error) 
 				return nil, fmt.Errorf("playbookAddendum: %v", err)
 			}
 			cfg.PlaybookAddendum = expanded
+		case "triageHost":
+			if !isString(value) || json.Unmarshal(value, &cfg.TriageHost) != nil || !safeName.MatchString(cfg.TriageHost) {
+				return nil, errors.New("triageHost must be a host name")
+			}
+		case "sshHint":
+			if !isString(value) || json.Unmarshal(value, &cfg.SSHHint) != nil || strings.TrimSpace(cfg.SSHHint) == "" || strings.ContainsAny(cfg.SSHHint, "\n\r") {
+				return nil, errors.New("sshHint must be a non-empty line of text")
+			}
 		default:
 			return nil, fmt.Errorf("unknown field '%s'", key)
 		}
@@ -183,8 +195,8 @@ func ownMarks(lock []byte, checkouts map[string]string) (map[string]bool, []stri
 
 // writeOwnInputs writes the Git state of each own input's checkout and how
 // its HEAD compares with the revision the run's lock pins.
-func writeOwnInputs(out *strings.Builder, lock []byte, checkouts map[string]string) {
-	out.WriteString("\n## Own inputs\n\n")
+func writeOwnInputs(out *strings.Builder, heading string, lock []byte, checkouts map[string]string) {
+	out.WriteString("\n## " + heading + "\n\n")
 	if len(checkouts) == 0 {
 		out.WriteString("No input checkout is configured (inputCheckouts in the triage object of the inventory), so no input is known to be the operator's own.\n")
 		return
@@ -283,10 +295,16 @@ func playbookPath(exe string) (string, error) {
 	return path, nil
 }
 
-func triagePrompt(context, playbook, addendum string, warnings bool) string {
+// triagePrompt is the prompt the agent gets. handoff, when not empty, is
+// what a run handed over from another host adds: where the run happened
+// and how to reach that host.
+func triagePrompt(context, playbook, addendum string, warnings bool, handoff string) string {
 	prompt := "A nixfleet deploy run needs triage. Read " + context + " first, then follow the playbook " + playbook + "."
 	if warnings {
 		prompt = "This is warning triage: a nixfleet deploy run printed evaluation warnings. Read " + context + " first, then follow the playbook " + playbook + ": its limits apply in every mode, and its Warnings section gives the procedure."
+	}
+	if handoff != "" {
+		prompt += " " + handoff
 	}
 	if addendum != "" {
 		prompt += " Also follow the operator's playbook addendum " + addendum + "."
@@ -296,16 +314,23 @@ func triagePrompt(context, playbook, addendum string, warnings bool) string {
 
 // launchTriage runs the agent command with the prompt in the flake
 // directory, on the inherited terminal, and returns its exit status.
-func launchTriage(cfg *triageConfig, context, flakeDir, playbook string, warnings bool) int {
+func launchTriage(cfg *triageConfig, context, flakeDir, playbook string, warnings bool, handoff string) int {
 	if info, err := os.Stat(flakeDir); flakeDir == "" || err != nil || !info.IsDir() {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: the run's flake directory %s no longer exists; not launching the agent\n", flakeDir)
 		return 1
 	}
-	argv := append(append([]string{}, cfg.AgentCommand...), triagePrompt(context, playbook, cfg.PlaybookAddendum, warnings))
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = flakeDir
+	argv := append(append([]string{}, cfg.AgentCommand...), triagePrompt(context, playbook, cfg.PlaybookAddendum, warnings, handoff))
 	// A deploy the agent runs during repair sees this and offers no triage.
-	cmd.Env = append(os.Environ(), triageGuard+"=1")
+	return runOnTerminal(argv, flakeDir, append(os.Environ(), triageGuard+"=1"), "the agent command")
+}
+
+// runOnTerminal runs argv in dir with env on the inherited terminal and
+// returns its exit status; what names the command in an error. It is the
+// last thing triage does, so it takes over the terminal's signals.
+func runOnTerminal(argv []string, dir string, env []string, what string) int {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// The terminal sends an interrupt or quit to the agent itself, so this
 	// process only outlives it; a termination or hangup sent to this
@@ -315,7 +340,7 @@ func launchTriage(cfg *triageConfig, context, flakeDir, playbook string, warning
 	defer signal.Stop(signals)
 	stopControllerSignals()
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "nixfleet triage: cannot start the agent command %s: %v\n", argv[0], err)
+		fmt.Fprintf(os.Stderr, "nixfleet triage: cannot start %s %s: %v\n", what, argv[0], err)
 		return 1
 	}
 	done := make(chan struct{})

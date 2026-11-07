@@ -1,7 +1,7 @@
 # ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
 **Status:** Accepted
-**Date:** 2026-10-27, updated 2026-11-07 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673; the first sessions' findings in 0.33.0, per nix-packages#783)
+**Date:** 2026-10-27, updated 2026-11-07 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673; the first sessions' findings in 0.33.0, per nix-packages#783; the hand-off to the triage host in 0.34.0, per nix-packages#787)
 **Applies to:** `tools/nix-deploy/`
 **History:** [replaced text](archive/0016-nixfleet-triage-history.md)
 
@@ -128,12 +128,14 @@ record in place.
 
 `nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]` writes a
 0600 `context.md` into a run directory, prints its path and then launches
-the operator's agent on it. It reads only a finished run: one that no longer
-holds its `run.lock` and has a `report.json`. Apart from `context.md` and,
-for a failed run, `inputs.md` beside it, it writes nothing and runs no Nix
-command; Git is read only, without optional locks or lazy fetches, with a
-10-second timeout per call. For a failed activation it reads the hosts' live
-state, as below.
+the operator's agent on it, on this host or, from a host other than the
+triage host, on the triage host (below). It reads only a finished run: one
+that no longer holds its `run.lock` and has a `report.json`. Apart from
+`context.md` and, for a failed run, `inputs.md` beside it, and the copy of
+the record a hand-off makes on the triage host, it writes nothing and runs
+no Nix command; Git is read only, without optional locks or lazy fetches,
+with a 10-second timeout per call. For a failed activation it reads the
+hosts' live state, as below.
 
 #### Failed runs (releases 0.22.0 and 0.23.0)
 
@@ -245,6 +247,63 @@ in its environment. Triage exits with the agent's status and passes a
 termination or hangup on to it. The configured agent command may hand the
 session off, for example to a T3 Code thread, and exit; nixfleet then just
 returns its exit status.
+
+#### Hand-off to the triage host (release 0.34.0)
+
+The operator's T3 Code apps use the server on one host, where repository
+work happens, so a session started on a host without its own server, such as
+the Mac, ran in a terminal there: invisible in T3 Code, and fixing that
+host's checkouts instead of the hub's (nix-packages#787). The triage object
+therefore takes two more optional fields:
+
+- `triageHost`: the inventory host whose agent triages every host's runs.
+  Names resolve through the inventory's aliases, and it must be a known host.
+- `sshHint`: one line telling the operator how to let the triage host reach
+  this host, such as the command that turns SSH on.
+
+A host compares `triageHost` with its own name as `nixfleet status` finds it
+(`hostname -s` through the aliases). The triage host itself, and every host
+of an inventory without the field, launch as above. Any other host, when it
+would launch the agent there, hands the run over instead:
+
+1. It checks that it reaches the triage host over SSH, and that the triage
+   host reaches back with `ssh <this host>`, each as the operator (not a
+   system user), at each host's `sshHosts` destination, with `BatchMode`
+   and the `DEPLOY_SSH_CHECK_TIMEOUT` connect timeout, and prints one line
+   per check with its duration. `--no-launch` runs only these checks.
+2. When the triage host is unreachable, or cannot take the run (below), it
+   says why in one line and launches its own agent as above.
+3. When the triage host cannot reach back, it prints `sshHint` and hands
+   over anyway; the context and the prompt tell the agent that the source
+   host was unreachable at launch.
+4. It streams the run record, without `run.lock`, as a tar archive with a
+   `handoff.json` added to `nixfleet triage --receive <this host> <run>` on
+   the triage host. That unpacks it, at most 1 GiB, into
+   `$XDG_STATE_HOME/nix-deploy/handoffs/<source host>/<run>`, replacing an
+   earlier copy, and keeps the newest `DEPLOY_RUN_KEEP` copies per source
+   host, plus the one just received when it is older. It refuses the run
+   when the record has no `context.md`, when it was given no inventory or
+   its inventory has no `agentCommand`, or when it has no checkout of the
+   flake, and the source then launches its own agent. The copy's `context.md` and `inputs.md` name the copy instead of
+   the source's record; `context.md` gains a hand-off section after its
+   title, naming the source host and how to reach it, and the triage host's
+   own input checkouts at its end.
+5. It then runs `nixfleet triage --from-host <this host> <copy>` there over
+   `ssh -t`, so an agent command that falls back to the terminal still
+   works, and exits with its status. That launches the triage host's own
+   agent command, with its own playbook, addendum and input checkouts, in
+   its checkout of the flake: the directory at the place of the run's flake
+   directory relative to the home directory, which must exist. The context
+   written on the source host is not written again, since its store paths,
+   earlier runs and live state are the source host's. The prompt names the
+   source host and says that store paths and files outside the copied
+   record are there, reachable with `ssh <host>`.
+
+Nothing from the source host's inventory crosses over but the record: store
+paths, and with them the agent command, differ per host, so the triage host
+runs its own nixfleet and inventory. Both hosts need a nixfleet with the
+hand-off; an older one on the triage host fails the receive, and the source
+launches its own agent.
 
 #### Warnings (release 0.25.0)
 
@@ -376,6 +435,13 @@ can answer it; the default is No, so a stray Enter declines.
   units: about a minute for one unresponsive host, 30 seconds more for each
   further one, and 30 seconds more for each further batch of eight hosts.
   It needs SSH to the hosts for it.
+- A hand-off spends up to two SSH checks of 30 seconds each before it
+  copies the record, and the triage host keeps up to `DEPLOY_RUN_KEEP`
+  copied records per source host, one more when the record just received
+  is older than those. The agent then works on a host other
+  than the one that failed: it reproduces and verifies there over SSH (a
+  Darwin build runs only on a Darwin host), and fixes reach the source
+  host's checkout only through the forge.
 - Every command keeps the terminal or pipe it had before run records, so
   what deploy and the commands it runs print is unchanged, apart from the
   one line a failed build prints before its fixed-output rebuild (0.33.0),
@@ -386,7 +452,9 @@ can answer it; the default is No, so a stray Enter declines.
 - The JSON report is unchanged, and the run layout is the interface triage
   reads. The inventory gains one optional `triage` object (ADR-0006), read by
   `nixfleet triage`, and by deploy after a failed run in a terminal, which
-  offers triage only when the object is valid and has an `agentCommand`.
+  offers triage only when the object is valid and has an `agentCommand`;
+  a host hands runs over only with an `agentCommand` of its own, which is
+  also its fallback.
 - Locating a warning that names no file costs one more uncached evaluation
   of its target per warning, in order, with the earlier ones fixed or
   overridden first, so warning triage on a target with many warnings takes

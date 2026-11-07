@@ -233,13 +233,13 @@ func TestTriageWarningsContext(t *testing.T) {
 }
 
 func TestTriageWarningsPrompt(t *testing.T) {
-	prompt := triagePrompt("/r/context.md", "/s/playbook.md", "", true)
+	prompt := triagePrompt("/r/context.md", "/s/playbook.md", "", true, "")
 	for _, want := range []string{"warning triage", "/r/context.md", "Warnings section", "limits apply in every mode", "/s/playbook.md", "activation, push, merge or reboot"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt %q lacks %q", prompt, want)
 		}
 	}
-	if strings.Contains(triagePrompt("/c", "/p", "", false), "warning") {
+	if strings.Contains(triagePrompt("/c", "/p", "", false, ""), "warning") {
 		t.Error("the failure prompt mentions warnings")
 	}
 }

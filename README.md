@@ -226,7 +226,12 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   terminal, and without `--no-launch`, triage then runs the agent in the
   run's flake directory with a prompt naming `context.md`, the playbook
   shipped in `share/nixfleet/triage-playbook.md` and the addendum, with
-  `NIXFLEET_TRIAGE=1` in its environment, and exits with its status. `nixfleet triage --warnings [<run>]` takes the newest
+  `NIXFLEET_TRIAGE=1` in its environment, and exits with its status. With
+  `triageHost` set, any other host checks SSH both ways, prints `sshHint`
+  when the triage host cannot reach back, copies the run record there and
+  runs `nixfleet triage --from-host` on the copy over `ssh -t`, so the
+  triage host's own agent, inventory and checkouts take the run; when the
+  triage host is unreachable, the agent runs locally. `nixfleet triage --warnings [<run>]` takes the newest
   finished run whatever its result and writes a `context.md` of its
   evaluation warnings instead: each distinct message with the targets that
   printed it, the files it names (mapped to their input, own or upstream),

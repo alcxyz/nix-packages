@@ -97,7 +97,7 @@ func TestTriageInterruptDoesNotCancelFinishedController(t *testing.T) {
 	if err := os.WriteFile(agent, []byte("#!/bin/sh\nkill -INT \"$PPID\"\nexit 0\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if status := launchTriage(&triageConfig{AgentCommand: []string{agent}}, "/fixture/context", t.TempDir(), "/fixture/playbook", false); status != 0 {
+	if status := launchTriage(&triageConfig{AgentCommand: []string{agent}}, "/fixture/context", t.TempDir(), "/fixture/playbook", false, ""); status != 0 {
 		t.Fatalf("agent exited %d", status)
 	}
 	if ctx.Err() != nil || canceledStatus.Load() != 0 {

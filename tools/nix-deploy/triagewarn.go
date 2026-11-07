@@ -421,7 +421,7 @@ func writeWarningsContext(dir string, checkouts map[string]string, inv *inventor
 		}
 	}
 
-	writeOwnInputs(&out, lock, checkouts)
+	writeOwnInputs(&out, "Own inputs", lock, checkouts)
 	if lockErr != nil {
 		out.WriteString("\n## Locked inputs\n\nThe run kept no readable flake.lock, so files cannot be mapped to inputs.\n")
 	} else {
