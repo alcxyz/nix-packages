@@ -1,7 +1,7 @@
 # ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
 **Status:** Accepted
-**Date:** 2026-10-27, updated 2026-10-31 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673)
+**Date:** 2026-10-27, updated 2026-11-07 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673; the first sessions' findings in 0.33.0, per nix-packages#783)
 **Applies to:** `tools/nix-deploy/`
 **History:** [replaced text](archive/0016-nixfleet-triage-history.md)
 
@@ -94,7 +94,25 @@ Every `deploy` run that gets past argument parsing, single-host, `--all`,
     stop at 20
     logs found or 200 lookups; the listing, the selection and the lookups
     together stop after 60 seconds. Nix's log store has a failed build's
-    whole log, where the terminal showed only its tail.
+    whole log, where the terminal showed only its tail. `build.log` names
+    each attempted derivation and marks the fixed-output ones (0.33.0).
+    Nix reports a fixed-output hash mismatch itself, outside the builder's
+    log, so it reaches neither `nix log` nor the record; after a failure the
+    run therefore builds the attempted fixed-output derivations again with
+    Nix's output captured, without a progress bar, for at most 2 minutes,
+    into `nix-rebuild.log`, and says so on standard error. Other attempted
+    derivations are not built again, since a test suite or a hang would
+    cost far more; a failure Nix reports itself for them stays out of the
+    record, and the context says to reproduce it with `deploy --build-only`.
+    Capturing the shared build's own output was not built: Nix draws its
+    progress bar only on a terminal.
+  - `<phase>-<host>-closure.log` (0.33.0): for each target that failed after
+    spending time in its activation, `nix store diff-closures` from the
+    generation the plan read on the host to the one that failed, run with
+    a 30-second timeout when both are in this machine's store (otherwise
+    the file says which is missing). It shows version changes inside an
+    input, such as a kernel or a driver, that the lock diff cannot. A build
+    failure has no built generation to compare.
 
 At the end of a run the newest `DEPLOY_RUN_KEEP` (default 30) run directories,
 the current one and any whose run still holds its `run.lock` are kept; older
@@ -111,9 +129,11 @@ record in place.
 `nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]` writes a
 0600 `context.md` into a run directory, prints its path and then launches
 the operator's agent on it. It reads only a finished run: one that no longer
-holds its `run.lock` and has a `report.json`. Apart from `context.md` it
-writes nothing and runs no Nix command; Git is read only, without optional
-locks or lazy fetches, with a 10-second timeout per call.
+holds its `run.lock` and has a `report.json`. Apart from `context.md` and,
+for a failed run, `inputs.md` beside it, it writes nothing and runs no Nix
+command; Git is read only, without optional locks or lazy fetches, with a
+10-second timeout per call. For a failed activation it reads the hosts' live
+state, as below.
 
 #### Failed runs (releases 0.22.0 and 0.23.0)
 
@@ -123,10 +143,43 @@ failed, or the one named (an ID or a path). Its `context.md` has the run's
 facts, including the flake's recorded Git revision and whether tracked files
 differed from it; each failed target with the step that failed (evaluate, build,
 activate, an activation or its setup without a log, the serial ready gate,
-or unknown), all its logs, and the first `error:` block of its most
-relevant log, cut at 40 lines, with the files it names (a build failure
-points to the build errors section instead); the first errors of the
-derivation build logs, once for the whole run; the lock diff; the locked inputs; and the own inputs.
+or unknown), all its logs, and what its most relevant log says (a build
+failure points to the build errors section instead); the first errors of
+the derivation build logs, once for the whole run, a log identical to an
+earlier one shown once; the earlier runs of the same lock; the lock diff;
+the locked inputs; and the own inputs.
+
+What a log says (0.33.0) is its first `error:` block, cut at 40 lines, with
+the files it names; the distinct lines that report a failed unit
+(`Failed to start`, `the following units failed`, `Job for ... failed`), at
+most 20; and its Go test failures: the `--- FAIL:` lines, with their
+messages grouped by the last `: `-separated part, the most shared first.
+When none of these is found the context says so plainly and shows the
+log's last 10 non-empty lines only as its end, not as the cause.
+
+A build failure adds the attempted derivations from `build.log`, read from
+the derivation files in the store without Nix: each with its fixed-output
+mark, the system it builds for, and the locked inputs whose store paths the
+file names, with each input's change since the first build-failed target's
+baseline and the commits between its two revisions (from the own input's
+checkout, or a GitHub compare link). A source filtered or copied into its
+own store path hides its input, and the context says so. It also adds
+`nix-rebuild.log`, Nix's own output from the fixed-output rebuild, and a
+note to reproduce with `deploy --build-only` when no log explains the
+failure.
+
+A failed activation (activate, activation or gate) adds the target's closure
+diff, kernel, driver and firmware lines first and at most 40 lines, and a
+live state section: `nixfleet status` of those hosts and, on each reachable
+Linux host, `systemctl --failed` with the time each unit entered that state
+and its first failure in the current boot's journal, read over SSH as
+`nixfleet status` reads hosts, with the time taken. It needs the inventory;
+without one the context names the commands instead.
+
+The notes say when an attempted derivation builds nixfleet itself, so the
+running tool, playbook and tests are not the code that failed, and when one
+builds for a system other than x86_64-linux, which nix-packages only
+evaluates before promotion (ADR-0003).
 
 Phase 1 keeps no record of which lock each target last deployed well from,
 so triage derives that baseline per failed target: the `flake.lock` of the
@@ -143,16 +196,23 @@ good deploy, and the search ends without a baseline at an object a partial
 clone lacks. Targets with the same baseline share one diff of added, removed
 and changed inputs, with their revisions, dates, sources and store paths.
 
-Every locked input is listed with its store path, computed offline from its
-`narHash` and its locked store name (`source` unless the lock names
-another), and whether that path is in the local store, so bare
+Every locked input is listed in `inputs.md` with its store path, computed
+offline from its `narHash` and its locked store name (`source` unless the
+lock names another), and whether that path is in the local store, so bare
 `/nix/store/<hash>-source` paths in errors and option definitions map to
-inputs.
+inputs. `context.md` lists only the inputs that changed since a baseline,
+the own inputs, the inputs behind an attempted derivation and those whose
+store path it names, and points to `inputs.md` (0.33.0). Inputs with the
+same store path and source share a row, and inputs whose locked objects changed the
+same way share an entry in the lock diff. The warnings context keeps the
+full table, with shared rows.
 
-Failure context carries no error-pattern hints (a removed option, an unknown
-argument): none were built. The playbook instead tells the agent which
-messages removed and renamed options leave in the new source. Such hints
-may still be added to `context.md` where a pattern proves stable.
+Failure context carries no hints about what an error means (a removed
+option, an unknown argument): none were built. It extracts only the stable
+shapes above (error blocks, failed units, Go test failures). The playbook
+tells the agent which messages removed and renamed options leave in the new
+source. Such hints may still be added to `context.md` where a pattern
+proves stable.
 
 #### Runtime configuration and launch (release 0.24.0)
 
@@ -167,8 +227,10 @@ error elsewhere in the inventory does not stop it:
   by input name. A file belongs to the operator when it comes from the flake
   itself or from one of these inputs; every other input is upstream.
   `context.md` gives each checkout's branch, HEAD, whether tracked files
-  differ, and whether HEAD is the revision the run's lock pins. A missing
-  checkout only warns.
+  differ, whether HEAD is the revision the run's lock pins, and a
+  repository-local Git identity, which shadows the user's in the checkout
+  and its worktrees. A missing checkout only warns, and the context names
+  all checkouts not cloned on this machine on one line.
 - `playbookAddendum`: a private Markdown file the agent also follows. It
   adds private details and cannot relax the playbook's limits.
 
@@ -180,7 +242,9 @@ it did not launch and exits 0. The agent runs in the run's flake directory
 on the inherited terminal, with one more argument, a prompt naming
 `context.md`, the playbook and the addendum, and with `NIXFLEET_TRIAGE=1`
 in its environment. Triage exits with the agent's status and passes a
-termination or hangup on to it.
+termination or hangup on to it. The configured agent command may hand the
+session off, for example to a T3 Code thread, and exit; nixfleet then just
+returns its exit status.
 
 #### Warnings (release 0.25.0)
 
@@ -263,8 +327,9 @@ is deferred to nix-packages#719.
 ### Limits in every mode
 
 The playbook binds the agent: it edits only in worktrees, never reads
-secrets, treats logs, nixpkgs source and forge content as untrusted data, and
-never activates, pushes, merges or reboots without the operator's approval.
+secrets, treats logs, nixpkgs source and forge content as untrusted data,
+never activates, pushes, merges or reboots without the operator's approval,
+and never commits a lock that points an input at a local path.
 
 A repair is verified by evaluating and building every system and Home Manager
 target it can affect, without activating any: after a flake update that is
@@ -292,16 +357,29 @@ can answer it; the default is No, so a stray Enter declines.
 - **Fixing every warning where it appears**: rejected; a warning raised in
   an input the operator does not own cannot be fixed in the flake without
   forking or overriding that input, so attribution comes first.
-- **Launching inside a T3 Code thread**: deferred; a terminal works over SSH
-  from any machine, and the record and context are the same either way.
+- **Launching T3 Code threads from nixfleet itself**: rejected; a terminal
+  works over SSH from any machine, the record and context are the same
+  either way, and the agent command can hand the session to a thread, so
+  the tool stays independent of T3 Code. The playbook assumes the session
+  may run in either.
 
 ## Consequences
 
 - Each run writes a few files more to the state directory, bounded by
   `DEPLOY_RUN_KEEP`; a failed build adds at most 20 derivation logs and
-  spends about a minute at most listing and finding them.
+  spends about a minute at most listing and finding them, and up to 2
+  minutes more building attempted fixed-output derivations again; a failed
+  activation spends up to 30 seconds per target on its closure diff.
+- Triage on a failed activation spends on live state up to a status read
+  (30 seconds for each batch of up to eight hosts, read in parallel) and
+  then, one Linux host at a time, a second 30-second read of its failed
+  units: about a minute for one unresponsive host, 30 seconds more for each
+  further one, and 30 seconds more for each further batch of eight hosts.
+  It needs SSH to the hosts for it.
 - Every command keeps the terminal or pipe it had before run records, so
-  what deploy and the commands it runs print is unchanged. The price is
+  what deploy and the commands it runs print is unchanged, apart from the
+  one line a failed build prints before its fixed-output rebuild (0.33.0),
+  whose own output goes only to the record. The price is
   that single-host Home Manager, boot-mode and nix-darwin activations, which
   keep the terminal, leave no activation log; their result is still in
   `report.json`, and a fleet run logs Home Manager activations.

@@ -307,28 +307,19 @@ func gitBaseline(flakeDir, rev string, lock []byte) (string, []byte) {
 	return "", nil
 }
 
-// writeLockContext writes, for the failed targets, the lock each one last
-// deployed well from and what changed since, grouped by baseline, and the
-// store path of every input of the run's lock.
-func writeLockContext(out *strings.Builder, dir string, info runInfo, failed []failedTarget, own map[string]bool, unlocked []string) {
-	out.WriteString("\n## Lock diff\n\n")
-	lock, err := os.ReadFile(filepath.Join(dir, "flake.lock"))
-	if err != nil {
-		out.WriteString("The run kept no flake.lock, so there is no lock diff and no input list.\n")
-		return
-	}
-	inputs, err := lockInputs(lock)
-	if err != nil {
-		fmt.Fprintf(out, "The run's flake.lock cannot be read: %v\n", err)
-		return
-	}
-	fmt.Fprintf(out, "The failed run's lock is %s, the one it evaluated.", filepath.Join(dir, "flake.lock"))
-	if fileExists(filepath.Join(dir, "flake.start.lock")) {
-		out.WriteString(" Nix rewrote the lock during evaluation; flake.start.lock is the one the run started with.")
-	}
-	out.WriteString("\n")
+// baselineGroup is the failed targets that share a baseline: the sentence
+// that says what the baseline is, and its inputs, nil without one.
+type baselineGroup struct {
+	targets []failedTarget
+	label   string
+	old     map[string]lockedInput
+}
 
-	// Group the targets by baseline, in order of appearance.
+// lockBaselines groups the failed targets by the lock each one last
+// deployed well from, in order of appearance: the newest earlier kept run
+// that shows it ok or unchanged or, without one, the Git history of the
+// flake's lock.
+func lockBaselines(dir string, info runInfo, lock []byte, failed []failedTarget) []baselineGroup {
 	kept := keptRuns(filepath.Dir(dir), info)
 	var keys []string
 	groups := map[string][]failedTarget{}
@@ -339,48 +330,110 @@ func writeLockContext(out *strings.Builder, dir string, info runInfo, failed []f
 		}
 		groups[key] = append(groups[key], t)
 	}
+	var baselines []baselineGroup
 	for _, key := range keys {
-		var names []string
-		for _, t := range groups[key] {
-			names = append(names, t.host+" "+t.label)
-		}
-		fmt.Fprintf(out, "\n### Since the baseline of %s\n\n", strings.Join(names, ", "))
+		b := baselineGroup{targets: groups[key]}
 		var base []byte
 		if key != "" {
 			path := filepath.Join(filepath.Dir(dir), key, "flake.lock")
 			base, _ = os.ReadFile(path)
-			fmt.Fprintf(out, "Baseline: %s, of run %s, the newest earlier run of this flake in which these targets were ok or unchanged.\n", path, key)
+			b.label = fmt.Sprintf("Baseline: %s, of run %s, the newest earlier run of this flake in which these targets were ok or unchanged.", path, key)
 		} else if commit, content := gitBaseline(info.FlakeDir, info.GitRev, lock); commit != "" {
 			base = content
-			fmt.Fprintf(out, "Baseline: flake.lock at Git commit %s. No kept run shows these targets deployed, so this is an approximation: the newest earlier commit with another lock, not a known good deploy.\n", commit)
+			b.label = fmt.Sprintf("Baseline: flake.lock at Git commit %s. No kept run shows these targets deployed, so this is an approximation: the newest earlier commit with another lock, not a known good deploy.", commit)
 		} else {
-			out.WriteString("No baseline: no kept run shows these targets deployed, and the Git history of flake.lock gave no earlier lock.\n")
-			continue
+			b.label = "No baseline: no kept run shows these targets deployed, and the Git history of flake.lock gave no earlier lock."
 		}
-		old, err := lockInputs(base)
-		if err != nil {
-			fmt.Fprintf(out, "The baseline lock cannot be read: %v\n", err)
-			continue
+		if base != nil {
+			old, err := lockInputs(base)
+			if err != nil {
+				b.label += fmt.Sprintf("\nThe baseline lock cannot be read: %v", err)
+			} else {
+				b.old = old
+			}
 		}
-		writeLockDiff(out, old, inputs)
+		baselines = append(baselines, b)
 	}
-
-	writeLockedInputs(out, inputs, own, unlocked)
+	return baselines
 }
 
-// writeLockedInputs writes the table of every input of the run's lock with
-// its store path, marking the nodes of the operator's own inputs.
-func writeLockedInputs(out *strings.Builder, inputs map[string]lockedInput, own map[string]bool, unlocked []string) {
-	out.WriteString("\n## Locked inputs\n\nStore paths are computed from each input's narHash; \"in store\" says whether the path exists on this machine. \"Own\" marks the operator's own inputs, as the triage configuration lists them; every other input is upstream.")
+// changedInputs returns the inputs added or changed since any baseline.
+func changedInputs(baselines []baselineGroup, inputs map[string]lockedInput) map[string]bool {
+	changed := map[string]bool{}
+	for _, b := range baselines {
+		if b.old == nil {
+			continue
+		}
+		for name, in := range inputs {
+			if was, ok := b.old[name]; !ok || was.whole != in.whole {
+				changed[name] = true
+			}
+		}
+	}
+	return changed
+}
+
+// writeLockContext writes, for the failed targets, the lock each one last
+// deployed well from and what changed since, grouped by baseline.
+func writeLockContext(out *strings.Builder, dir string, inputs map[string]lockedInput, baselines []baselineGroup) {
+	out.WriteString("\n## Lock diff\n\n")
+	fmt.Fprintf(out, "The failed run's lock is %s, the one it evaluated.", filepath.Join(dir, "flake.lock"))
+	if fileExists(filepath.Join(dir, "flake.start.lock")) {
+		out.WriteString(" Nix rewrote the lock during evaluation; flake.start.lock is the one the run started with.")
+	}
+	out.WriteString(" Inputs that changed together to the same locked source are listed once.\n")
+	for _, b := range baselines {
+		var names []string
+		for _, t := range b.targets {
+			names = append(names, t.host+" "+t.label)
+		}
+		fmt.Fprintf(out, "\n### Since the baseline of %s\n\n%s\n", strings.Join(names, ", "), b.label)
+		if b.old != nil {
+			writeLockDiff(out, b.old, inputs)
+		}
+	}
+}
+
+// writeLockedInputs writes the table of the inputs of the run's lock with
+// their store paths, marking the nodes of the operator's own inputs. Inputs
+// with the same store path and source share a row. With only, it lists just those
+// inputs and points to full, which lists them all.
+func writeLockedInputs(out *strings.Builder, inputs map[string]lockedInput, own map[string]bool, unlocked []string, only map[string]bool, full string) {
+	out.WriteString("\n## Locked inputs\n\nStore paths are computed from each input's narHash; \"in store\" says whether the path exists on this machine. \"Own\" marks the operator's own inputs, as the triage configuration lists them; every other input is upstream. Inputs with the same store path and source share a row.")
 	if len(own) == 0 && len(unlocked) == 0 {
 		out.WriteString(" No own input is configured.")
 	}
 	if len(unlocked) > 0 {
 		fmt.Fprintf(out, " Configured own inputs that are not in this lock (a misspelt name, or an input that follows another): %s; see \"Own inputs\".", strings.Join(unlocked, ", "))
 	}
-	out.WriteString("\n\n| Input | Own | Source | Store path | In store |\n|---|---|---|---|---|\n")
+	if only != nil {
+		fmt.Fprintf(out, " Only the inputs that changed since a baseline, own inputs, the inputs behind attempted derivations, and inputs whose store path this context names are listed; %s lists all %d.", full, len(inputs))
+	}
+	// Rows by store path, source and own mark, in order of their first name,
+	// so a row's Source and Own columns hold for every name in it; an input
+	// without a computable store path has its own row.
+	var rows [][]string
+	byKey := map[string]int{}
 	for _, name := range sortedNames(inputs) {
-		in := inputs[name]
+		if only != nil && !only[name] {
+			continue
+		}
+		path := lockedStorePath(inputs[name].NarHash, inputs[name].storeName())
+		key := fmt.Sprintf("%s\x00%s\x00%t", path, inputs[name].source(), own[name])
+		if i, ok := byKey[key]; ok && path != "" {
+			rows[i] = append(rows[i], name)
+			continue
+		}
+		byKey[key] = len(rows)
+		rows = append(rows, []string{name})
+	}
+	if len(rows) == 0 {
+		out.WriteString("\n\nNo input is listed.\n")
+		return
+	}
+	out.WriteString("\n\n| Input | Own | Source | Store path | In store |\n|---|---|---|---|---|\n")
+	for _, names := range rows {
+		in := inputs[names[0]]
 		present := "unknown"
 		if path := lockedStorePath(in.NarHash, in.storeName()); path != "" {
 			present = "no"
@@ -389,14 +442,16 @@ func writeLockedInputs(out *strings.Builder, inputs map[string]lockedInput, own 
 			}
 		}
 		mark := "no"
-		if own[name] {
+		if own[names[0]] {
 			mark = "yes"
 		}
-		fmt.Fprintf(out, "| %s | %s | %s | %s | %s |\n", name, mark, in.source(), in.storePath(), present)
+		fmt.Fprintf(out, "| %s | %s | %s | %s | %s |\n", strings.Join(names, ", "), mark, in.source(), in.storePath(), present)
 	}
 }
 
-// writeLockDiff writes the inputs added, removed and changed from old to new.
+// writeLockDiff writes the inputs added, removed and changed from old to
+// new. Inputs whose locked objects are the same before and after, such as
+// the copies of one flake-utils that several inputs follow, share an entry.
 func writeLockDiff(out *strings.Builder, old, new map[string]lockedInput) {
 	var added, removed, changed []string
 	for _, name := range sortedNames(new) {
@@ -415,21 +470,45 @@ func writeLockDiff(out *strings.Builder, old, new map[string]lockedInput) {
 		out.WriteString("\nThe lock is the same as the baseline.\n")
 		return
 	}
-	for _, name := range added {
-		in := new[name]
-		fmt.Fprintf(out, "\n- Added `%s`: %s at %s (%s), %s\n", name, in.source(), in.identity(), in.date(), in.storePath())
+	for _, names := range groupInputs(added, func(name string) string { return new[name].whole }) {
+		in := new[names[0]]
+		fmt.Fprintf(out, "\n- Added %s: %s at %s (%s), %s\n", quoteNames(names), in.source(), in.identity(), in.date(), in.storePath())
 	}
-	for _, name := range removed {
-		in := old[name]
-		fmt.Fprintf(out, "\n- Removed `%s`: %s at %s (%s), %s\n", name, in.source(), in.identity(), in.date(), in.storePath())
+	for _, names := range groupInputs(removed, func(name string) string { return old[name].whole }) {
+		in := old[names[0]]
+		fmt.Fprintf(out, "\n- Removed %s: %s at %s (%s), %s\n", quoteNames(names), in.source(), in.identity(), in.date(), in.storePath())
 	}
-	for _, name := range changed {
-		was, now := old[name], new[name]
+	for _, names := range groupInputs(changed, func(name string) string { return old[name].whole + "\x00" + new[name].whole }) {
+		was, now := old[names[0]], new[names[0]]
 		source := now.source()
 		if was.source() != source {
 			source = was.source() + " -> " + source
 		}
-		fmt.Fprintf(out, "\n- Changed `%s`: %s\n  - locked: %s -> %s\n  - last modified: %s -> %s\n  - store path: %s -> %s\n",
-			name, source, was.identity(), now.identity(), was.date(), now.date(), was.storePath(), now.storePath())
+		fmt.Fprintf(out, "\n- Changed %s: %s\n  - locked: %s -> %s\n  - last modified: %s -> %s\n  - store path: %s -> %s\n",
+			quoteNames(names), source, was.identity(), now.identity(), was.date(), now.date(), was.storePath(), now.storePath())
 	}
+}
+
+// groupInputs groups names, in order, by the key each one has.
+func groupInputs(names []string, key func(string) string) [][]string {
+	var groups [][]string
+	index := map[string]int{}
+	for _, name := range names {
+		k := key(name)
+		if i, ok := index[k]; ok {
+			groups[i] = append(groups[i], name)
+			continue
+		}
+		index[k] = len(groups)
+		groups = append(groups, []string{name})
+	}
+	return groups
+}
+
+func quoteNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = "`" + name + "`"
+	}
+	return strings.Join(quoted, ", ")
 }

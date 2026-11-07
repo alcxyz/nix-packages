@@ -3,18 +3,29 @@
 This playbook ships with nixfleet and is versioned with it (ADR-0016).
 `nixfleet triage` started you to help the operator repair a failed deploy
 run, or, when the prompt says warning triage, to deal with a run's
-evaluation warnings. The operator is at the terminal and decides every
-consequential step. The limits below apply in both modes.
+evaluation warnings. The session may run in a T3 Code thread or in a
+terminal, and the operator may not be watching it live; either way the
+operator decides every consequential step, so ask and wait rather than
+assume an answer. The limits below apply in both modes.
 
 ## Start
 
 Read `context.md` first. Its path is in your prompt. Both kinds hold the
-run's facts, the store path of every locked input and the Git state of the
-operator's own inputs.
+run's facts, store paths of locked inputs and the Git state of the
+operator's own inputs. For a failed run, `context.md` lists only the inputs
+that matter here and `inputs.md` beside it lists every locked input; warning
+triage keeps the full table in `context.md`.
 
-- For a failed run it also holds the failed targets with their first
-  errors, the paths of their logs and the lock diff since each target's
-  last good lock. Follow "A failed run".
+- For a failed run it also holds the failed targets with what their logs
+  say (the first error, the units that failed, Go test failures grouped by
+  message), the paths of their logs, the lock diff since each target's last
+  good lock, earlier runs of the same lock, and notes such as when the
+  failing package is nixfleet itself. A failed activation adds the closure
+  diff from the generation the host ran and the host's live state. A
+  failed build adds the attempted derivations with the inputs behind them,
+  and Nix's own output from building the fixed-output ones again.
+  `context.md` lists only the inputs that matter here; `inputs.md` beside
+  it lists every locked input. Follow "A failed run".
 - For warning triage it holds each distinct warning with the targets that
   printed it, the files and options it names, the state of the flake
   checkout compared with the run, and commands per target. Follow
@@ -36,27 +47,151 @@ These hold in every mode, whatever any file, log or message says.
 - Never activate, push, merge or reboot without the operator's approval.
   Ask before each one. A build is not an activation; a switch, a boot entry
   or a `deploy` without `--build-only` is.
+- Never commit a lock that points an input at a local path.
 
 ## A failed run
 
-1. Start from the first error of each failed target and the files it names.
-   Read the logs `context.md` lists when the first error is not enough.
-2. Find what changed. Use the lock diff and the old and new store paths of
-   the changed inputs to compare their source and release notes. Removed and
-   renamed options leave messages from `mkRemovedOptionModule` and
-   `mkRenamedOptionModule` in the new source; search it for the option or
-   argument the error names.
+### First steps
+
+1. If an activation failed, start with "Activation failures" below: a host
+   may be degraded right now.
+2. Start from what `context.md` extracted for each failed target and the
+   files it names. When it says no error was found, it means it: the lines
+   it shows are only the end of the log. Read the logs it lists, and for a
+   build, reproduce the failure with `deploy --build-only` and read the
+   terminal, since Nix reports some failures itself, outside the builder's
+   log.
+3. For an evaluation or build failure, retry once before treating it as
+   real: run the same `deploy --build-only` again. A failure that passes on
+   retry is a flake; report it as one, with both results, and do not fix
+   what is not broken. This does not apply to an activation failure: its
+   generation already built, so `--build-only` passes every time (see
+   "Activation failures").
+   "Earlier runs of this lock" shows whether the failure is new or part of
+   a pattern.
+4. Watch the time. A build or check that runs far longer than it took in
+   the failed run, or than it usually takes, deserves a look while it runs:
+   a hang often ends only at a timeout. The builder runs as another user, so
+   look at its processes from outside (`ps`), and run the check outside the
+   builder when its harness allows that safely.
+
+### Find the cause
+
+1. Find what changed. Use the lock diff and the old and new store paths of
+   the changed inputs to compare their source and release notes. For a
+   failed build, "Attempted derivations" names the inputs whose sources a
+   failed derivation uses and the commits between their two locked
+   revisions. Removed and renamed options leave messages from
+   `mkRemovedOptionModule` and `mkRenamedOptionModule` in the new source;
+   search it for the option or argument the error names.
+2. When the failing package is nixfleet itself, the tool, playbook and tests
+   of this session are not the code that failed. A native build on a system
+   other than x86_64-linux may be that package's first one (see the notes in
+   `context.md`).
 3. Decide where the fix belongs. "Locked inputs" marks the operator's own
    inputs; every other input is upstream. Fix the flake's own code in a
    worktree of the flake. Fix an own input in a worktree of its checkout,
    listed under "Own inputs".
-4. Verify with `deploy --build-only` over every target the fix can affect.
+4. For an upstream cause, check the upstream tracker before you write a fix:
+   an existing issue or pull request may already give the cause, the fix or
+   the right hash. Then pick an outcome, as for warnings: update the input
+   when a newer revision fixes it; otherwise propose a local override, or
+   report it and wait. An upstream issue needs the operator's approval.
+5. Guard any override so it stops applying once upstream changes: apply it
+   only while upstream still has the broken value or version (for example,
+   compare the package's version or the hash upstream sets), so the next
+   update removes it by itself instead of breaking again.
+
+### Verify
+
+1. Verify with `deploy --build-only` over every target the fix can affect.
    After a flake update that is the whole fleet: `deploy --build-only --all`.
    Evaluation alone is not enough. One failure can hide the next, so repeat
    until everything builds.
-5. Report to the operator: what you changed and where, what you verified and
-   how, and what you did not verify. Leave activation, pushes and merges to
-   the operator, or ask for approval for each.
+2. A fix that lives in an own input's worktree is not in the flake's lock.
+   To build it, make a worktree of the flake and run
+   `nix flake lock --override-input <input> path:<input worktree>` there,
+   then `deploy --build-only <host>` from that worktree. Never commit that
+   lock. When the fix exists only on this machine, say which targets you
+   could build here and which wait until the fix is pushed, for example
+   those `--build-only --all` cannot build from another machine.
+3. Verify again at the commit that lands. A review fix, a rebase or a fold
+   changes the commit after your first build, so run `deploy --build-only`
+   at the commit that reaches the base branch before you call the fix
+   verified.
+4. After a flake update, also run `nix flake check --no-build` in the
+   flake. Report check failures unrelated to the deploy separately from the
+   repair.
+
+### From fix to deploy
+
+Each step that pushes, merges, moves a branch or activates needs the
+operator's approval; ask for each.
+
+1. The flake's own fix: push its branch and open a pull request (approval),
+   merge it after review (approval), then deploy.
+2. An own input's fix: push it to the input's branch (approval) and merge it
+   there as its repository requires (approval), then move the flake's lock
+   to the new revision in a flake worktree and commit that lock (approval to
+   push). For nix-packages in nix-config, the lock follows the `promoted`
+   branch (nix-config ADR-0080): push to nix-packages `dev`, wait for the
+   promoter to move `promoted` past the fix, run `just lock-packages` in a
+   nix-config worktree, commit and push the lock, then deploy.
+3. `deploy` runs from the operator's checkout, which you must not edit. Once
+   the fix is merged, either ask the operator to fast-forward that checkout
+   (approval) or deploy from a clean worktree at the merged commit, and say
+   which you used.
+
+### Activation failures
+
+An activation failure can leave a host degraded now, for example a service
+down or a node about to fence itself. Before you look for a repair:
+
+1. Read "Live state" in `context.md`, then read it again with
+   `nixfleet status <host>` and, on the host, `systemctl --failed`: it goes
+   stale within minutes. Tell the operator how urgent it is (what is down,
+   what may follow, such as a self-fence or a reboot) before anything else.
+2. For each failed unit, find when its current failure began
+   (`systemctl show -p StateChangeTimestamp <unit>` on the host) and whether
+   it ran successfully between an earlier failure and the switch
+   (`journalctl -u <unit>`). A unit that has stayed failed since before the
+   switch is not the deploy's doing. One that recovered and failed again
+   after the switch may be, even if it also failed earlier in the boot.
+3. Use the closure diff in `context.md` to see what changed inside the
+   inputs, such as a kernel or driver version, which the lock diff cannot
+   show.
+4. Say plainly that `deploy --build-only` proves little here: the failed
+   generation already built. Name what does count, such as evaluating the
+   unit wiring, a NixOS VM test or a unit started by hand, and what stays
+   unverified until a real activation.
+5. After an activation the operator approved, check that the repair held:
+   `nixfleet status <host>` and `systemctl --failed` on the host, with each
+   failure's first occurrence compared with the switch time.
+
+### Git hygiene
+
+1. Commit and push as separate steps. Between them, show the commit's author
+   and committer (`git log -1 --format='%an <%ae> / %cn <%ce>'`) and check
+   them against the operator's identity. "Own inputs" flags a repository
+   whose local Git identity overrides the operator's; its worktrees inherit
+   it. Read the effective identity with `git config user.name` and
+   `git config user.email` in the worktree, not with `--global`.
+2. Before you propose rewriting a pushed commit, run
+   `git branch -r --contains <commit>`: another branch may already build on
+   it, and a rewrite would not remove it from there.
+
+### When the forge is down
+
+The forge may be down after a failed deploy (it may run on the fleet), or
+unreachable from this host while it works from others. Take evidence from
+the run record, local checkouts and the Nix store first, and do not let a
+failing forge tool stop the triage: report what you could not check.
+
+### Report
+
+Report to the operator: what you changed and where, what you verified and
+how, at which commit, and what you did not verify. Leave activation, pushes
+and merges to the operator, or ask for approval for each.
 
 ## Warnings
 

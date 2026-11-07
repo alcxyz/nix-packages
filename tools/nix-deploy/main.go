@@ -76,6 +76,10 @@ type deployer struct {
 	hostLimits *hostLimits
 	// record keeps this run's evidence on disk (ADR-0016).
 	record *runRecord
+	// planned is, by target key, what the host ran when the plan read it
+	// and the path the target evaluated to, for a failed activation's
+	// closure diff.
+	planned map[string]plannedGeneration
 }
 
 const nixfleetUsage = `Usage: nixfleet deploy [OPTIONS] [<host> | --all]

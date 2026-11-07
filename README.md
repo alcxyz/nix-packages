@@ -210,9 +210,15 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
 - `nixfleet triage [<run>]`: writes `context.md` into a recorded run's
   directory, by default the newest failed run, and prints its path. It lists
   the run's facts, each failed target with the step that failed and its logs,
-  and the first error of each log with the files it names, the lock diff
-  since each target's last good run (ok or unchanged), the store path of every locked input
-  and the Git state of the operator's own inputs
+  and what each log says (its first error with the files it names, the units
+  it reports failed, its Go test failures grouped by message), earlier runs
+  of the same lock, the lock diff since each target's last good run (ok or
+  unchanged), the store paths of the inputs that matter (all of them in
+  `inputs.md` beside it) and the Git state of the operator's own inputs. A
+  failed build adds the attempted derivations with the inputs behind them
+  and Nix's own output from building the fixed-output ones again; a failed
+  activation adds the closure diff from the generation the host ran and the
+  hosts' live state
   ([ADR-0016](docs/adr/0016-nixfleet-triage.md)). The optional `triage`
   object of the inventory names the agent CLI (`agentCommand`), the local
   checkouts of the operator's own inputs (`inputCheckouts`) and a private

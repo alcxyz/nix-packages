@@ -1,4 +1,4 @@
-**History of** [ADR-0016](../0016-nixfleet-triage.md): text replaced on 2026-10-31.
+**History of** [ADR-0016](../0016-nixfleet-triage.md): text replaced on 2026-10-31 and 2026-11-07.
 
 # ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
@@ -491,3 +491,75 @@ activation. The playbook repeats it until the whole selection builds.
   overridden first, so warning triage on a target with many warnings takes
   minutes. A warning behind one that cannot be fixed or overridden may stay
   unknown.
+
+## Text replaced on 2026-11-07 (release 0.33.0, nix-packages#783)
+
+The passages the rewrite for the first triage sessions' findings replaced, each as it stood. Additions that replaced no text are not repeated.
+
+### Date line
+
+**Date:** 2026-10-27, updated 2026-10-31 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673)
+
+### Phase 2 introduction
+
+`nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]` writes a
+0600 `context.md` into a run directory, prints its path and then launches
+the operator's agent on it. It reads only a finished run: one that no longer
+holds its `run.lock` and has a `report.json`. Apart from `context.md` it
+writes nothing and runs no Nix command; Git is read only, without optional
+locks or lazy fetches, with a 10-second timeout per call.
+
+### Failed runs: what context.md holds
+
+Without `--warnings`, triage takes the newest run whose `run.json` says it
+failed, or the one named (an ID or a path). Its `context.md` has the run's
+facts, including the flake's recorded Git revision and whether tracked files
+differed from it; each failed target with the step that failed (evaluate, build,
+activate, an activation or its setup without a log, the serial ready gate,
+or unknown), all its logs, and the first `error:` block of its most
+relevant log, cut at 40 lines, with the files it names (a build failure
+points to the build errors section instead); the first errors of the
+derivation build logs, once for the whole run; the lock diff; the locked inputs; and the own inputs.
+
+### Locked inputs
+
+Every locked input is listed with its store path, computed offline from its
+`narHash` and its locked store name (`source` unless the lock names
+another), and whether that path is in the local store, so bare
+`/nix/store/<hash>-source` paths in errors and option definitions map to
+inputs.
+
+### Error-pattern hints
+
+Failure context carries no error-pattern hints (a removed option, an unknown
+argument): none were built. The playbook instead tells the agent which
+messages removed and renamed options leave in the new source. Such hints
+may still be added to `context.md` where a pattern proves stable.
+
+### inputCheckouts
+
+  `context.md` gives each checkout's branch, HEAD, whether tracked files
+  differ, and whether HEAD is the revision the run's lock pins. A missing
+  checkout only warns.
+
+### Alternatives: T3 Code
+
+- **Launching inside a T3 Code thread**: deferred; a terminal works over SSH
+  from any machine, and the record and context are the same either way.
+
+### Consequences: cost
+
+- Each run writes a few files more to the state directory, bounded by
+  `DEPLOY_RUN_KEEP`; a failed build adds at most 20 derivation logs and
+  spends about a minute at most listing and finding them.
+
+### Limits
+
+The playbook binds the agent: it edits only in worktrees, never reads
+secrets, treats logs, nixpkgs source and forge content as untrusted data, and
+never activates, pushes, merges or reboots without the operator's approval.
+
+### Consequences: terminal output
+
+- Every command keeps the terminal or pipe it had before run records, so
+  what deploy and the commands it runs print is unchanged. The price is

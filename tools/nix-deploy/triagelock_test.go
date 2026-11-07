@@ -71,6 +71,7 @@ func setRun(t *testing.T, dir string, started time.Time, flakeDir, rev string, l
 		t.Fatal(err)
 	}
 	info.Started, info.FlakeDir, info.GitRev = started, flakeDir, rev
+	info.LockSHA256 = lockSum(lock)
 	data, _ := json.Marshal(info)
 	if err := os.WriteFile(filepath.Join(dir, "run.json"), data, 0o600); err != nil {
 		t.Fatal(err)
@@ -142,7 +143,7 @@ func TestTriageLockBaselines(t *testing.T) {
 
 	pathExists = func(path string) bool { return path == lockedStorePath(hashB, "source") }
 	defer func() { pathExists = fileExists }()
-	path, err := writeTriageContext(dir, nil)
+	path, err := writeTriageContext(dir, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func TestTriageLockGitFallback(t *testing.T) {
 	dir := makeRun(t, runs, "20260102T030500.000000Z-4", true,
 		&runReport{Hosts: []hostReport{{Host: "alpha", System: phaseReport{Status: "failed"}}}}, nil)
 	setRun(t, dir, time.Date(2026, 1, 2, 3, 5, 0, 0, time.UTC), flakeDir, head, lockData(t, newLock))
-	path, err := writeTriageContext(dir, nil)
+	path, err := writeTriageContext(dir, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

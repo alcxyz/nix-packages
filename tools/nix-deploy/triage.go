@@ -16,10 +16,15 @@ import (
 const triageUsage = `Usage: nixfleet triage [--config FILE] [--no-launch] [--warnings] [<run>]
 
 Writes context.md for a recorded deploy run (ADR-0016): the run's facts, its
-failed targets with the step that failed, the paths of their logs, the first
-error of each with the files it names, the lock diff since each target's
-baseline, the store path of every locked input, and the Git state of the
-operator's own inputs. <run> is a run ID, the name of a
+failed targets with the step that failed, the paths of their logs, what each
+log says (the first error with the files it names, the units it reports
+failed, its Go test failures grouped by message), earlier runs of the same
+lock, the lock diff since each target's baseline, the store paths of the
+inputs that matter (every locked input in inputs.md beside it), and the Git
+state of the operator's own inputs. A failed build adds the attempted
+derivations with the inputs behind them; a failed activation adds its
+closure diff and the hosts' live state, read like nixfleet status (it needs
+the inventory). <run> is a run ID, the name of a
 directory under $XDG_STATE_HOME/nix-deploy/runs (by default ~/.local/state),
 or the path of a run directory; without it, the newest run that failed.
 
@@ -150,7 +155,7 @@ func runTriage(args []string) int {
 		}
 		path, err = writeWarningsContext(dir, checkouts, inv, noInventory)
 	default:
-		path, err = writeTriageContext(dir, checkouts)
+		path, err = writeTriageContext(dir, checkouts, opts.configFile)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nixfleet triage: %v\n", err)
@@ -329,20 +334,22 @@ func fileExists(path string) bool {
 }
 
 // writeTriageContext writes context.md into a finished run's directory and
-// returns its path; checkouts are the own inputs' checkouts by input name.
-func writeTriageContext(dir string, checkouts map[string]string) (string, error) {
+// returns its path; checkouts are the own inputs' checkouts by input name,
+// and configFile the inventory, which live state needs. Beside it goes
+// inputs.md, the table of every locked input, which context.md trims to the
+// inputs that matter for the failure.
+func writeTriageContext(dir string, checkouts map[string]string, configFile string) (string, error) {
 	info, rep, err := readFinishedRun(dir)
 	if err != nil {
 		return "", err
 	}
 
 	buildFailed := map[string]bool{}
-	if data, err := os.ReadFile(filepath.Join(dir, "logs", "build.log")); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if keys, ok := strings.CutPrefix(line, "failed targets: "); ok {
-				for _, key := range strings.Fields(keys) {
-					buildFailed[key] = true
-				}
+	buildSummary, _ := os.ReadFile(filepath.Join(dir, "logs", "build.log"))
+	for _, line := range strings.Split(string(buildSummary), "\n") {
+		if keys, ok := strings.CutPrefix(line, "failed targets: "); ok {
+			for _, key := range strings.Fields(keys) {
+				buildFailed[key] = true
 			}
 		}
 	}
@@ -354,6 +361,10 @@ func writeTriageContext(dir string, checkouts map[string]string) (string, error)
 		if strings.HasPrefix(name, "build-") && strings.HasSuffix(name, ".log") {
 			buildLogs = append(buildLogs, filepath.Join(dir, "logs", name))
 		}
+	}
+	rebuildLog := filepath.Join(dir, "logs", nixRebuildLog)
+	if !fileExists(rebuildLog) {
+		rebuildLog = ""
 	}
 	var failed []failedTarget
 	for _, host := range rep.Hosts {
@@ -368,6 +379,50 @@ func writeTriageContext(dir string, checkouts map[string]string) (string, error)
 		}
 	}
 
+	lock, lockErr := os.ReadFile(filepath.Join(dir, "flake.lock"))
+	inputs, inputsErr := lockInputs(lock)
+	if lockErr != nil {
+		inputs, inputsErr = nil, nil
+	}
+	own, unlocked := ownMarks(lock, checkouts)
+	nodeCheckouts := map[string]string{}
+	for name, node := range ownInputNodes(lock, checkouts) {
+		nodeCheckouts[node] = checkouts[name]
+	}
+	var baselines []baselineGroup
+	if inputs != nil {
+		baselines = lockBaselines(dir, info, lock, failed)
+	}
+	var buildBaseline *baselineGroup
+	var liveHosts []string
+	anyBuild := false
+	for _, t := range failed {
+		switch t.step {
+		case "build":
+			anyBuild = true
+			for i := range baselines {
+				if buildBaseline == nil && containsFailed(baselines[i].targets, t) {
+					buildBaseline = &baselines[i]
+				}
+			}
+		case "activate", "activation", "gate":
+			if !contains(liveHosts, t.host) {
+				liveHosts = append(liveHosts, t.host)
+			}
+		}
+	}
+	attempted := attemptedFromBuildLog(string(buildSummary))
+	// A substituter outage can fail hundreds of source fetches at once; the
+	// context lists the first maxAttempted and build.log has them all.
+	attemptedTotal := len(attempted)
+	if len(attempted) > maxAttempted {
+		attempted = attempted[:maxAttempted]
+	}
+	facts := make([]drvFacts, len(attempted))
+	for i, a := range attempted {
+		facts[i] = readDrv(a.drv)
+	}
+
 	var out strings.Builder
 	writeRunSummary(&out, dir, info)
 	out.WriteString("## Failed targets\n\n")
@@ -377,26 +432,31 @@ func writeTriageContext(dir string, checkouts map[string]string) (string, error)
 	for _, t := range failed {
 		fmt.Fprintf(&out, "- %s %s: %s\n", t.host, t.label, stepName(t.step))
 	}
-	anyBuild := false
+	writeNotes(&out, info, attempted, facts)
 	for _, t := range failed {
 		fmt.Fprintf(&out, "\n## %s %s (%s)\n\n", t.host, t.label, stepName(t.step))
 		// Every log the target has, whatever step failed, in step order. The
 		// last one is the one whose tail is shown when it has no error line.
 		var logs []string
-		for _, step := range []string{"evaluate", "activate"} {
+		for _, step := range []string{"evaluate", "activate", "closure"} {
 			if log := filepath.Join(dir, "logs", t.phase+"-"+t.host+"-"+step+".log"); fileExists(log) {
 				logs = append(logs, log)
 			}
 		}
 		relevant := ""
-		if len(logs) > 0 {
-			relevant = logs[len(logs)-1]
+		for _, log := range logs {
+			if !strings.HasSuffix(log, "-closure.log") {
+				relevant = log
+			}
 		}
 		if t.step == "build" {
 			if log := filepath.Join(dir, "logs", "build.log"); fileExists(log) {
 				logs = append(logs, log)
 			}
 			logs = append(logs, buildLogs...)
+			if rebuildLog != "" {
+				logs = append(logs, rebuildLog)
+			}
 		}
 		if len(logs) == 0 {
 			out.WriteString("This target has no log.\n\n")
@@ -409,8 +469,7 @@ func writeTriageContext(dir string, checkouts map[string]string) (string, error)
 		}
 		switch t.step {
 		case "build":
-			anyBuild = true
-			out.WriteString("The first errors of the build logs are under \"Build errors\".\n")
+			out.WriteString("The first errors of the build logs are under \"Build errors\". The failed generation was not built, so there is no closure diff; the lock diff and the attempted derivations stand in for it.\n")
 		case "evaluate", "activate":
 			log := filepath.Join(dir, "logs", t.phase+"-"+t.host+"-"+t.step+".log")
 			fmt.Fprintf(&out, "From %s:\n", log)
@@ -426,21 +485,89 @@ func writeTriageContext(dir string, checkouts map[string]string) (string, error)
 				writeLogError(&out, relevant)
 			}
 		}
+		if log := filepath.Join(dir, "logs", t.phase+"-"+t.host+"-closure.log"); fileExists(log) {
+			writeClosureDiff(&out, log)
+		}
+	}
+	if len(liveHosts) > 0 {
+		out.WriteString("\n## Live state\n\nAn activation failed, so the host may be degraded now. This is what it looks like as triage writes this file, not what the run recorded.\n\n")
+		out.WriteString(readLiveState(configFile, liveHosts))
 	}
 	if anyBuild {
 		out.WriteString("\n## Build errors\n\n")
-		if len(buildLogs) == 0 {
+		if len(buildLogs) == 0 && rebuildLog == "" {
 			out.WriteString("The run kept no build log of a derivation; the build kept the terminal. build.log says what was looked up.\n")
 		}
+		silent := false
+		// Two derivations that differ only in an attribute the build does
+		// not read leave the same log; it is shown once.
+		seenLogs := map[string]string{}
 		for _, log := range buildLogs {
 			fmt.Fprintf(&out, "Log: %s\n", log)
-			writeLogError(&out, log)
+			data, _ := os.ReadFile(log)
+			sum := lockSum(data)
+			if first, ok := seenLogs[sum]; ok && len(data) > 0 {
+				fmt.Fprintf(&out, "\nThe same content as %s.\n\n", first)
+				continue
+			}
+			seenLogs[sum] = log
+			if !writeLogError(&out, log) {
+				silent = true
+			}
 			out.WriteString("\n")
 		}
+		if rebuildLog != "" {
+			fmt.Fprintf(&out, "Nix's own output from building the attempted fixed-output derivations again after the failure, where a hash mismatch shows: %s\n", rebuildLog)
+			writeLogError(&out, rebuildLog)
+			out.WriteString("\n")
+		}
+		if silent || len(buildLogs) == 0 {
+			out.WriteString("Nix reports some failures itself rather than through the builder, such as a fixed-output hash mismatch or a missing output, and the run records Nix's own output only for the fixed-output rebuild above. When no log explains the failure, reproduce it with `deploy --build-only` and read the terminal.\n")
+		}
+		if len(attempted) > 0 {
+			writeAttempted(&out, attempted, attemptedTotal, facts, inputs, own, nodeCheckouts, buildBaseline)
+		}
 	}
-	lock, _ := os.ReadFile(filepath.Join(dir, "flake.lock"))
-	own, unlocked := ownMarks(lock, checkouts)
-	writeLockContext(&out, dir, info, failed, own, unlocked)
+	writeEarlierRuns(&out, dir, info)
+
+	inputsPath := filepath.Join(dir, "inputs.md")
+	switch {
+	case lockErr != nil:
+		out.WriteString("\n## Lock diff\n\nThe run kept no flake.lock, so there is no lock diff and no input list.\n")
+	case inputsErr != nil:
+		fmt.Fprintf(&out, "\n## Lock diff\n\nThe run's flake.lock cannot be read: %v\n", inputsErr)
+	default:
+		writeLockContext(&out, dir, inputs, baselines)
+		// The context lists the inputs that changed, the own ones, those
+		// behind an attempted derivation and those whose store path it
+		// names; inputs.md has them all.
+		only := changedInputs(baselines, inputs)
+		for name := range own {
+			only[name] = true
+		}
+		byPath := inputsByStorePath(inputs)
+		for _, f := range facts {
+			for _, name := range drvInputs(f, byPath) {
+				only[name] = true
+			}
+		}
+		for _, ref := range storePathRef.FindAllString(out.String(), -1) {
+			for path, names := range byPath {
+				if strings.HasPrefix(ref, path) {
+					for _, name := range names {
+						only[name] = true
+					}
+				}
+			}
+		}
+		var full strings.Builder
+		fmt.Fprintf(&full, "# Locked inputs of run %s\n", info.ID)
+		writeLockedInputs(&full, inputs, own, unlocked, nil, "")
+		if err := replaceFile(inputsPath, []byte(full.String())); err != nil {
+			return "", err
+		}
+		writeLockedInputs(&out, inputs, own, unlocked, only, inputsPath)
+	}
 	writeOwnInputs(&out, lock, checkouts)
 
 	path := filepath.Join(dir, "context.md")
@@ -449,6 +576,45 @@ func writeTriageContext(dir string, checkouts map[string]string) (string, error)
 		return "", err
 	}
 	return path, nil
+}
+
+func containsFailed(targets []failedTarget, t failedTarget) bool {
+	for _, other := range targets {
+		if other.host == t.host && other.phase == t.phase {
+			return true
+		}
+	}
+	return false
+}
+
+// writeNotes writes one-line notes about the failure: when the failing
+// package is nixfleet itself, and when an attempted derivation builds for a
+// system nix-packages does not build natively before promotion.
+func writeNotes(out *strings.Builder, info runInfo, attempted []attemptedDerivation, facts []drvFacts) {
+	var notes []string
+	for _, a := range attempted {
+		if isNixfleet(a.drv) {
+			notes = append(notes, fmt.Sprintf("The failing package is nixfleet itself (%s). This run used nixfleet %s, so the tool, its playbook and its tests in this run are not the code that failed; that is why the tool still works while its update cannot build.", derivationName(a.drv), info.Version))
+			break
+		}
+	}
+	var systems []string
+	for _, f := range facts {
+		// builtin is Nix's own fetcher, not a platform anything is built for.
+		if f.system != "" && f.system != "x86_64-linux" && f.system != "builtin" && !contains(systems, f.system) {
+			systems = append(systems, f.system)
+		}
+	}
+	for _, system := range systems {
+		notes = append(notes, fmt.Sprintf("An attempted derivation builds for %s. nix-packages builds natively only for x86_64-linux before it promotes a revision and only evaluates the other systems (its ADR-0003), so a nix-packages package failing here may be failing its first native build on %s.", system, system))
+	}
+	if len(notes) == 0 {
+		return
+	}
+	out.WriteString("\n## Notes\n\n")
+	for _, note := range notes {
+		fmt.Fprintf(out, "- %s\n", note)
+	}
 }
 
 func stepName(step string) string {
@@ -509,41 +675,60 @@ func writeRunSummary(out *strings.Builder, dir string, info runInfo) {
 // context shows instead.
 const tailLines = 10
 
-// writeLogError writes a log's first error and the files it names or,
-// without an error line, the log's last non-empty lines, since a command
-// that failed to start leaves only deploy's own message.
-func writeLogError(out *strings.Builder, log string) {
-	block, cut := logError(log)
-	if block == nil {
-		data, _ := os.ReadFile(log)
-		var tail []string
-		for _, line := range strings.Split(ansiPattern.ReplaceAllString(string(data), ""), "\n") {
-			if line = strings.TrimRight(line, "\r"); strings.TrimSpace(line) != "" {
-				tail = append(tail, line)
+// writeLogError writes what a log says about its failure: its first error
+// and the files it names, the units it says failed, and its Go test
+// failures grouped by message. Without any of those it says so plainly and
+// shows the log's last non-empty lines, since a command that failed to
+// start leaves only deploy's own message; it then returns false.
+func writeLogError(out *strings.Builder, log string) bool {
+	data, _ := os.ReadFile(log)
+	// Nix's raw log format marks each line with a syslog severity, such as
+	// <3>error:, when it runs under systemd; without that, a hash mismatch in
+	// nix-rebuild.log would not count as an error line.
+	text := severityPattern.ReplaceAllString(ansiPattern.ReplaceAllString(string(data), ""), "")
+	found := false
+	if block, cut := firstError(text); block != nil {
+		found = true
+		fmt.Fprintf(out, "\nFirst error:\n\n````text\n%s\n````\n", strings.Join(block, "\n"))
+		if cut {
+			fmt.Fprintf(out, "\nThe error is cut at %d lines.\n", maxErrorLines)
+		}
+		if files := errorFiles(block); len(files) > 0 {
+			out.WriteString("\nFiles the error names:\n\n")
+			for _, file := range files {
+				fmt.Fprintf(out, "- %s\n", file)
 			}
 		}
-		if len(tail) > tailLines {
-			tail = tail[len(tail)-tailLines:]
+	}
+	if units, more := unitFailures(text); len(units) > 0 {
+		found = true
+		fmt.Fprintf(out, "\nUnits that failed, as the log reports them:\n\n````text\n%s\n````\n", strings.Join(units, "\n"))
+		if more {
+			fmt.Fprintf(out, "\nOnly the first %d such lines are shown.\n", maxFindingLines)
 		}
-		if len(tail) == 0 {
-			out.WriteString("\nThe log is empty.\n")
-			return
+	}
+	if tests := goTestFailures(text); len(tests.tests) > 0 {
+		found = true
+		writeTestFailures(out, tests)
+	}
+	if found {
+		return true
+	}
+	var tail []string
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimRight(line, "\r"); strings.TrimSpace(line) != "" {
+			tail = append(tail, line)
 		}
-		fmt.Fprintf(out, "\nNo line starting with \"error:\"; the last %d non-empty lines instead:\n\n````text\n%s\n````\n", len(tail), strings.Join(tail, "\n"))
-		return
 	}
-	fmt.Fprintf(out, "\nFirst error:\n\n````text\n%s\n````\n", strings.Join(block, "\n"))
-	if cut {
-		fmt.Fprintf(out, "\nThe error is cut at %d lines.\n", maxErrorLines)
+	if len(tail) > tailLines {
+		tail = tail[len(tail)-tailLines:]
 	}
-	files := errorFiles(block)
-	if len(files) == 0 {
-		return
+	if len(tail) == 0 {
+		out.WriteString("\nThe log is empty.\n")
+		return false
 	}
-	out.WriteString("\nFiles the error names:\n\n")
-	for _, file := range files {
-		fmt.Fprintf(out, "- %s\n", file)
-	}
+	fmt.Fprintf(out, "\nNo error found: no line starts with \"error:\", and none reports a failed unit or a failed Go test. The last %d non-empty lines follow only as the end of the log; they need not explain the failure.\n\n````text\n%s\n````\n", len(tail), strings.Join(tail, "\n"))
+	return false
 }
 
 func logError(path string) ([]string, bool) {
@@ -553,6 +738,10 @@ func logError(path string) ([]string, bool) {
 	}
 	return firstError(string(data))
 }
+
+// severityPattern is the syslog severity prefix Nix's raw log format puts on
+// each line under systemd (IN_SYSTEMD=1).
+var severityPattern = regexp.MustCompile(`(?m)^<[0-7]>`)
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
 

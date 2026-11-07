@@ -346,6 +346,34 @@ const (
 	buildLogTimeout    = 10 * time.Second
 )
 
+// The lines of build.log that name the attempted derivations, the log of
+// the fixed-output rebuild, and how long that rebuild may take.
+const (
+	attemptedPrefix      = "attempted: "
+	attemptedFixedPrefix = "attempted fixed-output: "
+	nixRebuildLog        = "nix-rebuild.log"
+	fixedRebuildTimeout  = 2 * time.Minute
+)
+
+// rebuildFixedOutputs builds fixed-output derivations again with Nix's own
+// output captured, without the progress bar, and returns that output and
+// the exit status; tests replace it. The shared build keeps the terminal,
+// so a hash mismatch, which Nix reports itself rather than the builder,
+// reaches neither the terminal's scrollback for long nor nix log. Only
+// fixed-output derivations are built again: they are where Nix's own error
+// matters most, and a test suite or a hang would cost far more. options are
+// the build profile's, so the rebuild keeps its max-jobs and cores limits.
+var rebuildFixedOutputs = func(drvs, options []string, timeout time.Duration) ([]byte, int) {
+	var output bytes.Buffer
+	argv := []string{"nix", "build", "--no-link", "--keep-going", "--log-format", "raw"}
+	argv = append(argv, options...)
+	for _, drv := range drvs {
+		argv = append(argv, drv+"^*")
+	}
+	status := command{argv: argv, stdin: bytes.NewReader(nil), stdout: &output, stderr: &output, timeout: timeout}.run()
+	return output.Bytes(), status
+}
+
 // recordBuild writes logs/build.log, a summary of the shared build, and,
 // when targets failed, the build logs Nix kept of the derivations they still
 // need, as logs/build-<derivation name>.log. The build keeps the terminal, so
@@ -356,8 +384,10 @@ const (
 // attempted every one whose inputs were all there, so the attempted ones are
 // those none of whose input derivations is pending, to build or to fetch (a
 // download that failed); only their logs are looked up, since Nix may hold an
-// old log of a waiting one from an earlier build.
-func (d *deployer) recordBuild(argv []string, status int, failed []target, evaluated map[string]evaluation) {
+// old log of a waiting one from an earlier build. build.log names each
+// attempted derivation and marks the fixed-output ones, which are then built
+// again with Nix's output captured in logs/nix-rebuild.log.
+func (d *deployer) recordBuild(argv, options []string, status int, failed []target, evaluated map[string]evaluation) {
 	rec := d.record
 	if rec == nil || rec.dir == "" {
 		return
@@ -371,6 +401,7 @@ func (d *deployer) recordBuild(argv []string, status int, failed []target, evalu
 			installables = append(installables, evaluated[t.key()].Drv+"^out")
 		}
 		fmt.Fprintf(&summary, "failed targets: %s\n", strings.Join(keys, " "))
+		var fixed []string
 		deadline := time.Now().Add(buildLogBudget)
 		drvs, fetches, err := pendingBuilds(installables, buildLogBudget)
 		if err != nil {
@@ -384,6 +415,18 @@ func (d *deployer) recordBuild(argv []string, status int, failed []target, evalu
 				} else {
 					drvs = attemptedDrvs(drvs, fetches, facts)
 					fmt.Fprintf(&summary, "attempted, with no pending input: %d\n", len(drvs))
+					// Each attempted derivation is named, so triage can tie
+					// it to an input; a fixed-output one is marked, since
+					// Nix reports its hash mismatch itself, outside the
+					// builder's log.
+					for _, drv := range drvs {
+						if facts[filepath.Base(drv)].fixed {
+							fixed = append(fixed, drv)
+							fmt.Fprintf(&summary, "%s%s\n", attemptedFixedPrefix, drv)
+						} else {
+							fmt.Fprintf(&summary, "%s%s\n", attemptedPrefix, drv)
+						}
+					}
 				}
 			}
 			logs, tried := collectBuildLogs(drvs, deadline, nixBuildLog)
@@ -399,6 +442,19 @@ func (d *deployer) recordBuild(argv []string, status int, failed []target, evalu
 				}
 			}
 		}
+		if len(fixed) > maxAttempted {
+			fmt.Fprintf(&summary, "rebuilding only the first %d of %d attempted fixed-output derivations\n", maxAttempted, len(fixed))
+			fixed = fixed[:maxAttempted]
+		}
+		if len(fixed) > 0 {
+			fmt.Fprintf(os.Stderr, "deploy: run record: building the %d attempted fixed-output derivation(s) again to record Nix's own error (at most %s)\n", len(fixed), fixedRebuildTimeout)
+			output, status := rebuildFixedOutputs(fixed, options, fixedRebuildTimeout)
+			if log := rec.log(nixRebuildLog); log != nil {
+				log.Write(output)
+				log.Close()
+				fmt.Fprintf(&summary, "rebuilt the attempted fixed-output derivations with captured output, exit status %d: %s\n", status, nixRebuildLog)
+			}
+		}
 	}
 	if log := rec.log("build.log"); log != nil {
 		io.WriteString(log, summary.String())
@@ -407,11 +463,12 @@ func (d *deployer) recordBuild(argv []string, status int, failed []target, evalu
 }
 
 // derivationFacts are, by store path name, a derivation's input derivations
-// with the output names it takes from each, and its output paths by output
-// name.
+// with the output names it takes from each, its output paths by output
+// name, and whether it is fixed-output (an output with a hash).
 type derivationFacts struct {
 	inputs  map[string][]string
 	outputs map[string]string
+	fixed   bool
 }
 
 // pendingInputs shows the pending derivations and, when paths are left to
@@ -473,6 +530,7 @@ func parseDerivations(data []byte) (map[string]derivationFacts, error) {
 		} `json:"inputs"`
 		Outputs map[string]struct {
 			Path string `json:"path"`
+			Hash string `json:"hash"`
 		} `json:"outputs"`
 		Env map[string]string `json:"env"`
 	}
@@ -510,6 +568,9 @@ func parseDerivations(data []byte) (map[string]derivationFacts, error) {
 			}
 			if out != "" {
 				f.outputs[name] = filepath.Base(out)
+			}
+			if output.Hash != "" {
+				f.fixed = true
 			}
 		}
 		facts[filepath.Base(path)] = f
@@ -622,6 +683,9 @@ func (d *deployer) finishRecord(selected []string, r *report, failed bool) {
 	if rec == nil || rec.dir == "" {
 		return
 	}
+	if failed && runContext.Err() == nil {
+		d.recordClosureDiffs(r)
+	}
 	data, err := d.reportData(selected, r)
 	if err == nil {
 		err = replaceFile(filepath.Join(rec.dir, "report.json"), data)
@@ -706,4 +770,74 @@ func (rec *runRecord) prune() error {
 		}
 	}
 	return firstErr
+}
+
+// plannedGeneration is what a target's host ran when the plan read it,
+// empty when unknown, and the path the target evaluated to.
+type plannedGeneration struct {
+	running string
+	out     string
+}
+
+func (d *deployer) notePlanned(t target, running, out string) {
+	if d.planned == nil {
+		d.planned = map[string]plannedGeneration{}
+	}
+	d.planned[t.key()] = plannedGeneration{running: running, out: out}
+}
+
+// closureDiffTimeout bounds one nix store diff-closures.
+const closureDiffTimeout = 30 * time.Second
+
+// recordClosureDiffs writes, for each target that failed after spending
+// time in its activation, logs/<phase>-<host>-closure.log: `nix store
+// diff-closures` from the generation the host ran to the one that failed,
+// which shows version changes inside an input, such as a kernel or a
+// driver, that the lock diff cannot. Both paths must be in this machine's
+// store; the log says so when one is not. A build failure has no built
+// generation to compare.
+func (d *deployer) recordClosureDiffs(r *report) {
+	var keys []string
+	for key := range d.planned {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		phase, host, _ := strings.Cut(key, ":")
+		t := target{phase: phase, host: host}
+		if r.results[key] != "failed" || r.time(t, "activate") <= 0 {
+			continue
+		}
+		g := d.planned[key]
+		log := d.record.log(phase + "-" + host + "-closure.log")
+		if log == nil {
+			return
+		}
+		switch {
+		case g.running == "":
+			io.WriteString(log, "The generation the host ran before the activation is unknown, so there is no closure diff.\n")
+		case g.running == g.out:
+			// NixOS points /run/current-system at the new generation before
+			// its units start, so a retried activation of a generation that
+			// failed finds the host already on it; a diff would be empty.
+			fmt.Fprintf(log, "No closure diff: the host already pointed at the failed generation %s when the plan read it, as after an earlier failed activation of it, so this run cannot tell what changed. Compare with an earlier generation, such as the previous system profile link on the host or the generation a successful run deployed (nixfleet status, earlier run records).\n", g.out)
+		case !pathExists(g.running) || !pathExists(g.out):
+			var missing []string
+			if !pathExists(g.running) {
+				missing = append(missing, g.running+" (the generation the host ran)")
+			}
+			if !pathExists(g.out) {
+				missing = append(missing, g.out+" (the failed generation)")
+			}
+			fmt.Fprintf(log, "No closure diff: not in this machine's store: %s.\n", strings.Join(missing, ", "))
+		default:
+			fmt.Fprintf(log, "nix store diff-closures %s %s\n", g.running, g.out)
+			output, status := capture(closureDiffTimeout, "nix", "store", "diff-closures", g.running, g.out)
+			io.WriteString(log, output)
+			if status != 0 {
+				fmt.Fprintf(log, "nix store diff-closures exited with status %d\n", status)
+			}
+		}
+		log.Close()
+	}
 }

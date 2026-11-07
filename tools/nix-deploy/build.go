@@ -98,7 +98,7 @@ func (d *deployer) buildTargets(targets []target, evaluated map[string]evaluatio
 		}
 		built[t.key()] = path
 	}
-	d.recordBuild(argv, buildStatus, failed, evaluated)
+	d.recordBuild(argv, options, buildStatus, failed, evaluated)
 	return built
 }
 
@@ -293,6 +293,7 @@ func (d *deployer) plan(targets []target, evaluated map[string]evaluation, r *re
 		}
 		path := e.Out
 		running, profile := d.generation(t)
+		d.notePlanned(t, running, path)
 		boot := t.phase == "system" && t.host != d.self && d.inv.activationMode(t.host) == "boot"
 		current := running
 		if boot {

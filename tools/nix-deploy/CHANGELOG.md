@@ -9,6 +9,37 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.33.0 (2026-11-07)
+
+Findings of the first three triage sessions (nix-packages#783).
+
+- A failed build names each attempted derivation in `build.log` and marks the
+  fixed-output ones, then builds those again with Nix's output captured in
+  `nix-rebuild.log` (at most 2 minutes), so a hash mismatch, which Nix reports
+  outside the builder's log, reaches the record.
+- A failed activation records `nix store diff-closures` from the generation
+  the host ran to the failed one, when both are in the local store.
+- `nixfleet triage` extracts failed units (`Failed to start`, `the following
+  units failed`) and Go test failures grouped by message from logs, and says
+  plainly when a log holds no error instead of presenting its tail as the
+  cause. It shows identical build logs once.
+- Its context adds the attempted derivations with the inputs behind them and
+  the commits between their locked revisions, earlier runs of the same lock,
+  the closure diff and live state (`nixfleet status` and failed units with
+  their first failure) for failed activations, and notes when the failing
+  package is nixfleet itself or builds for a system nix-packages does not
+  build natively before promotion.
+- The context lists only the inputs that matter, gives inputs that share
+  a store path and source one row, writes every locked input to `inputs.md`, folds own inputs not
+  cloned on this machine into one line and flags a repository-local Git
+  identity.
+- The playbook gains paths for activation failures, upstream fixes with
+  guarded overrides, retries and long builds, verifying an own input's fix
+  with `--override-input` and at the commit that lands, getting a fix to the
+  deploy, Git hygiene, an unreachable forge and flake checks. It no longer
+  assumes the operator is at the terminal, since the agent command may hand
+  the session to a T3 Code thread.
+
 ## 0.32.1 (2026-11-06)
 
 - The package builds on Darwin again. Its build now provides `ps` to the tests,

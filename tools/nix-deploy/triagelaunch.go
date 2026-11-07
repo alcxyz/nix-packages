@@ -192,8 +192,14 @@ func writeOwnInputs(out *strings.Builder, lock []byte, checkouts map[string]stri
 	out.WriteString("The operator's own inputs, as the triage configuration lists them, with the Git state of their local checkouts now. Fix an own input in a worktree of its checkout.\n")
 	inputs, _ := lockInputs(lock)
 	nodes := ownInputNodes(lock, checkouts)
+	// Inputs not cloned on this machine are normal and share one line.
+	var absent []string
 	for _, name := range sortedPaths(checkouts) {
 		path := checkouts[name]
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			absent = append(absent, name)
+			continue
+		}
 		fmt.Fprintf(out, "\n### %s\n\n- Checkout: %s\n", name, path)
 		pinned := ""
 		if node, ok := nodes[name]; ok {
@@ -208,10 +214,6 @@ func writeOwnInputs(out *strings.Builder, lock []byte, checkouts map[string]stri
 			fmt.Fprintf(out, "- Locked by the run: %s\n", label)
 		} else {
 			out.WriteString("- Locked by the run: not in the run's lock, or it follows another input\n")
-		}
-		if info, err := os.Stat(path); err != nil || !info.IsDir() {
-			out.WriteString("- The checkout is not a directory.\n")
-			continue
 		}
 		head, ok := readGit(path, "rev-parse", "--verify", "-q", "HEAD")
 		if !ok {
@@ -240,6 +242,21 @@ func writeOwnInputs(out *strings.Builder, lock []byte, checkouts map[string]stri
 		default:
 			out.WriteString("- HEAD is the locked revision: no\n")
 		}
+		// A repository's own identity shadows the user's, and its worktrees
+		// inherit it, so a commit made there may not carry the expected
+		// author.
+		var identity []string
+		for _, key := range []string{"user.name", "user.email"} {
+			if value, ok := readGit(path, "config", "--local", "--get", key); ok {
+				identity = append(identity, key+" "+strings.TrimSpace(string(value)))
+			}
+		}
+		if len(identity) > 0 {
+			fmt.Fprintf(out, "- Repository-local Git identity: %s. It overrides the user's global identity in this checkout and its worktrees; check the author and committer before any push.\n", strings.Join(identity, ", "))
+		}
+	}
+	if len(absent) > 0 {
+		fmt.Fprintf(out, "\nNot cloned on this machine (the checkout is not a directory): %s.\n", strings.Join(absent, ", "))
 	}
 }
 

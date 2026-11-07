@@ -172,7 +172,7 @@ func TestTriageOwnInputs(t *testing.T) {
 	setRun(t, dir, time.Date(2026, 1, 2, 3, 5, 0, 0, time.UTC), "/flake", "", lockData(t, lock))
 
 	read := func() string {
-		path, err := writeTriageContext(dir, checkouts)
+		path, err := writeTriageContext(dir, checkouts, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,7 +183,6 @@ func TestTriageOwnInputs(t *testing.T) {
 	for _, want := range []string{
 		"| tool | yes | git+https://example.invalid/tool |",
 		"| other | yes |",
-		"| nixpkgs | no |",
 		"### tool\n\n- Checkout: " + repo + "\n- Locked by the run: " + head + "\n- Branch: main\n- HEAD: " + head + "\n- Tracked files: clean\n- HEAD is the locked revision: yes\n",
 		"### other\n\n- Checkout: " + repo + "\n- Locked by the run: 0123\n",
 		"- HEAD is the locked revision: no\n",
@@ -191,6 +190,13 @@ func TestTriageOwnInputs(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("context.md lacks %q:\n%s", want, text)
 		}
+	}
+	// Without a baseline nixpkgs did not change, so only inputs.md lists it.
+	if strings.Contains(text, "| nixpkgs |") {
+		t.Errorf("context.md lists an unchanged upstream input:\n%s", text)
+	}
+	if full, _ := os.ReadFile(filepath.Join(dir, "inputs.md")); !strings.Contains(string(full), "| nixpkgs | no |") {
+		t.Errorf("inputs.md lacks nixpkgs:\n%s", full)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("b"), 0o600); err != nil {
 		t.Fatal(err)
