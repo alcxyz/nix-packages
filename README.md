@@ -166,7 +166,17 @@ The package (`.#nixfleet`, also `.#nix-deploy`) installs one program,
   [<host> | --all]` evaluates, plans and builds both phases like a real run
   and stops before activation, so it checks that a fix builds without
   changing any host; it exits non-zero when a selected target fails to
-  evaluate or build. When a run fails with standard input and output on a
+  evaluate or build. When some selected targets (a host's system and Home
+  Manager count as two) fail to evaluate or build and others built,
+  `--on-failure ask|continue|stop` (or `DEPLOY_ON_FAILURE`) decides, after
+  the build and before anything is activated, whether to activate the others:
+  `ask` lists the failed targets and asks `activate the N targets that
+  built? [y/N]`, `continue` activates them, and `stop` or a declined question
+  activates nothing, reports the targets that built as `skipped` and fails
+  the run. The default is `ask` with standard input and output on a terminal,
+  otherwise `continue` for `--all` and `stop` for a single host, as before;
+  `ask` without a terminal is an error, and `--dry-run` and `--build-only`
+  ignore the option. When a run fails with standard input and output on a
   terminal, an `agentCommand` in the inventory's `triage` object and no
   `NIXFLEET_TRIAGE` in the environment, deploy asks whether to start
   `nixfleet triage` on the run it just recorded; `y` or `yes` starts it, and

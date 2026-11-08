@@ -213,3 +213,15 @@ replaced this paragraph:
 > operator endpoint through readiness, without a local fallback. Failed or
 > ambiguous operations retain reservations, as ADR-0019 defines.
 > Controller-local target locks and records remain in use.
+
+## Text replaced on 2026-11-08: activation after failed builds
+
+The `--on-failure` option ([nix-packages #796](https://git.alc.xyz/alcxyz/nix-packages/issues/796))
+replaced the date line
+
+**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots)
+
+and this sentence of the decision:
+
+> A single-host deploy builds all its changed targets before activating any,
+> so a build failure leaves the host untouched.

@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-12, updated 2026-11-05 (shared reservations, per [issue #592](https://git.alc.xyz/alcxyz/nix-packages/issues/592#issuecomment-50015))
-**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots)
+**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots), 2026-11-08 (activation after failed builds, [nix-packages #796](https://git.alc.xyz/alcxyz/nix-packages/issues/796))
 **History:** [replaced text](archive/0008-nix-deploy-in-go-history.md)
 **Applies to:** `tools/nix-deploy/`
 
@@ -88,9 +88,19 @@ Every run, single-host or fleet, has four phases (#522):
 
 `--dry-run` stops after the plan, before building, and never starts a host's garbage
 collection (it assumes a collection a real run would start frees enough
-space), and `--force` builds and activates unchanged targets too. A single-host
-deploy builds all its changed targets before activating any, so a build
-failure leaves the host untouched.
+space), and `--force` builds and activates unchanged targets too. Every
+run builds all its changed targets before activating any. When some selected
+targets (a host's system and Home Manager count as two) failed to evaluate or
+build and others built, `--on-failure ask|continue|stop` (default
+`DEPLOY_ON_FAILURE`) decides, between the build and the first activation step,
+whether the others activate: `ask` asks on the terminal, `continue`
+activates them, and `stop` or a declined question activates nothing and
+reports them as skipped. The default is `ask` with standard input and output
+on a terminal; otherwise it keeps the earlier behaviour, `continue` for a
+fleet run and `stop` for a single host, so a build failure leaves that host
+untouched. Preflight stays before evaluation, since it decides which targets
+are evaluated, and so does a fleet run's local sudo prompt; a single-host run
+asks for sudo only when it switches, after the decision.
 
 Serial groups (#504) are listed in `serialGroups`, each with its own hosts,
 ready command and timeout; the older `serialSystemHosts` fields are a
@@ -236,6 +246,10 @@ the first one's roots.
   every time; consumers keep such inputs out of their closures.
 - A dry run skips the build phase, so it does not show that changed targets
   build.
+- On a terminal, a fleet run with a failed build waits for an answer before
+  activating anything, so the operator can keep the fleet on one lock and
+  roll the change back cheaply; unattended runs (agents, triage, schedules)
+  keep their earlier behaviour unless they pass `--on-failure`.
 - The operator's store keeps one generation of each remote target. On the
   operator's fleet on 2026-10-31, the closures beyond what the operator's own
   roots already kept came to about 9.5 GiB of store paths, more than half of

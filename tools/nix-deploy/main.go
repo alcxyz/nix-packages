@@ -45,6 +45,8 @@ type settings struct {
 	heavyCores    int
 	// runKeep is how many run records a run leaves behind.
 	runKeep int
+	// onFailure is DEPLOY_ON_FAILURE: ask, continue, stop or empty.
+	onFailure string
 }
 
 type deployer struct {
@@ -63,6 +65,13 @@ type deployer struct {
 	buildOnly       bool
 	force           bool
 	jsonPath        string
+
+	// onFailure is what a run does when some selected targets failed to
+	// evaluate or build and others are ready to activate: ask, continue or
+	// stop. onFailureSource names the flag or variable that chose it, empty
+	// for the default.
+	onFailure       string
+	onFailureSource string
 
 	// rootDir holds garbage-collector roots for built paths during a run.
 	rootDir string
@@ -313,6 +322,10 @@ func runDeploy(args []string) int {
 	case err != nil:
 		return failEarly(err.Error())
 	}
+	terminals := isTerminal(os.Stdin) && isTerminal(os.Stdout)
+	if err := d.resolveOnFailure(opts.all, terminals); err != nil {
+		return failEarly(err.Error())
+	}
 
 	// The flake is the one Nix finds for "." from the working directory; an
 	// unknown working directory is left empty rather than stopping the run.
@@ -338,7 +351,7 @@ func runDeploy(args []string) int {
 		return 130
 	}
 	d.releaseRoots()
-	return d.offerTriage(exit, isTerminal(os.Stdin) && isTerminal(os.Stdout), os.Stdin, os.Stdout, runTriage)
+	return d.offerTriage(exit, terminals, os.Stdin, os.Stdout, runTriage)
 }
 
 // deployOptions are what a deploy command line selects besides the
@@ -383,6 +396,22 @@ func (d *deployer) parseOptions(rest []string) (deployOptions, error) {
 		case arg == "--heavy" || arg == "--light":
 			d.settings.buildProfile = strings.TrimPrefix(arg, "--")
 			d.settings.profileSource = arg
+		case arg == "--on-failure":
+			if i+1 >= len(rest) {
+				return opts, errors.New("--on-failure requires ask, continue or stop")
+			}
+			d.onFailure = rest[i+1]
+			d.onFailureSource = "--on-failure"
+			i++
+			if d.onFailure == "" {
+				return opts, errors.New("--on-failure requires ask, continue or stop")
+			}
+		case strings.HasPrefix(arg, "--on-failure="):
+			d.onFailure = strings.TrimPrefix(arg, "--on-failure=")
+			d.onFailureSource = "--on-failure"
+			if d.onFailure == "" {
+				return opts, errors.New("--on-failure requires ask, continue or stop")
+			}
 		case arg == "--json":
 			if i+1 >= len(rest) {
 				return opts, errors.New("--json requires a file")
@@ -401,6 +430,9 @@ func (d *deployer) parseOptions(rest []string) (deployOptions, error) {
 		default:
 			opts.target = arg
 		}
+	}
+	if !validOnFailure(d.onFailure) {
+		return opts, errors.New("--on-failure must be ask, continue or stop")
 	}
 	// A dry run stops before the build that --build-only is there to run.
 	if d.dryRun && d.buildOnly {
@@ -488,7 +520,53 @@ func loadSettings() (settings, error) {
 	if values.runKeep, err = positiveSetting("DEPLOY_RUN_KEEP", "30"); err != nil {
 		return values, err
 	}
+	values.onFailure = os.Getenv("DEPLOY_ON_FAILURE")
+	if values.onFailure != "" && !validOnFailure(values.onFailure) {
+		return values, fmt.Errorf("DEPLOY_ON_FAILURE must be ask, continue or stop")
+	}
 	return values, nil
+}
+
+func validOnFailure(value string) bool {
+	switch value {
+	case "", onFailureAsk, onFailureContinue, onFailureStop:
+		return true
+	}
+	return false
+}
+
+// What a run does when some selected targets failed to evaluate or build and
+// others are ready to activate.
+const (
+	onFailureAsk      = "ask"
+	onFailureContinue = "continue"
+	onFailureStop     = "stop"
+)
+
+// resolveOnFailure settles the run's --on-failure choice: the flag, else
+// DEPLOY_ON_FAILURE, else ask on a terminal and otherwise what a run did
+// before the option existed, continue for --all and stop for a single host.
+// Asking needs standard input and output on a terminal. A dry or build-only
+// run never activates, so the choice does not apply to it and is not checked
+// against the terminal.
+func (d *deployer) resolveOnFailure(all, terminals bool) error {
+	if d.onFailure == "" && d.settings.onFailure != "" {
+		d.onFailure = d.settings.onFailure
+		d.onFailureSource = "DEPLOY_ON_FAILURE"
+	}
+	switch {
+	case d.onFailure != "":
+	case terminals:
+		d.onFailure = onFailureAsk
+	case all:
+		d.onFailure = onFailureContinue
+	default:
+		d.onFailure = onFailureStop
+	}
+	if d.onFailure == onFailureAsk && !terminals && !d.dryRun && !d.buildOnly {
+		return fmt.Errorf("%s=ask needs standard input and output on a terminal", d.onFailureSource)
+	}
+	return nil
 }
 
 func positiveSetting(name, fallback string) (int, error) {
@@ -533,7 +611,8 @@ func (d *deployer) usage() int {
        deploy [OPTIONS] --hm [<host>]
 
 Options: [--config FILE] [--here] [--no-preflight] [--dry-run | --build-only]
-         [--force] [--heavy | --light] [--json FILE] [--version]
+         [--force] [--heavy | --light] [--on-failure ask|continue|stop]
+         [--json FILE] [--version]
 
 When <host> is omitted, deploys to the current machine.
 When <host> differs from the current machine, deploys remotely via SSH.
@@ -568,6 +647,21 @@ that built shows as built, and an unchanged one as unchanged; with --force,
 unchanged targets are built too. It exits non-zero when any selected target
 fails to evaluate or build. It cannot be combined with --dry-run or
 --fail-unreachable.
+
+--on-failure ask|continue|stop (or DEPLOY_ON_FAILURE; the option wins) says
+what a run does when some selected targets, counting a host's system and Home
+Manager as two, failed to evaluate or build while others built. The decision
+comes after the build and before anything is activated (reservations, serial
+group checks, switches). Preflight, with its remote garbage collection, comes
+before evaluation, and so does an --all run's sudo prompt; a single-host run
+asks for sudo only when it switches, after the decision. ask lists the failed targets and
+asks 'activate the N targets that built? [y/N]'; y or yes activates them,
+anything else declines. continue activates them. stop, or declining, activates
+nothing, shows the targets that built as skipped in the summary and the --json
+report, and fails the run (triage is still offered). With standard input and
+output on a terminal the default is ask; otherwise it is continue for --all and
+stop for a single host, as before the option existed. ask without a terminal
+is an error. --dry-run and --build-only never activate, so they ignore it.
 
 Every run leaves a record in $XDG_STATE_HOME/nix-deploy/runs (by default
 ~/.local/state): run.json, the flake.lock it deployed, the --json report

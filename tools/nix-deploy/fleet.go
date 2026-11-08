@@ -108,6 +108,9 @@ func (d *deployer) deployFleet(mode string, selected []string, r *report) int {
 	systems := mode == "nixos" || mode == "full"
 	homes := mode == "hm" || mode == "full"
 
+	// The local sudo prompt and preflight, with its remote garbage collection,
+	// come before evaluation and so before the --on-failure decision, which
+	// needs the build's results.
 	// Each serial group that cannot switch in this run, with the reason.
 	blocked := map[*serialGroup]string{}
 	var targets []target
@@ -187,6 +190,11 @@ func (d *deployer) deployFleet(mode string, selected []string, r *report) int {
 		for _, t := range ready {
 			r.record(t.phase, t.host, "built")
 		}
+		return d.finish(selected, r)
+	}
+	// Nothing has been activated yet: the decision comes before reservations,
+	// serial group checks and switches.
+	if !d.activateAfterFailures(failedTargets(targets, r), ready, r) {
 		return d.finish(selected, r)
 	}
 	d.activateSystems(ready, built, blocked, r)

@@ -823,6 +823,109 @@ with tempfile.TemporaryDirectory(prefix="deploy-contract-") as directory:
     calls, result = run("--no-preflight", "node", status=1, MOCK_EVAL_FAIL="node-home")
     assert not activations(calls) and not built(calls)
     assert "node did not evaluate; nothing was activated" in result.stderr
+
+    # --on-failure: without a terminal a fleet run continues and a single
+    # host stops, as above; the single host's phase that built is skipped.
+    report = root / "report.json"
+
+    def statuses():
+        return [[h[phase]["status"] for phase in ["system", "homeManager"]] for h in json.loads(report.read_text())["hosts"]]
+
+    calls, result = run("--no-preflight", "node", "--json", str(report), status=1, MOCK_BUILD_FAIL="node-home")
+    assert statuses() == [["skipped", "failed"]]
+    # stop, from the option or the environment, activates nothing in a fleet
+    # and reports every target that built as skipped.
+    for args, settings in [(["--on-failure", "stop"], {}), ([], {"DEPLOY_ON_FAILURE": "stop"})]:
+        calls, result = run("--all", "--no-preflight", *args, "--json", str(report), status=1, MOCK_BUILD_FAIL="node-system", **settings)
+        assert not activations(calls) and "fixture-solo-system" in built(calls)
+        rows = summary_rows(result)
+        assert ["node", "failed", "skipped"] in rows and ["solo", "skipped", "-"] in rows and ["xyz", "skipped", "skipped"] in rows
+        assert "--on-failure stop: nothing was activated; the 4 targets that built are skipped" in result.stderr
+        data = json.loads(report.read_text())
+        hosts = {h["host"]: h for h in data["hosts"]}
+        assert data["failed"] and hosts["node"]["system"]["status"] == "failed" and hosts["node"]["homeManager"]["status"] == "skipped"
+        assert hosts["solo"]["system"]["status"] == "skipped" and hosts["xyz"]["system"]["status"] == "skipped"
+    # The option wins over the environment, and continue lets a single host
+    # activate the phase that built.
+    calls, result = run("--no-preflight", "node", "--on-failure", "continue", "--json", str(report), status=1, MOCK_BUILD_FAIL="node-system", DEPLOY_ON_FAILURE="stop")
+    assert rebuilt(calls) == [] and statuses() == [["failed", "ok"]] and activations(calls)
+    # Nothing failed: nothing to decide.
+    calls, result = run("--all", "--no-preflight", "--on-failure", "stop", MOCK_CURRENT="node")
+    assert rebuilt(calls) == ["solo"]
+    # ask needs a terminal, except where nothing is activated anyway.
+    calls, result = run("--all", "--on-failure", "ask", status=1)
+    assert not actions(calls) and "--on-failure=ask needs standard input and output on a terminal" in result.stderr
+    calls, result = run("--all", "--no-preflight", status=1, DEPLOY_ON_FAILURE="ask")
+    assert not actions(calls) and "DEPLOY_ON_FAILURE=ask needs" in result.stderr
+    calls, result = run("--all", "--build-only", "--on-failure", "ask", MOCK_CURRENT="node")
+    assert not activations(calls)
+    calls, result = run("--all", "--on-failure", "maybe", status=1)
+    assert not actions(calls) and "--on-failure must be ask, continue or stop" in result.stderr
+
+    def terminal_deploy(args, answer, **settings):
+        """Runs deploy with standard input and output on a terminal, answers
+        its activation question, and returns the exit status, the calls and
+        everything the terminal showed."""
+        log = root / "commands.jsonl"
+        log.write_text("")
+        shutil.rmtree(store, ignore_errors=True)
+        store.mkdir()
+        shutil.rmtree(root / ".local/state/nix-deploy", ignore_errors=True)
+        env = {"PATH": str(commands), "HOME": str(root), "MOCK_LOG": str(log), "MOCK_STORE": str(store), "MOCK_HOST": "xyz",
+               "MOCK_SYSTEM": "Linux", "NIX_SSHOPTS": "-o ConnectTimeout=1", "NO_COLOR": "1", **settings}
+        master, slave = pty.openpty()
+        process = subprocess.Popen([str(deploy), "--config", str(config), *args], cwd=root, env=env,
+                                   stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        os.close(slave)
+        shown = b""
+        answered = False
+        try:
+            deadline = time.monotonic() + HANG_GUARD
+            while True:
+                assert time.monotonic() < deadline, shown
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 4096)
+                    except OSError:
+                        chunk = b""
+                    shown += chunk
+                    if not chunk and process.poll() is not None:
+                        break
+                elif process.poll() is not None:
+                    break
+                if not answered and b"that built? [y/N] " in shown:
+                    os.write(master, answer)
+                    answered = True
+            process.wait(timeout=HANG_GUARD)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            os.close(master)
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        return process.returncode, calls, shown.decode().replace("\r\n", "\n")
+
+    # On a terminal a fleet run with a failed target asks; declining
+    # activates nothing and fails the run.
+    status, calls, shown = terminal_deploy(["--all", "--no-preflight"], b"n\n", MOCK_BUILD_FAIL="node-system")
+    assert status == 1 and not activations(calls), shown
+    assert "deploy: 1 target failed to evaluate or build:\n  [system] [node]\n" in shown
+    assert "deploy: activate the 4 targets that built? [y/N] " in shown and "declined: nothing was activated" in shown
+    assert re.search(r"\nxyz +skipped +skipped", shown) and re.search(r"\nsolo +skipped +-", shown)
+    # Accepting activates the others, as continue does.
+    status, calls, shown = terminal_deploy(["--all", "--no-preflight"], b"yes\n", MOCK_BUILD_FAIL="node-system")
+    assert status == 1 and rebuilt(calls) == ["solo"] and re.search(r"\nnode +failed +ok", shown), shown
+    # A single host counts its phases: the system failed to evaluate and
+    # Home Manager built, so it asks.
+    status, calls, shown = terminal_deploy(["--no-preflight", "node", "--json", str(report)], b"y\n", MOCK_EVAL_FAIL="node-system")
+    assert status == 1 and "activate the 1 target that built? [y/N] " in shown, shown
+    assert rebuilt(calls) == [] and activations(calls) and statuses() == [["failed", "ok"]]
+    status, calls, shown = terminal_deploy(["--no-preflight", "node", "--json", str(report)], b"\n", MOCK_EVAL_FAIL="node-system")
+    assert status == 1 and not activations(calls) and statuses() == [["failed", "skipped"]], shown
+    assert "node did not evaluate; nothing was activated" in shown
+    # Nothing failed: no question.
+    status, calls, shown = terminal_deploy(["--no-preflight", "node"], b"n\n")
+    assert status == 0 and "[y/N]" not in shown and activations(calls), shown
     # Only changed targets are built: a host compares with what it already
     # runs, which this machine may no longer hold (or could only build slowly,
     # under emulation).

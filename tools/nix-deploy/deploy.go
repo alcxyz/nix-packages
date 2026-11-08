@@ -8,8 +8,9 @@ import (
 
 // deployHost deploys one host. mode is "full" (system, then Home Manager),
 // "nixos" or "hm". Every changed target is built before anything is
-// activated, so a build failure leaves the host untouched. A failed activation ends the run
-// with that step's status.
+// activated, so a build failure leaves the host untouched unless
+// --on-failure activates the phase that built. A failed activation ends the
+// run with that step's status.
 func (d *deployer) deployHost(name, mode string) int {
 	host := d.inv.canonical(name)
 	r := newReport()
@@ -69,7 +70,10 @@ func (d *deployer) activateHost(host, mode string, targets []target, r *report) 
 	if d.buildOnly {
 		return d.buildHost(host, targets, evaluated, r)
 	}
-	if r.failed {
+	evalFailed := r.failed
+	// With stop, or in a dry run, a phase that did not evaluate ends the run
+	// before the other is planned or built.
+	if evalFailed && (d.dryRun || d.onFailure == onFailureStop) {
 		fmt.Fprintf(os.Stderr, "deploy: %s did not evaluate; nothing was activated\n", host)
 		return 1
 	}
@@ -82,17 +86,33 @@ func (d *deployer) activateHost(host, mode string, targets []target, r *report) 
 		return 0
 	}
 	if len(changed) == 0 {
+		if evalFailed {
+			fmt.Fprintf(os.Stderr, "deploy: %s did not evaluate; nothing was activated\n", host)
+			return 1
+		}
 		fmt.Printf("deploy: %s is up to date; nothing to activate (use --force to activate anyway)\n", host)
 		return 0
 	}
 	built := d.buildTargets(changed, evaluated, r)
-	if r.failed {
-		fmt.Fprintf(os.Stderr, "deploy: %s did not build; nothing was activated\n", host)
+	var ready []target
+	for _, t := range changed {
+		if _, ok := built[t.key()]; ok {
+			ready = append(ready, t)
+		}
+	}
+	// Every changed target is built before anything is activated; when a
+	// phase failed, --on-failure decides about the one that built.
+	if r.failed && (len(ready) == 0 || !d.activateAfterFailures(failedTargets(targets, r), ready, r)) {
+		if evalFailed {
+			fmt.Fprintf(os.Stderr, "deploy: %s did not evaluate; nothing was activated\n", host)
+		} else {
+			fmt.Fprintf(os.Stderr, "deploy: %s did not build; nothing was activated\n", host)
+		}
 		return 1
 	}
 
 	systemSwitched := false
-	for _, t := range changed {
+	for _, t := range ready {
 		path := built[t.key()]
 		if t.phase == "system" {
 			if status := d.switchHost(t, path, mode, r); status != 0 {
@@ -117,6 +137,13 @@ func (d *deployer) activateHost(host, mode string, targets []target, r *report) 
 			}
 			return status
 		}
+	}
+	if r.failed {
+		// Only the phases that built were activated (--on-failure).
+		if systemSwitched && r.result("hm", host) == "failed" {
+			d.ui.warnPartial([]string{host})
+		}
+		return 1
 	}
 	return 0
 }

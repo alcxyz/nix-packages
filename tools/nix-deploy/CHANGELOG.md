@@ -9,6 +9,30 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.35.0 (2026-11-08)
+
+Deploy asks before activating the rest when some targets fail to build
+(nix-packages#796).
+
+- New option `--on-failure ask|continue|stop`, with `DEPLOY_ON_FAILURE` as
+  its default; the option wins. It applies when some selected targets failed
+  to evaluate or build and others built, a host's system and Home Manager
+  counting as two targets, and is decided after the build, before any
+  reservation, serial group check or switch.
+- `ask` lists the failed targets and asks `activate the N targets that
+  built? [y/N]`; only `y` or `yes` activates. `continue` activates them.
+  `stop`, or declining, activates nothing, records the targets that built as
+  `skipped` in the summary and the `--json` report, and fails the run; the
+  triage offer follows as before.
+- The default is `ask` with standard input and output on a terminal.
+  Otherwise a run behaves as before: `continue` for `--all`, `stop` for a
+  single host. `ask` without a terminal is an error. `--dry-run` and
+  `--build-only` accept and ignore the option.
+- A single-host run that asks or continues plans and builds the phase that
+  evaluated even when the other did not, as `--build-only` already did, and
+  a single host stopped after a failed build now reports the phase that
+  built as `skipped` instead of `-`.
+
 ## 0.34.0 (2026-11-07)
 
 Triage hands runs from other hosts to the triage host (nix-packages#787).
