@@ -11,7 +11,7 @@ on:
 jobs:
   update:
     name: Check published T3 nightly releases
-    runs-on: forgejo-podman
+    runs-on: forgejo-podman-large
     container:
       image: docker.io/library/node:20-bookworm
     concurrency:
