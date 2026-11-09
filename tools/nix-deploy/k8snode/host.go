@@ -86,7 +86,12 @@ func (o *Operation) readBootID() string {
 }
 
 // rebootHost records the boot ID and starts the reboot. ssh's status 255
-// is accepted: the connection may drop as the host goes down.
+// is accepted: the connection may drop as the host goes down. A command
+// that a signal or an interrupt ended may have queued the reboot too. From
+// then on the reboot may happen later, so until verifyNewBoot sees a new
+// boot, Run reports a failure as StatusRebootUncertain. Any other status is
+// the remote command's own failure, which queued no reboot. The command has
+// no deadline.
 func (o *Operation) rebootHost() error {
 	target := o.opts.SSHTarget
 	o.bootID = o.readBootID()
@@ -98,7 +103,12 @@ func (o *Operation) rebootHost() error {
 	if r.Status == statusNotStarted {
 		return fmt.Errorf("remote reboot command was not started; %s remains cordoned", o.opts.Node)
 	}
-	if r.Status != 0 && r.Status != 255 {
+	unknown := o.ctx.Err() != nil || (r.Status >= 128 && r.Status != 255)
+	if !unknown && r.Status != 0 && r.Status != 255 {
+		return fmt.Errorf("remote reboot command failed (exit %d); the host was not rebooted; %s remains cordoned", r.Status, o.opts.Node)
+	}
+	o.rebootQueued = true
+	if unknown {
 		return fmt.Errorf("remote reboot command did not complete (exit %d); reboot outcome unknown; %s remains cordoned", r.Status, o.opts.Node)
 	}
 	return nil
@@ -113,6 +123,7 @@ func (o *Operation) verifyNewBoot() error {
 	if current == o.bootID {
 		return fmt.Errorf("%s returned without rebooting; %s remains cordoned", target, o.opts.Node)
 	}
+	o.rebootVerified = true
 	return nil
 }
 

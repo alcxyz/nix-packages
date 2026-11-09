@@ -2,6 +2,7 @@ package k8snode
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -317,18 +318,61 @@ func TestResumedMaintenanceKeepsCordonOnFailure(t *testing.T) {
 	}
 }
 
+// A remote reboot command that failed on its own queued no reboot: Run
+// reports an ordinary failure, which lets nixfleet restore runners.
 func TestRemoteRebootFailureLeavesNodeCordoned(t *testing.T) {
 	f := newHealthyCluster(t)
 	f.rebootExit = 1
-	runFailure(t, f, "reboot", nil, "remote reboot command did not complete (exit 1); reboot outcome unknown; server-a remains cordoned")
+	o, output := newOperation(f, options(t, "reboot", "server-a"))
+	if status := o.Run(); status != 1 {
+		t.Fatalf("status %d, want 1:\n%s", status, output)
+	}
+	mustContain(t, output.String(), "remote reboot command failed (exit 1); the host was not rebooted; server-a remains cordoned")
+	if strings.Contains(output.String(), "outcome unknown") {
+		t.Fatalf("a definite failure reported as unknown:\n%s", output)
+	}
 	mustNotCall(t, f, `^kubectl uncordon`)
 }
 
+// A remote reboot command that a signal ended may have queued the reboot.
+// Run reports StatusRebootUncertain, distinct from a definite failure, so
+// the caller does not treat the old boot as a failed reboot.
 func TestRemoteRebootInterruptedOutcomeIsUnknown(t *testing.T) {
-	f := withAgent(t, newHealthyCluster(t))
-	f.rebootExit = 130
-	output := runFailure(t, f, "reboot", nil, "reboot outcome unknown; server-a remains cordoned")
-	mustContain(t, output, "node-self-fence is still stopped")
+	for _, exit := range []int{130, 143} {
+		t.Run(fmt.Sprint(exit), func(t *testing.T) {
+			f := withAgent(t, newHealthyCluster(t))
+			f.rebootExit = exit
+			o, output := newOperation(f, options(t, "reboot", "server-a"))
+			if status := o.Run(); status != StatusRebootUncertain {
+				t.Fatalf("status %d, want %d:\n%s", status, StatusRebootUncertain, output)
+			}
+			mustContain(t, output.String(), fmt.Sprintf("remote reboot command did not complete (exit %d); reboot outcome unknown; server-a remains cordoned", exit))
+			mustContain(t, output.String(), "node-self-fence is still stopped")
+			mustNotCall(t, f, `^kubectl uncordon`)
+		})
+	}
+}
+
+// An operator interrupt while the reboot command runs leaves its outcome
+// unknown too: Run reports StatusRebootUncertain, not the interrupt's 1.
+func TestRemoteRebootInterruptedInFlightIsUncertain(t *testing.T) {
+	f := newHealthyCluster(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.respond = func(c Command, line string) (Result, bool) {
+		if strings.Contains(line, "systemctl reboot") {
+			cancel()
+			return Result{Status: 130}, true
+		}
+		return Result{}, false
+	}
+	o, output := newOperation(f, options(t, "reboot", "server-a"))
+	o.ctx = ctx
+	if status := o.Run(); status != StatusRebootUncertain {
+		t.Fatalf("status %d, want %d:\n%s", status, StatusRebootUncertain, output)
+	}
+	mustContain(t, output.String(), "reboot outcome unknown; server-a remains cordoned")
+	mustContain(t, output.String(), "error: interrupted; server-a may need inspection")
 	mustNotCall(t, f, `^kubectl uncordon`)
 }
 
@@ -338,17 +382,47 @@ func TestRemotePowerOffFailure(t *testing.T) {
 	runFailure(t, f, "off", nil, "remote poweroff command failed before shutdown started")
 }
 
+// runStatus runs an action that must fail with the status, and returns its
+// output.
+func runStatus(t *testing.T, f *fakeCluster, action string, args []string, status int, want ...string) string {
+	t.Helper()
+	o, output := newOperation(f, options(t, action, append(args, "server-a")...))
+	if got := o.Run(); got != status {
+		t.Fatalf("status %d, want %d:\n%s", got, status, output)
+	}
+	for _, w := range want {
+		mustContain(t, output.String(), w)
+	}
+	return output.String()
+}
+
+// An accepted reboot that the run never saw may still be queued: an old boot
+// ID is no proof it will not happen, so Run reports StatusRebootUncertain.
 func TestUnchangedBootIDLeavesNodeCordoned(t *testing.T) {
 	f := newHealthyCluster(t)
 	f.rebootKeepsBoot = true
-	runFailure(t, f, "reboot", nil, "root@server-a returned without rebooting; server-a remains cordoned")
+	runStatus(t, f, "reboot", nil, StatusRebootUncertain,
+		"root@server-a returned without rebooting; server-a remains cordoned",
+		"reboot outcome unknown; root@server-a may still reboot")
 	mustNotCall(t, f, `^kubectl uncordon`)
+}
+
+// A failure after the new boot was seen is an ordinary failure.
+func TestFailureAfterNewBootIsDefinite(t *testing.T) {
+	f := newHealthyCluster(t)
+	set(f.targetNode(), "192.0.2.99", "metadata", "annotations", "flannel.alpha.coreos.com/public-ip")
+	output := runStatus(t, f, "reboot", nil, 1, "does not match InternalIP")
+	if strings.Contains(output, "outcome unknown") {
+		t.Fatalf("a verified reboot reported as unknown:\n%s", output)
+	}
 }
 
 func TestSSHThatNeverDropsLeavesNodeCordoned(t *testing.T) {
 	f := newHealthyCluster(t)
 	f.sshNeverDrops = true
-	runFailure(t, f, "reboot", nil, "SSH did not drop; the power action was not verified and server-a remains cordoned")
+	runStatus(t, f, "reboot", nil, StatusRebootUncertain,
+		"SSH did not drop; the power action was not verified and server-a remains cordoned",
+		"reboot outcome unknown; root@server-a may still reboot")
 	probes := 0
 	for _, c := range f.calls {
 		if strings.HasSuffix(c.line, "ConnectTimeout=2 root@server-a true") {
@@ -369,7 +443,7 @@ func TestSSHThatNeverReturns(t *testing.T) {
 		}
 		return Result{}, false
 	}
-	runFailure(t, f, "reboot", []string{"--ssh-timeout", "20"}, "SSH did not return within 20s")
+	runStatus(t, f, "reboot", []string{"--ssh-timeout", "20"}, StatusRebootUncertain, "SSH did not return within 20s")
 	mustNotCall(t, f, `^kubectl uncordon`)
 }
 
@@ -869,7 +943,7 @@ func TestRebootWithAgent(t *testing.T) {
 func TestStoppedAgentReportedOnExit(t *testing.T) {
 	f := withAgent(t, newHealthyCluster(t))
 	f.rebootExit = 1
-	runFailure(t, f, "reboot", nil, "remote reboot command did not complete",
+	runFailure(t, f, "reboot", nil, "remote reboot command failed",
 		"node-self-fence is still stopped on server-a; start it with systemctl start node-self-fence before retrying maintenance")
 }
 

@@ -96,11 +96,21 @@ func runPower(name string, args []string) int {
 	status := k8snode.New(ctx, opts, runner).Run()
 	select {
 	case sig := <-received:
-		if sig == syscall.SIGTERM {
-			return 143
-		}
-		return 130
+		return interruptedStatus(status, sig)
 	default:
 		return status
 	}
+}
+
+// interruptedStatus is the exit status of a run that sig interrupted:
+// 143 for SIGTERM, 130 otherwise, unless the reboot command's outcome is
+// unknown. A reboot that may still happen matters more than the signal.
+func interruptedStatus(status int, sig os.Signal) int {
+	switch {
+	case status == k8snode.StatusRebootUncertain:
+		return status
+	case sig == syscall.SIGTERM:
+		return 143
+	}
+	return 130
 }

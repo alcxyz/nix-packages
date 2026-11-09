@@ -67,10 +67,19 @@ type fakeHost struct {
 	stopFails   bool
 	rebootFails bool
 	nodeFails   bool
+	// nodeUncertain ends the node reboot with an unknown outcome: the
+	// reboot command may have queued a reboot, and the old boot answers.
+	// nodeInterrupted interrupts the run before the node reboot queued a
+	// reboot, and nodeFailsAfterBoot fails it after the new boot.
+	nodeUncertain      bool
+	nodeInterrupted    bool
+	nodeFailsAfterBoot bool
 	// noSystem serves a Linux host without NixOS system links, and
-	// rebootLost drops the reboot command before it arrives.
-	noSystem   bool
-	rebootLost bool
+	// rebootLost drops the reboot command before it arrives, and
+	// rebootKeepsBoot drops SSH once after it but keeps the old boot.
+	noSystem        bool
+	rebootLost      bool
+	rebootKeepsBoot bool
 	// guards are the guard's answers in turn, the last one repeating;
 	// guardFails makes it exit 1. bootChecks are the boot check results
 	// read after a reboot in turn, the last one repeating; "" is a host
@@ -433,6 +442,10 @@ func (f *rebootFake) command(c k8snode.Command) k8snode.Result {
 		if h.rebootLost {
 			return k8snode.Result{Status: 255}
 		}
+		if h.rebootKeepsBoot {
+			h.down = 1
+			return k8snode.Result{Status: 255}
+		}
 		f.boot(h)
 		if f.rebootInFlightCancel {
 			f.cancel()
@@ -506,6 +519,17 @@ func (f *rebootFake) nodeReboot(ctx context.Context, opts k8snode.Options, runne
 	f.begin(opts.Node)
 	h := f.hosts[opts.Node]
 	if h.nodeFails {
+		return 1
+	}
+	if h.nodeUncertain {
+		return k8snode.StatusRebootUncertain
+	}
+	if h.nodeInterrupted {
+		f.cancel()
+		return 1
+	}
+	if h.nodeFailsAfterBoot {
+		f.boot(h)
 		return 1
 	}
 	f.boot(h)
@@ -1204,6 +1228,56 @@ func TestRebootNodeFailureStartsRunners(t *testing.T) {
 	}
 }
 
+// A node reboot whose reboot command did not report its outcome keeps the
+// runners stopped, although the old boot ID still answers: a queued reboot
+// may still interrupt jobs they would admit.
+func TestRebootNodeUncertainOutcomeKeepsRunnersStopped(t *testing.T) {
+	f := newRebootFake(t)
+	h := f.hosts["server-d"]
+	h.runners = map[string]string{"gitea-runner-ci.service": "active"}
+	h.nodeUncertain = true
+	if status := f.run("server-d", "--yes"); status == 0 {
+		t.Error("an unknown reboot outcome passed")
+	}
+	if got := f.changes(); !slices.Equal(got, []string{"stop server-d", "node server-d"}) {
+		t.Errorf("changes: %v", got)
+	}
+	f.expectOutcomes(map[string]string{"server-d": "failed"})
+	f.expectNote("server-d", "the node reboot outcome is unknown")
+	if !strings.Contains(f.out.String(), "outcome unknown, runner units remain stopped") {
+		t.Errorf("no runner note in:\n%s", f.out.String())
+	}
+}
+
+// A node reboot that failed with status 1 queued no reboot or saw the new
+// boot. Runners start again on the old boot, after an interrupt too, and
+// never on a new boot.
+func TestRebootNodeDefiniteFailureRunners(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(*fakeHost)
+		want  []string
+	}{
+		{"interrupted before the reboot", func(h *fakeHost) { h.nodeInterrupted = true },
+			[]string{"stop server-d", "node server-d", "start server-d"}},
+		{"failed after the new boot", func(h *fakeHost) { h.nodeFailsAfterBoot = true },
+			[]string{"stop server-d", "node server-d"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRebootFake(t)
+			h := f.hosts["server-d"]
+			h.runners = map[string]string{"gitea-runner-ci.service": "active"}
+			c.setup(h)
+			if status := f.run("server-d", "--yes"); status == 0 {
+				t.Error("a failed node reboot passed")
+			}
+			if got := f.changes(); !slices.Equal(got, c.want) {
+				t.Errorf("changes: %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestRebootChecksTheBootedSystem(t *testing.T) {
 	f := newRebootFake(t)
 	f.hosts["host-b"].after = "yes"
@@ -1331,21 +1405,89 @@ func TestRebootReportsLinuxWithoutNixOS(t *testing.T) {
 	}
 }
 
-// ssh's 255 can mean the reboot command never arrived. A host still on its
-// old boot gets its runners back.
-func TestRebootLostCommandStartsRunners(t *testing.T) {
-	f := newRebootFake(t)
-	f.hosts["host-a"].rebootLost = true
-	if status := f.run("host-a", "--yes"); status != 1 {
-		t.Errorf("status %d", status)
+// An accepted reboot command that the run never sees take effect may still
+// be queued, even while the old boot answers: SSH that does not drop, or a
+// host that answers on its old boot, keeps the runners stopped for
+// nixfleet runners resume (ADR-0010, ADR-0019).
+func TestRebootUnseenKeepsRunnersStopped(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(*fakeHost)
+		note  string
+		args  []string
+	}{
+		{"SSH did not drop", func(h *fakeHost) { h.rebootLost = true },
+			"SSH did not drop and the boot ID did not change; reboot outcome unknown", nil},
+		{"old boot answers", func(h *fakeHost) { h.rebootKeepsBoot = true },
+			"root@host-a still runs its old boot after 30s; reboot outcome unknown", []string{"--ssh-timeout", "30"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRebootFake(t)
+			c.setup(f.hosts["host-a"])
+			if status := f.run(append([]string{"host-a", "--yes"}, c.args...)...); status != 1 {
+				t.Errorf("status %d", status)
+			}
+			f.expectOutcomes(map[string]string{"host-a": "failed"})
+			f.expectNote("host-a", c.note)
+			if got := f.changes(); !slices.Equal(got, []string{"stop host-a", "reboot host-a"}) {
+				t.Errorf("changes: %v", got)
+			}
+			if f.hosts["host-a"].runners["forgejo-actions-runner.service"] != "inactive" {
+				t.Errorf("runners: %v", f.hosts["host-a"].runners)
+			}
+			if !strings.Contains(f.out.String(), "outcome unknown, runner units remain stopped; next: nixfleet runners resume 'host-a'") {
+				t.Errorf("no resume hint in:\n%s", f.out.String())
+			}
+		})
 	}
-	f.expectOutcomes(map[string]string{"host-a": "failed"})
-	f.expectNote("host-a", "the host was not rebooted")
-	if got := f.changes(); !slices.Equal(got, []string{"stop host-a", "reboot host-a", "start host-a"}) {
-		t.Errorf("changes: %v", got)
-	}
-	if f.hosts["host-a"].runners["forgejo-actions-runner.service"] != "active" {
-		t.Errorf("runners: %v", f.hosts["host-a"].runners)
+}
+
+// Every unknown outcome of a plain host's reboot names the resume command:
+// a host that does not return in time, and an interrupt during either SSH
+// wait while the old boot still answers.
+func TestRebootUnknownOutcomesNameResume(t *testing.T) {
+	const hint = "outcome unknown, runner units remain stopped; next: nixfleet runners resume 'host-a'"
+	for _, c := range []struct {
+		name      string
+		setup     func(*fakeHost)
+		interrupt bool
+		line      string
+	}{
+		{"does not return", func(h *fakeHost) { h.neverReturns = true }, false,
+			"root@host-a did not return with a new boot ID; " + hint},
+		{"interrupted while SSH does not drop", func(h *fakeHost) { h.rebootLost = true }, true,
+			"reboot wait interrupted; " + hint},
+		{"interrupted while the old boot answers", func(h *fakeHost) { h.rebootKeepsBoot = true }, true,
+			"reboot wait interrupted; " + hint},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRebootFake(t)
+			c.setup(f.hosts["host-a"])
+			r, hosts := f.fleet("host-a", "--yes", "--ssh-timeout", "30")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f.cancel = cancel
+			if c.interrupt {
+				r.sleep = func(ctx context.Context, d time.Duration) error {
+					f.lock.Lock()
+					rebooted := slices.Contains(f.events, "reboot host-a")
+					f.lock.Unlock()
+					if rebooted {
+						cancel()
+					}
+					return ctx.Err()
+				}
+			}
+			if status := r.run(ctx, hosts); status == 0 {
+				t.Error("an unknown outcome passed")
+			}
+			if got := f.changes(); !slices.Equal(got, []string{"stop host-a", "reboot host-a"}) {
+				t.Errorf("changes: %v", got)
+			}
+			if !strings.Contains(f.out.String(), c.line) {
+				t.Errorf("no %q in:\n%s", c.line, f.out.String())
+			}
+		})
 	}
 }
 
@@ -1807,6 +1949,26 @@ func TestRebootSelfRefusalsAndNoGuard(t *testing.T) {
 	}
 	if !slices.Contains(f.changes(), "reboot op") {
 		t.Errorf("changes: %v", f.changes())
+	}
+}
+
+// This machine's reboot command that an interrupt ended may have queued
+// the shutdown: its runners stay stopped, and the resume command is named.
+func TestRebootSelfInterruptedNamesResume(t *testing.T) {
+	f := newRebootFake(t)
+	f.terminal = true
+	f.confirmation = "y\ny\n"
+	f.hosts["op"].runners = map[string]string{"forgejo-actions-runner.service": "active"}
+	f.rebootCancels = true
+	if status := f.run("op", "--include-self"); status == 0 {
+		t.Error("an interrupted reboot passed")
+	}
+	if got := f.changes(); !slices.Equal(got, []string{"stop op", "reboot op"}) {
+		t.Errorf("changes: %v", got)
+	}
+	const line = "reboot command did not complete; outcome unknown, runner units remain stopped; next: nixfleet runners resume 'op'"
+	if !strings.Contains(f.out.String(), line) {
+		t.Errorf("no %q in:\n%s", line, f.out.String())
 	}
 }
 

@@ -9,6 +9,27 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.35.1 (2026-11-09)
+
+A reboot that may be queued but was not seen keeps the runner units stopped
+(nix-packages#592).
+
+- `k8s-node-power reboot` exits with the new status 3 once the remote reboot
+  command may have queued the reboot (it was accepted, or a signal or an
+  interrupt ended it) and the run then fails or is interrupted before the
+  host answers on a new boot: SSH did not drop or return, or the boot ID did
+  not change. Status 3 wins over an interrupt's 130 or 143. A reboot command
+  that failed on its own queued no reboot: it now says so and still exits
+  with status 1, as do failures after the new boot was seen.
+- `nixfleet reboot` no longer starts the runner units of a host whose reboot
+  may still be queued, even while its old boot ID answers: a node whose
+  reboot exits with status 3, and a host that is not a node whose accepted
+  reboot command was not followed by an SSH drop or a new boot. It prints
+  the `nixfleet runners resume` command that restores them, also for this
+  machine's interrupted reboot. Runner units start again only when the
+  reboot was never queued: the command did not start or failed on its own,
+  or an earlier step failed or was interrupted.
+
 ## 0.35.0 (2026-11-08)
 
 Deploy asks before activating the rest when some targets fail to build

@@ -18,6 +18,15 @@ import (
 // errInterrupted stops a wait once the operator interrupted the run.
 var errInterrupted = errors.New("interrupted")
 
+// StatusRebootUncertain is Run's status when a reboot run failed, or was
+// interrupted, after the remote reboot command may have queued the reboot
+// and before a new boot was seen: the command did not report its outcome,
+// SSH did not drop or return, or the host answered on its old boot. The
+// queued reboot may still happen even while the host answers on its old
+// boot. Other failures are status 1: the reboot was never queued, or the
+// host was seen on a new boot.
+const StatusRebootUncertain = 3
+
 // Operation is one run of an action against one node.
 type Operation struct {
 	opts   Options
@@ -51,6 +60,10 @@ type Operation struct {
 	workloads []workload
 	// bootID is the target's boot ID before the reboot.
 	bootID string
+	// rebootQueued is set once the remote reboot command may have queued a
+	// reboot, and rebootVerified once the target answered on a new boot.
+	rebootQueued   bool
+	rebootVerified bool
 	// rebuildLimitOriginal is the Longhorn rebuild admission to restore, set
 	// while it is temporarily raised.
 	rebuildLimitOriginal string
@@ -86,7 +99,8 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// Run performs the action and returns the exit status. On every exit path,
+// Run performs the action and returns the exit status: 0, or
+// StatusRebootUncertain, or 1 for any other failure. On every exit path,
 // including a failed gate or an interrupt, it restores a temporarily raised
 // Longhorn rebuild limit and reports a self-fence agent it left stopped.
 func (o *Operation) Run() (status int) {
@@ -102,13 +116,23 @@ func (o *Operation) Run() (status int) {
 			fmt.Fprintf(o.stderr, "error: interrupted: %v\n", err)
 		}
 		fmt.Fprintf(o.stderr, "error: interrupted; %s may need inspection before retrying maintenance\n", o.opts.Node)
-		return 1
+		return o.failureStatus(err)
 	}
 	if err != nil {
 		fmt.Fprintf(o.stderr, "error: %v\n", err)
-		return 1
+		return o.failureStatus(err)
 	}
 	return 0
+}
+
+// failureStatus is Run's status for a failed run: StatusRebootUncertain
+// once the reboot may have been queued but no new boot was seen, else 1.
+func (o *Operation) failureStatus(err error) int {
+	if err == nil || !o.rebootQueued || o.rebootVerified {
+		return 1
+	}
+	fmt.Fprintf(o.stderr, "error: reboot outcome unknown; %s may still reboot\n", o.opts.SSHTarget)
+	return StatusRebootUncertain
 }
 
 func (o *Operation) run() error {

@@ -1764,6 +1764,7 @@ func (h *hostReboot) runSelf() (outcome, reason string) {
 		// A started command may already have queued shutdown, even when
 		// cancellation wins the race with its clean exit acknowledgement.
 		mayBeRebooting = true
+		h.keepRunnersStopped("reboot command did not complete")
 		return h.failure(errStopped)
 	default:
 		h.startRunners()
@@ -2027,11 +2028,18 @@ func (h *hostReboot) runNode() int {
 // needed after all.
 func (h *hostReboot) rebootNode() (bool, error) {
 	status := h.runNode()
-	// A failed or skipped node reboot may have left the host running; then
-	// its runner units start again. A host that went down does not need it.
+	if status == k8snode.StatusRebootUncertain {
+		// The reboot may be queued: an old boot ID can still answer while a
+		// queued shutdown is pending.
+		h.keepRunnersStopped("the node reboot was not seen")
+		return false, fmt.Errorf("the node reboot outcome is unknown (status %d); the host is left as it is", status)
+	}
+	// Any other failed or skipped node reboot queued no reboot, or saw the
+	// new boot; a host still on its old boot gets its runner units back,
+	// after an interrupt too.
 	current := h.readBootID(context.WithoutCancel(h.ctx))
 	if status != 0 {
-		if h.ctx.Err() == nil && current == h.bootID {
+		if current == h.bootID {
 			h.startRunners()
 		}
 		return false, fmt.Errorf("the node reboot failed (status %d); the host is left as it is", status)
@@ -2064,7 +2072,7 @@ func (h *hostReboot) rebootPlain() error {
 	if h.ctx.Err() != nil || r.Status == 124 || (r.Status >= 128 && r.Status != 255) {
 		// An old boot ID can still answer while a queued shutdown is pending.
 		// Do not start runners when acknowledgement of the reboot is uncertain.
-		h.log("reboot command did not complete; outcome unknown, runner units remain stopped")
+		h.keepRunnersStopped("reboot command did not complete")
 		if h.ctx.Err() != nil {
 			return errStopped
 		}
@@ -2091,10 +2099,10 @@ func (h *hostReboot) rebootPlain() error {
 		down = status != 0 || id != "" && id != h.bootID
 	}
 	if !down {
-		// ssh's 255 may also mean the reboot command never arrived; the host
-		// is still on its old boot, so its runners start again.
-		h.startRunners()
-		return errors.New("SSH did not drop and the boot ID did not change; the host was not rebooted")
+		// The reboot command was accepted, or ssh's 255 lost its answer: a
+		// queued reboot may still happen on the old boot.
+		h.keepRunnersStopped("SSH did not drop and the boot ID did not change")
+		return errors.New("SSH did not drop and the boot ID did not change; reboot outcome unknown")
 	}
 
 	h.log("waiting for %s to return", endpoint)
@@ -2119,17 +2127,30 @@ func (h *hostReboot) rebootPlain() error {
 		}
 	}
 	if sameBoot {
-		// The host answers on its old boot: the reboot never happened.
-		h.startRunners()
-		return fmt.Errorf("%s still runs its old boot after %ds; the host was not rebooted", endpoint, h.f.opts.node.SSHTimeoutSeconds)
+		// The host answers on its old boot, but the accepted reboot may
+		// still be queued.
+		h.keepRunnersStopped(endpoint + " still runs its old boot")
+		return fmt.Errorf("%s still runs its old boot after %ds; reboot outcome unknown", endpoint, h.f.opts.node.SSHTimeoutSeconds)
 	}
+	h.keepRunnersStopped(endpoint + " did not return with a new boot ID")
 	return fmt.Errorf("%s did not return with a new boot ID within %ds", endpoint, h.f.opts.node.SSHTimeoutSeconds)
+}
+
+// keepRunnersStopped leaves the stopped runner units stopped after a reboot
+// that may be queued but was not seen, and names the command that starts
+// them once the host is known not to reboot (ADR-0010, ADR-0019).
+func (h *hostReboot) keepRunnersStopped(what string) {
+	if len(h.stopped) == 0 {
+		h.log("%s; outcome unknown, runner units remain stopped", what)
+		return
+	}
+	h.log("%s; outcome unknown, runner units remain stopped; next: %s", what, runnerResumeCommand(h.target.host, h.f.opts.configFile))
 }
 
 // interrupted ends a reboot wait without changing runners: an old boot can
 // still answer while a queued shutdown is pending.
 func (h *hostReboot) interrupted() error {
-	h.log("reboot wait interrupted; outcome unknown, runner units remain stopped")
+	h.keepRunnersStopped("reboot wait interrupted")
 	return errStopped
 }
 

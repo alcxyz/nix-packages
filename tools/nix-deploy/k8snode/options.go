@@ -84,6 +84,13 @@ Fence failures after cordon leave the node cordoned. Targets without an agent
 annotation skip these gates. --check-only also checks fence preflight; with
 on, it reads only the target agent's own state, as the power-on does.
 
+Exit status 3 means the reboot may have been queued but was not seen: the
+remote reboot command was accepted, or a signal or an interrupt ended it, and
+then the run failed or was interrupted before the host answered on a new boot
+(SSH did not drop or return, or the boot ID did not change). The host may
+still reboot later, even while it answers on its old boot. It wins over the
+interrupt's status 130 or 143. Other failures exit with status 1.
+
 Requires kubectl access to the target cluster and SSH sudo rights on the host.
 K8S_NODE_SSH_USER (default root) is the SSH user for the other nodes' network
 audits, and K8S_NODE_NETWORK_AUDIT_SCRIPT names the audit helper.
