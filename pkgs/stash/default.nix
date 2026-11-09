@@ -1,5 +1,7 @@
 {
   buildGoModule,
+  buildGo126Module ? null,
+  go,
   fetchFromGitHub,
   fetchPnpmDeps ? null,
   pnpmDepsV3Fetcher ? fetchPnpmDeps,
@@ -26,8 +28,19 @@ let
   useTopLevelPnpmFetcher = fetchPnpmDeps != null;
   pnpmDepsFetcher = if useTopLevelPnpmFetcher then fetchPnpmDeps else pnpm_10.fetchDeps;
   pnpmHook = if pnpmConfigHook == null then pnpm_10.configHook else pnpmConfigHook;
+
+  # Stash 0.31.1 vendors golang.org/x/tools v0.38.0, whose package loader
+  # fails under Go 1.27, so `go generate` (gqlgen) stops with "package
+  # "context" without types". Stash 0.32.0 vendors v0.44.0. Build 0.31.1
+  # with Go 1.26 while the default Go is 1.27 or newer; the next update
+  # drops this, then remove it.
+  buildStash =
+    if version == "0.31.1" && lib.versionAtLeast go.version "1.27" && buildGo126Module != null then
+      buildGo126Module
+    else
+      buildGoModule;
 in
-buildGoModule (
+buildStash (
   finalAttrs:
   let
     frontend = stdenv.mkDerivation (final: {
