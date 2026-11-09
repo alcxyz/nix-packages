@@ -70,9 +70,9 @@ jobs:
     name: Package validation prerequisites
     # Uses the host's shared read-only Nix store where the runner serves it
     # (nix-config ADR-0109, #1038; xyz for now). Other runners ignore the
-    # mounts as invalid volumes, and the job installs Nix as before. The job
-    # offers no path lists: a fork's job could write the host's offer inbox
-    # too, so offers wait for a filler that verifies who made them.
+    # mounts as invalid volumes, and the job installs Nix as before. Its
+    # last step prints the paths it fetched to its own log, which the hosts'
+    # fillers read once they have verified the run through the forge.
     runs-on: forgejo-podman
     container:
       image: docker.io/library/node:20-bookworm
@@ -148,6 +148,7 @@ jobs:
             cp /nix-cache/db/db.sqlite /nix-cache/db/schema /nix/var/nix/db/
             printf '%s\n' 'build-users-group =' 'experimental-features = nix-command flakes' 'sandbox = false' > /etc/nix/nix.conf
             echo /nix-cache/nix/bin >> "$GITHUB_PATH"
+            /nix-cache/nix/bin/nix path-info --all | sort > /tmp/nix-paths-before
             echo used=true >> "$GITHUB_OUTPUT"
           fi
 
@@ -183,6 +184,21 @@ jobs:
         env:
           NIX_CONFIG: max-jobs = 0
         run: nix flake check --no-build --all-systems
+
+      - name: Offer the paths this run fetched
+        if: always()
+        run: |
+          # Only printed: the hosts' fillers read these lines from this log
+          # after verifying the run through the forge, and admit only signed
+          # or pinned content (nix-config ADR-0109). Fork runs offer nothing.
+          # Only paths cache.nixos.org signed, which leaves out the .drv
+          # files and sources that evaluation writes locally.
+          if [ -s /tmp/nix-paths-before ]; then
+            nix path-info --all | sort | comm -13 /tmp/nix-paths-before -
+          else
+            nix path-info --all
+          fi | grep -v '\.drv$' | xargs -r nix path-info --sigs |
+            awk '/[[:space:]]cache\.nixos\.org-1:/ { print "nix-cache-offer " $1 }' || true
 
   package-build:
     # Keep this job's name: update auto-merge requires the
