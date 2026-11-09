@@ -103,6 +103,12 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 	if d.cfg.Consent != nil {
 		s.consentRoutes(app)
 	}
+	// Tools run in other processes behind the same proxy; their paths are
+	// reserved like the pages-only mode's dashboard paths: not found here,
+	// the bare path redirected to its slash form.
+	for _, tool := range d.cfg.Tools {
+		app.Handle("GET "+tool.Path[:len(tool.Path)-1], http.RedirectHandler(tool.Path, http.StatusMovedPermanently))
+	}
 	// The shell's links for bundles (shell.js), in both modes.
 	app.HandleFunc("GET "+navPath, s.navJSON)
 	collections := *d.cfg.Collections
@@ -118,6 +124,9 @@ func newHandler(d *Deck, auth *Authenticator, log *slog.Logger) (http.Handler, e
 		_, pattern := app.Handler(r)
 		reserved := (base != "/" && inNamespace(r.URL.Path, base)) || (backlogBase != "" && inNamespace(r.URL.Path, backlogBase)) ||
 			(d.cfg.Consent != nil && inNamespace(r.URL.Path, consentBase))
+		for _, tool := range d.cfg.Tools {
+			reserved = reserved || inNamespace(r.URL.Path, tool.Path)
+		}
 		if !collections || pattern != "" || reserved || (base == "/" && strings.HasPrefix(r.URL.Path, "/actions/")) {
 			app.ServeHTTP(w, r)
 			return

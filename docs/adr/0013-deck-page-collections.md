@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-22
-**Amended:** 2026-10-24 (content from Git, pages-only mode), 2026-10-25 (shared colour scheme assets), 2026-10-25 (shared design stylesheet), 2026-10-26 (JSON data assets), 2026-11-04 (pinned pages), 2026-11-07 (overview, live tiles and the shell, [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786))
+**Amended:** 2026-10-24 (content from Git, pages-only mode), 2026-10-25 (shared colour scheme assets), 2026-10-25 (shared design stylesheet), 2026-10-26 (JSON data assets), 2026-11-04 (pinned pages), 2026-11-07 (overview, live tiles and the shell, [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)), 2026-11-10 (tool links and the Pages menu, [#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691))
 **History:** [replaced text](archive/0013-deck-page-collections-history.md)
 **Applies to:** `tools/deck/`
 
@@ -38,8 +38,8 @@ bar ([#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)).
 ### Collections and bundles
 
 Deck serves read-only collections of operator-authored static page bundles.
-The root index is Deck's overview: it links to the thread dashboard and the
-available collections, counts what waits on the owner in the views the
+The root index is Deck's overview: it links to the thread dashboard, the
+configured tools (below) and the available collections, counts what waits on the owner in the views the
 process runs, and shows a live tile for each page that ships one (below).
 Each collection has an index and pages at `/<collection>/<slug>/`; dated slugs
 can preserve individual proposals or assessments without replacing older ones.
@@ -129,8 +129,9 @@ revision needs no restart and a partly written checkout is never served.
 
 - **One top bar on every page** ([ADR-0015](0015-deck-design-system.md)):
   Deck's views, the overview and the collection indexes render the overview,
-  the views and the collections that have a page, with the current one
-  marked and counts on Threads (waiting on the owner) and Approvals (pending).
+  the views, the configured tools and the collections that have a page (in
+  a Pages menu), with the current one marked and counts on Threads (waiting
+  on the owner) and Approvals (pending).
 - **`/nav.json` serves the same links to bundles**, with the counts, behind
   the same token check, in both modes; the pages-only mode has no counts. It
   is no collection slug, so no collection can claim it.
@@ -139,6 +140,23 @@ revision needs no restart and a partly written checkout is never served.
   replaces the marked bar with the shell and keeps the bar's colour scheme
   toggle. Without the script, or where `/nav.json` fails, the bundle's own
   bar stays.
+
+### Tool links
+
+- **Operator tools on the same origin are configured links.** Each `[[tool]]`
+  entry names a label, an absolute, slash-terminated path and an optional
+  one-line description, for a tool such as devstats that another process
+  serves behind the same proxy
+  ([#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691)). The shell
+  links them after the views, `/nav.json` marks them with `tool`, and the
+  overview lists them with their descriptions, in both modes.
+- **Their paths are reserved** like the pages-only mode's dashboard paths: no
+  collection whose name a tool path starts with is served or listed, deck
+  answers not found below the path and redirects the bare path to its slash
+  form. A tool path must not overlap `basePath`, `[backlog] basePath`, the
+  approvals path, `/static/`, `/nav.json`, `/healthz` or another tool's path.
+- **Deck neither proxies nor checks the tools.** Routing, authentication and
+  availability stay with the proxy and the tool.
 
 ### Shared theme and design assets
 

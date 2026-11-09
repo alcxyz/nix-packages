@@ -52,6 +52,25 @@
 .ov-need.ok b { color: var(--deck-ok); }
 .ov-need.quiet b { color: var(--deck-muted); font-weight: 600; }
 
+/* Operator tools on the same origin: a label and a one-line description. */
+.ov-tools { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: var(--deck-space-2); }
+.ov-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  height: 100%;
+  padding: 0.6rem 0.9rem 0.65rem;
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius);
+  text-decoration: none;
+  color: var(--deck-text-2);
+  font-size: var(--deck-text-sm);
+  line-height: 1.35;
+}
+.ov-tool:hover { border-color: var(--deck-line-strong); color: var(--deck-text); }
+.ov-tool b { color: var(--deck-accent-text); font-weight: 650; font-size: var(--deck-text-md); }
+
 /* Library cards: a collection and its latest pages. */
 .lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); gap: var(--deck-space-3); }
 .lib-card {

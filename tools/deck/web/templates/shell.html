@@ -1,11 +1,15 @@
 {{/* The shell every deck page shares (ADR-0015): brand, the views and the
-collections, and the colour scheme toggle. /static/shell.js renders the same
-markup for page bundles from /nav.json. */}}
+tools, the collections in a Pages menu, and the colour scheme toggle.
+/static/shell.js renders the same markup for page bundles from /nav.json and
+closes the menu on Escape or a click outside it. The links scroll sideways in
+their own box, so the menu after them is never clipped. */}}
 {{define "shell"}}<header class="deck-shell deck-noprint">
   <a class="deck-shell-brand" href="/">Deck</a>
-  <nav class="deck-shell-nav" aria-label="Deck">{{range .Items}}<a href="{{.URL}}"{{if .Collection}} class="collection"{{end}}{{if .Current}} aria-current="page"{{end}}>{{.Label}}{{if .Count}}<span class="deck-shell-count {{.Tone}}" aria-label="{{.Count}} waiting">{{.Count}}</span>{{end}}</a>{{end}}</nav>
+  <nav class="deck-shell-nav" aria-label="Deck"><div class="deck-shell-links">{{range .Links}}{{template "shell-link" .}}{{end}}</div>{{with .Pages}}<details class="deck-shell-menu"><summary{{if $.PagesCurrent}} aria-current="true"{{end}}>Pages</summary><div class="deck-shell-menu-list">{{range .}}{{template "shell-link" .}}{{end}}</div></details>{{end}}</nav>
   <span class="deck-shell-theme" data-deck-theme></span>
 </header>{{end}}
+
+{{define "shell-link"}}<a href="{{.URL}}"{{if .Tool}} class="tool"{{end}}{{if .Current}} aria-current="page"{{end}}>{{.Label}}{{if .Count}}<span class="deck-shell-count {{.Tone}}" aria-label="{{.Count}} waiting">{{.Count}}</span>{{end}}</a>{{end}}
 
 {{/* A live tile: /static/tiles.js imports the page's tile.js and fills it in.
 Without script it shows the page's title and summary. */}}

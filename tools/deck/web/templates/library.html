@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="/static/base.css">
 <link rel="stylesheet" href="/static/library.css">
 <script src="/static/theme.js"></script>
+<script src="/static/shell.js" defer></script>
 <script src="/static/tiles.js" defer></script>
 </head>
 <body class="lib" data-deck="live">
@@ -23,6 +24,14 @@
   <h2 class="ov-label" id="ov-needs">Needs you</h2>
   <ul class="ov-needs">{{range .}}
     <li><a class="ov-need{{if and .Known .Count}} {{.Tone}}{{else}} quiet{{end}}" href="{{.URL}}"><b>{{if .Known}}{{.Count}}{{else}}…{{end}}</b><span>{{.Label}}</span></a></li>{{end}}
+  </ul>
+</section>
+{{end}}
+{{with .Tools}}
+<section class="ov-section" aria-labelledby="ov-tools">
+  <h2 class="ov-label" id="ov-tools">Tools</h2>
+  <ul class="ov-tools">{{range .}}
+    <li><a class="ov-tool" href="{{.Path}}"><b>{{.Label}}</b>{{if .Description}}<span>{{.Description}}</span>{{end}}</a></li>{{end}}
   </ul>
 </section>
 {{end}}

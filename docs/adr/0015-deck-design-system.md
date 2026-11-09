@@ -1,7 +1,8 @@
 # ADR-0015: One design for deck's views and page bundles, chosen by purpose
 
 **Status:** Accepted
-**Date:** 2026-10-25, updated 2026-11-07 (the shell, live tiles and the canvas, per [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786))
+**Date:** 2026-10-25, updated 2026-11-07 (the shell, live tiles and the canvas, per [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)), 2026-11-10 (tool links and the Pages menu in the shell, per [#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691))
+**History:** [replaced text](archive/0015-deck-design-system-history.md)
 **Applies to:** `tools/deck/web/`, page bundles served by deck
 
 ## Context
@@ -60,10 +61,17 @@ The pages serve five purposes, which differ in density and output:
   without the attribute is unaffected by loading the file.
 - **One shell on every page.** A full-width top bar with a fixed inset, so it
   stays put between pages of different widths: the brand, the overview, the
-  views and then the collections after a rule, the current page in the
-  accent's soft fill, counts as small pills, and the toggle at the end. At
-  phone width the links scroll sideways under the brand. Views keep their own
-  toolbar below it; the shell is left off paper.
+  views, the configured operator tools on the same origin as flat links, then
+  a "Pages" menu holding the collections at the right end beside the toggle,
+  its list opening leftward so it always fits the viewport. The
+  current page takes the accent's soft fill, and so does the menu's button
+  when the page is in a collection; counts show as small pills. The menu is a
+  `<details>` disclosure, so it works without script; `shell.js` closes it on
+  Escape, on a click outside it and after a link in it is followed. With no
+  collections there is no menu. At phone width the links scroll sideways
+  under the brand while the menu stays at the end of the row, outside the
+  scrolling box, so its list is not clipped. Views keep their own toolbar
+  below it; the shell is left off paper.
 - **Index and live pages sit on a canvas** (`--deck-canvas`, a light grey
   in the light scheme and the page colour in the dark one) on screen, so
   their cards and tiles stand out without shadows. Worksheets, presentations
@@ -118,5 +126,8 @@ The pages serve five purposes, which differ in density and output:
   bar, so moving between them keeps the same navigation in the same place
   when one process serves them all; with the pages run apart, each process's
   bar lists what that process knows ([ADR-0013](0013-deck-page-collections.md)).
+- New collections do not widen the bar, at the cost of one more click to
+  reach a collection. Deck's own pages load `shell.js` for the menu, as
+  bundles already did for the bar.
 - The live views' "new since your last visit" marker is an accent bar
   instead of a tint, so status colours stay readable on new rows.

@@ -46,6 +46,8 @@ type LibraryView struct {
 	BacklogPath string
 	// ConsentPath is the approvals page's path, empty when it is off.
 	ConsentPath string
+	// Tools are the configured operator tools, which the overview lists.
+	Tools       []ToolConfig
 	Collections []CollectionView
 	// Needs counts what waits on the owner in the in-process views; empty
 	// in the pages-only mode.
@@ -299,7 +301,8 @@ func osReadContentDir(root *os.Root) ([]os.DirEntry, error) {
 }
 
 // contentCollectionAvailable keeps the existing dashboard namespace, the
-// shared asset path and the health endpoint out of the library even when
+// tools' paths, the shared asset path and the health endpoint out of the
+// library even when
 // matching directories exist.
 func (s *Server) contentCollectionAvailable(name string) bool {
 	base := s.deck.cfg.BasePath
@@ -311,6 +314,11 @@ func (s *Server) contentCollectionAvailable(name string) bool {
 	}
 	if s.deck.cfg.Consent != nil && "/"+name+"/" == consentBase {
 		return false
+	}
+	for _, tool := range s.deck.cfg.Tools {
+		if strings.HasPrefix(tool.Path, "/"+name+"/") {
+			return false
+		}
 	}
 	if base == "/" {
 		return name != "fragment" && name != "actions"
@@ -351,7 +359,7 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 		defer root.Close()
 	}
 	if r.URL.Path == "/" {
-		view := LibraryView{BasePath: s.deck.cfg.BasePath}
+		view := LibraryView{BasePath: s.deck.cfg.BasePath, Tools: s.deck.cfg.Tools}
 		if s.deck.cfg.Backlog != nil {
 			view.BacklogPath = s.deck.cfg.Backlog.BasePath
 		}

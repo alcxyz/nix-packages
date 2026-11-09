@@ -276,17 +276,28 @@ body[data-deck="tool"] { --deck-width: 54rem; }
   background: var(--deck-accent);
   box-shadow: inset -5px -5px 0 var(--deck-accent-text);
 }
+/* The views and tools scroll sideways in their own box when they do not
+   fit; the Pages menu sits after it, outside the scrolling box, so its
+   list is not clipped. */
 .deck-shell-nav {
   display: flex;
   align-items: center;
   gap: 2px;
   flex: 1;
   min-width: 0;
+}
+.deck-shell-links {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.deck-shell-nav::-webkit-scrollbar { display: none; }
-.deck-shell-nav a {
+.deck-shell-links::-webkit-scrollbar { display: none; }
+.deck-shell-nav a,
+.deck-shell-menu summary {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -298,18 +309,49 @@ body[data-deck="tool"] { --deck-width: 54rem; }
   text-decoration: none;
   white-space: nowrap;
 }
-.deck-shell-nav a:hover { background: var(--deck-surface-2); color: var(--deck-text); }
-.deck-shell-nav a[aria-current="page"] { background: var(--deck-accent-soft); color: var(--deck-accent-text); }
-/* The collections follow the views after a rule. */
-.deck-shell-nav a:not(.collection) + a.collection { margin-left: calc(var(--deck-space-3) + 1px); position: relative; }
-.deck-shell-nav a:not(.collection) + a.collection::before {
+.deck-shell-nav a:hover,
+.deck-shell-menu summary:hover,
+.deck-shell-menu[open] summary { background: var(--deck-surface-2); color: var(--deck-text); }
+.deck-shell-nav a[aria-current="page"],
+.deck-shell-menu summary[aria-current] { background: var(--deck-accent-soft); color: var(--deck-accent-text); }
+/* Inset, so the scrolling box does not clip the focus ring. */
+.deck-shell a:focus-visible,
+.deck-shell summary:focus-visible { outline: 2px solid var(--deck-accent); outline-offset: -2px; }
+.deck-shell-menu { position: relative; flex: none; margin-left: auto; }
+.deck-shell-menu summary { cursor: pointer; list-style: none; user-select: none; }
+.deck-shell-menu summary::-webkit-details-marker { display: none; }
+/* A chevron that turns when the menu is open. */
+.deck-shell-menu summary::after {
   content: "";
-  position: absolute;
-  left: calc(-1 * var(--deck-space-2) - 1px);
-  top: 25%;
-  height: 50%;
-  border-left: 1px solid var(--deck-line-strong);
+  width: 0.38em;
+  height: 0.38em;
+  margin: -0.2em 0.05rem 0 0.1rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
 }
+.deck-shell-menu[open] summary::after { margin-top: 0.2em; transform: rotate(-135deg); }
+/* The menu sits at the right end of the nav, beside the toggle, at every
+   width, and its list opens leftward from the menu's right edge, so the
+   whole bar is room for it however few links come before the menu. */
+.deck-shell-menu-list {
+  position: absolute;
+  top: calc(100% + var(--deck-space-1));
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 11rem;
+  max-width: min(20rem, calc(100vw - 2 * var(--deck-space-4)));
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: var(--deck-space-1);
+  background: var(--deck-surface);
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius);
+}
+.deck-shell-menu-list a { display: flex; }
 .deck-shell-count {
   min-width: 1.4em;
   padding: 0 0.35rem;
@@ -324,8 +366,10 @@ body[data-deck="tool"] { --deck-width: 54rem; }
 .deck-shell-theme { flex: none; margin-left: auto; }
 @media (max-width: 720px) {
   .deck-shell { flex-wrap: wrap; padding: var(--deck-space-2) var(--deck-space-4) 0; }
-  /* The links scroll sideways; the fade says there are more. */
-  .deck-shell-nav { order: 3; flex-basis: 100%; margin: 0 calc(-1 * var(--deck-space-2)); padding-bottom: var(--deck-space-1); -webkit-mask-image: linear-gradient(to right, #000 85%, transparent); mask-image: linear-gradient(to right, #000 85%, transparent); }
+  /* The links scroll sideways; the fade says there are more. The mask
+     stays on the links, since it would hide the menu's list too. */
+  .deck-shell-nav { order: 3; flex-basis: 100%; margin: 0 calc(-1 * var(--deck-space-2)); padding-bottom: var(--deck-space-1); }
+  .deck-shell-links { -webkit-mask-image: linear-gradient(to right, #000 85%, transparent); mask-image: linear-gradient(to right, #000 85%, transparent); }
 }
 
 /* Status dot: ok, watch (attention) or act (danger); grey while unknown. */

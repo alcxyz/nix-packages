@@ -11,17 +11,21 @@ import (
 )
 
 // NavItem is one link in the shell every page shares (ADR-0015): a view, the
-// approvals page or a collection. Count and Tone flag what waits there.
+// approvals page, a configured tool or a collection. Count and Tone flag what
+// waits there.
 type NavItem struct {
 	Label string `json:"label"`
 	URL   string `json:"url"`
 	Count int    `json:"count,omitempty"`
 	// Tone colours the count: "attn" waits on the owner.
 	Tone string `json:"tone,omitempty"`
-	// Collection marks a page collection, which the shell sets apart from
-	// the views.
+	// Collection marks a page collection, which the shell folds into its
+	// Pages menu.
 	Collection bool `json:"collection,omitempty"`
-	Current    bool `json:"-"`
+	// Tool marks an operator tool from the configuration, served on the same
+	// origin by another process; the shell links it after the views.
+	Tool    bool `json:"tool,omitempty"`
+	Current bool `json:"-"`
 }
 
 // NavView is the shell's links, with the one for the current page marked.
@@ -29,13 +33,47 @@ type NavView struct {
 	Items []NavItem `json:"items"`
 }
 
+// Links are the items the shell shows in its bar: the overview, the views
+// and the tools.
+func (v NavView) Links() []NavItem {
+	var links []NavItem
+	for _, item := range v.Items {
+		if !item.Collection {
+			links = append(links, item)
+		}
+	}
+	return links
+}
+
+// Pages are the collections, which the shell lists in its Pages menu.
+func (v NavView) Pages() []NavItem {
+	var pages []NavItem
+	for _, item := range v.Items {
+		if item.Collection {
+			pages = append(pages, item)
+		}
+	}
+	return pages
+}
+
+// PagesCurrent reports whether the current page is in a collection, which
+// marks the Pages menu.
+func (v NavView) PagesCurrent() bool {
+	for _, item := range v.Items {
+		if item.Collection && item.Current {
+			return true
+		}
+	}
+	return false
+}
+
 // navPath is where bundles' shell.js reads the links (ADR-0013). It is no
 // collection slug, so it cannot shadow one.
 const navPath = "/nav.json"
 
-// navItems lists the overview, the views and the collections that have a
-// page. Counts come from the in-process views only, so the pages-only mode
-// links its views without counts.
+// navItems lists the overview, the views, the configured tools and the
+// collections that have a page. Counts come from the in-process views only,
+// so the pages-only mode links its views without counts.
 func (s *Server) navItems() []NavItem {
 	cfg := s.deck.cfg
 	var items []NavItem
@@ -58,6 +96,9 @@ func (s *Server) navItems() []NavItem {
 			approvals.Count, approvals.Tone = n, "attn"
 		}
 		items = append(items, approvals)
+	}
+	for _, tool := range cfg.Tools {
+		items = append(items, NavItem{Label: tool.Label, URL: tool.Path, Tool: true})
 	}
 	for _, name := range s.collectionNames() {
 		items = append(items, NavItem{Label: CollectionView{Name: name}.Title(), URL: "/" + name + "/", Collection: true})

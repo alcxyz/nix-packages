@@ -136,6 +136,11 @@ label = "Main"                                  # optional
 db = "/home/user/.t3/userdata/statev2.sqlite"
 webURL = "https://t3.example.com"
 # environmentID = "..."   # optional; overrides the inventory's environmentId
+
+[[tool]]                 # optional, repeatable; see Tool links
+label = "Stats"
+path = "/devstats/"
+description = "Development activity" # optional, one line
 ```
 
 `summaryRole` is also included in `summaryRoles` when absent. The offered
@@ -143,6 +148,31 @@ roles retain configuration order, with duplicates removed, and must resolve
 to at least one usable no-tools entry of the shared LLM configuration.
 
 Thread links are `{webURL}/{environmentId}/{threadId}`.
+
+## Top bar and tool links
+
+Every deck page shares one top bar: the brand, Overview, Threads (with the
+count waiting on you), Backlog and Approvals when configured, the tool links,
+then a **Pages** menu holding the collections at the right end, and the
+colour scheme toggle.
+The menu is a `<details>` disclosure, so it opens without script;
+`/static/shell.js`, which deck's pages and opted-in bundles load, closes it on
+Escape, on a click outside it and after a link in it is followed. With no
+collections there is no menu. At phone width the links scroll sideways and
+the menu stays at the end of the row.
+
+Each `[[tool]]` entry links an operator tool that another process serves on
+the same origin behind the same proxy, such as devstats at `/devstats/`
+([#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691)). The bar links
+it after the views, `/nav.json` lists it with `"tool": true`, and the
+overview lists it under Tools with its description, in both modes. Its path
+must be absolute and end in a slash, hold only letters, digits and
+`. _ ~ -` in its segments, and must not overlap `basePath`,
+`[backlog] basePath`, `/consent/`, `/static/`, `/nav.json`, `/healthz` or
+another tool's path. The path is reserved: a collection whose name it starts
+with is neither served nor listed, deck answers not found below it, and the
+bare path redirects to its slash form. Deck does not proxy the tool; route the
+path to it in the proxy.
 
 ## Backlog view
 
@@ -401,7 +431,8 @@ their frame size, tools as a list without controls.
 ships its own copy of `base.css`. A bundle that uses `base.css` needs a Deck
 release that serves it, so publish it after that release is deployed.
 `/static/` is reserved: no collection can use that name, and `/nav.json` is
-no collection slug.
+no collection slug. Tool paths are reserved too (see
+[Top bar and tool links](#top-bar-and-tool-links)).
 
 Bundles are trusted application content; Deck supplies authentication, not an
 untrusted-content execution sandbox. All pages and assets require the same
@@ -458,6 +489,10 @@ groups = ["admins"]
 
 [backlog]                         # only when the dashboard serves the backlog view
 basePath = "/backlog/"
+
+[[tool]]                          # linked and reserved; the proxy routes it
+label = "Stats"
+path = "/devstats/"
 ```
 
 In the pages-only mode the content comes from a Git repository the operator

@@ -32,6 +32,18 @@ type Config struct {
 	// Consent relays credential approvals (ADR-0018); nil leaves it off, with
 	// no route under its path.
 	Consent *ConsentConfig `toml:"consent"`
+	// Tools links operator tools served on the same origin behind the same
+	// proxy, such as devstats, from the shell and the overview, and reserves
+	// their paths from the collections.
+	Tools []ToolConfig `toml:"tool"`
+}
+
+// ToolConfig is one operator tool: its label in the shell, its path on
+// deck's origin and an optional one-line description for the overview.
+type ToolConfig struct {
+	Label       string `toml:"label"`
+	Path        string `toml:"path"`
+	Description string `toml:"description"`
 }
 
 // ConsentConfig names the spool directory shared with credential-approval.
@@ -304,6 +316,10 @@ func (c *Config) normalize() error {
 		}
 	}
 
+	if err := c.validateTools(); err != nil {
+		return err
+	}
+
 	seen := map[string]bool{}
 	for i := range c.Threads.Instances {
 		in := &c.Threads.Instances[i]
@@ -353,6 +369,57 @@ func normalizeBasePath(name, p, def string) (string, error) {
 		return "", fmt.Errorf("%s must not be %s or below it, the shared asset path", name, sharedStaticPath)
 	}
 	return p, nil
+}
+
+// validateTools checks the tool links. A tool path is written in full, so
+// what the shell links is what the proxy routes, and it must not overlap a
+// path deck serves or reserves, or another tool's.
+func (c *Config) validateTools() error {
+	for i, tool := range c.Tools {
+		if tool.Label == "" || strings.TrimSpace(tool.Label) != tool.Label || strings.ContainsAny(tool.Label, "\r\n") {
+			return fmt.Errorf("tool %d: label %q must be nonempty, on one line and without surrounding whitespace", i+1, tool.Label)
+		}
+		if strings.ContainsAny(tool.Description, "\r\n") {
+			return fmt.Errorf("tool %q: description must be one line", tool.Label)
+		}
+		p := tool.Path
+		if !strings.HasPrefix(p, "/") || !strings.HasSuffix(p, "/") || p == "/" {
+			return fmt.Errorf("tool %q: path %q must be absolute and end in a slash, such as /devstats/", tool.Label, p)
+		}
+		// The checks every base path gets: literal segments, and not
+		// /healthz/, /nav.json/ or /static/.
+		if _, err := normalizeBasePath(fmt.Sprintf("tool %q: path", tool.Label), p, ""); err != nil {
+			return err
+		}
+		if c.BasePath == "/" {
+			// The dashboard at the root owns these names.
+			if pathsOverlap(p, "/fragment/") || pathsOverlap(p, "/actions/") {
+				return fmt.Errorf("tool %q: path %q must not overlap the dashboard's routes at /", tool.Label, p)
+			}
+		} else if pathsOverlap(p, c.BasePath) {
+			return fmt.Errorf("tool %q: path %q must not overlap basePath %q", tool.Label, p, c.BasePath)
+		}
+		if c.Backlog != nil && pathsOverlap(p, c.Backlog.BasePath) {
+			return fmt.Errorf("tool %q: path %q must not overlap backlog.basePath %q", tool.Label, p, c.Backlog.BasePath)
+		}
+		// The approvals path is fixed, so it stays free even with consent
+		// off here: another process may serve it.
+		if pathsOverlap(p, consentBase) {
+			return fmt.Errorf("tool %q: path %q must not overlap %s, the approvals path", tool.Label, p, consentBase)
+		}
+		for _, other := range c.Tools[:i] {
+			if pathsOverlap(p, other.Path) {
+				return fmt.Errorf("tool %q: path %q must not overlap tool %q's path %q", tool.Label, p, other.Label, other.Path)
+			}
+		}
+	}
+	return nil
+}
+
+// pathsOverlap reports whether one slash-terminated path is the other or
+// below it.
+func pathsOverlap(a, b string) bool {
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
 }
 
 // pagesOnly reports whether deck runs without thread instances, serving
