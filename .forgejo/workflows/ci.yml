@@ -70,14 +70,15 @@ jobs:
     name: Package validation prerequisites
     # Uses the host's shared read-only Nix store where the runner serves it
     # (nix-config ADR-0109, #1038; xyz for now). Other runners ignore the
-    # mounts as invalid volumes, and the job installs Nix as before.
+    # mounts as invalid volumes, and the job installs Nix as before. The job
+    # offers no path lists: a fork's job could write the host's offer inbox
+    # too, so offers wait for a filler that verifies who made them.
     runs-on: forgejo-podman
     container:
       image: docker.io/library/node:20-bookworm
       options: >-
         -v /run/forgejo-nix-cache/nix/store:/nix/store:O
         -v /run/forgejo-nix-cache/job:/nix-cache:ro
-        -v /run/forgejo-nix-cache-drop:/nix-cache-drop
     steps:
       - name: Prepare action copy paths
         run: |
@@ -147,7 +148,6 @@ jobs:
             cp /nix-cache/db/db.sqlite /nix-cache/db/schema /nix/var/nix/db/
             printf '%s\n' 'build-users-group =' 'experimental-features = nix-command flakes' 'sandbox = false' > /etc/nix/nix.conf
             echo /nix-cache/nix/bin >> "$GITHUB_PATH"
-            /nix-cache/nix/bin/nix path-info --all | sort > /tmp/nix-paths-before
             echo used=true >> "$GITHUB_OUTPUT"
           fi
 
@@ -183,24 +183,6 @@ jobs:
         env:
           NIX_CONFIG: max-jobs = 0
         run: nix flake check --no-build --all-systems
-
-      - name: Offer the paths this run used to the host's store
-        if: >-
-          always() && steps.nix-cache.outputs.used == 'true' && (
-            (forgejo.event_name == 'push'
-              && forgejo.ref == format('refs/heads/{0}', forgejo.event.repository.default_branch))
-            || (forgejo.event_name == 'pull_request'
-              && forgejo.event.pull_request.head.repo.full_name == forgejo.repository))
-        run: |
-          name="$(printf '%s' "$GITHUB_REPOSITORY" | tr '/' '_')-$GITHUB_RUN_ID-$GITHUB_JOB"
-          # Built in the job's own /tmp, then copied under a dot name the
-          # filler ignores and renamed at once.
-          nix path-info --all | sort | comm -13 /tmp/nix-paths-before - |
-            xargs -r nix-store -qR --include-outputs | sort -u > /tmp/nix-offer.paths &&
-            cp /tmp/nix-offer.paths "/nix-cache-drop/.$name.paths" &&
-            mv "/nix-cache-drop/.$name.paths" "/nix-cache-drop/$name.paths" || true
-          cp flake.lock "/nix-cache-drop/.$name.lock" &&
-            mv "/nix-cache-drop/.$name.lock" "/nix-cache-drop/$name.lock" || true
 
   package-build:
     # Keep this job's name: update auto-merge requires the
