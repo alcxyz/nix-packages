@@ -17,7 +17,8 @@ type NavItem struct {
 	Label string `json:"label"`
 	URL   string `json:"url"`
 	Count int    `json:"count,omitempty"`
-	// Tone colours the count: "attn" waits on the owner.
+	// Tone colours the count: "attn" waits on the owner, "danger" marks a
+	// live page that needs action.
 	Tone string `json:"tone,omitempty"`
 	// Collection marks a page collection, which the shell folds into its
 	// Pages menu.
@@ -72,8 +73,8 @@ func (v NavView) PagesCurrent() bool {
 const navPath = "/nav.json"
 
 // navItems lists the overview, the views, the configured tools and the
-// collections that have a page. Counts come from the in-process views only,
-// so the pages-only mode links its views without counts.
+// collections that have a page. Counts come from the in-process views and
+// the live pages, so the pages-only mode counts only the live pages.
 func (s *Server) navItems() []NavItem {
 	cfg := s.deck.cfg
 	var items []NavItem
@@ -100,10 +101,23 @@ func (s *Server) navItems() []NavItem {
 	for _, tool := range cfg.Tools {
 		items = append(items, NavItem{Label: tool.Label, URL: tool.Path, Tool: true})
 	}
-	for _, name := range s.collectionNames() {
-		items = append(items, NavItem{Label: CollectionView{Name: name}.Title(), URL: "/" + name + "/", Collection: true})
+	for _, collection := range s.deck.collections() {
+		item := NavItem{Label: collection.Title(), URL: collection.URL, Collection: true}
+		if n, act := collection.NeedsLook(); n > 0 {
+			item.Count, item.Tone = n, liveTone(act)
+		}
+		items = append(items, item)
 	}
 	return items
+}
+
+// liveTone colours a count of live pages that need a look: danger when one
+// needs action.
+func liveTone(act bool) string {
+	if act {
+		return "danger"
+	}
+	return "attn"
 }
 
 // nav marks the item for the page at current: the overview only on the root,
@@ -123,34 +137,6 @@ func (s *Server) nav(current string) NavView {
 func (s *Server) navJSON(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(NavView{Items: s.navItems()})
-}
-
-// collectionNames lists the collections that hold at least one valid page,
-// as the root index does (ADR-0013), sorted by name.
-func (s *Server) collectionNames() []string {
-	if !*s.deck.cfg.Collections {
-		return nil
-	}
-	root, err := os.OpenRoot(s.deck.cfg.ContentDir)
-	if err != nil {
-		return nil
-	}
-	defer root.Close()
-	entries, err := osReadContentDir(root)
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, entry := range entries {
-		if !entry.IsDir() || !s.contentCollectionAvailable(entry.Name()) {
-			continue
-		}
-		if collection, err := s.collection(root, entry.Name()); err == nil && len(collection.Pages) > 0 {
-			names = append(names, entry.Name())
-		}
-	}
-	sort.Strings(names)
-	return names
 }
 
 // threadCounts sums the instances' summaries without building the rows; ok
@@ -204,12 +190,23 @@ func (s *Server) pendingConsent() []consentRequest {
 }
 
 // needs is the overview's "Needs you" row: what waits on the owner in the
-// threads, approvals and backlog this process runs. Each links to its view
-// filtered to that count (deck.js reads #card=).
-func (s *Server) needs() []NeedView {
+// threads, approvals and backlog this process runs, each linking to its view
+// filtered to that count (deck.js reads #card=), then the live pages that
+// need a look in each collection with tiles. The pages-only mode has only
+// the live pages.
+func (s *Server) needs(collections []CollectionView) []NeedView {
 	cfg := s.deck.cfg
+	var live []NeedView
+	for _, c := range collections {
+		if !c.HasTiles() {
+			continue
+		}
+		n, act := c.NeedsLook()
+		page := strings.ToLower(c.Title()) + " page"
+		live = append(live, NeedView{Count: n, Label: plural(n, page+" needs a look", page+"s need a look"), URL: c.URL, Tone: liveTone(act), Known: true})
+	}
 	if cfg.pagesOnly() {
-		return nil
+		return live
 	}
 	counts, known := s.deck.threadCounts()
 	base := cfg.BasePath
@@ -230,7 +227,7 @@ func (s *Server) needs() []NeedView {
 			NeedView{Count: b.MaybeDone, Label: plural(b.MaybeDone, "issue maybe done", "issues maybe done"), URL: backlog + "#card=maybe", Tone: "attn", Known: b.HasRun},
 		)
 	}
-	return needs
+	return append(needs, live...)
 }
 
 func plural(n int, one, many string) string {

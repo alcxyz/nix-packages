@@ -28,9 +28,11 @@ type ContentPage struct {
 	// Pinned keeps a page that stays current, such as a live report, ahead of
 	// the dated ones in its collection.
 	Pinned bool `json:"pinned"`
-	// Tile is set when the bundle ships tile.js, the module the overview and
-	// the collection index call for its live tile (ADR-0013).
-	Tile bool   `json:"-"`
+	// Tile declares a live tile, which deck fills from the bundle's
+	// tile.json on the overview and the collection index (ADR-0013).
+	Tile bool `json:"tile"`
+	// Live is the tile as read for this request, when Tile is set.
+	Live Tile   `json:"-"`
 	URL  string `json:"-"`
 }
 
@@ -49,10 +51,10 @@ type LibraryView struct {
 	// Tools are the configured operator tools, which the overview lists.
 	Tools       []ToolConfig
 	Collections []CollectionView
-	// Needs counts what waits on the owner in the in-process views; empty
-	// in the pages-only mode.
+	// Needs counts what waits on the owner in the in-process views and the
+	// live pages; the pages-only mode has the live pages only.
 	Needs []NeedView
-	// Tiles are the pages that ship tile.js, across collections, and
+	// Tiles are the pages with a tile, across collections, and
 	// TileCollections the collections that hold them, which the overview
 	// links beside the tiles rather than listing in the library.
 	Tiles           []ContentPage
@@ -114,7 +116,8 @@ func (c CollectionView) Recent() []ContentPage {
 	return c.Pages
 }
 
-// Tiles returns the pages that ship tile.js, in index order.
+// Tiles returns the pages with a tile, those that need a look first, then
+// in index order.
 func (c CollectionView) Tiles() []ContentPage {
 	var tiles []ContentPage
 	for _, page := range c.Pages {
@@ -122,7 +125,21 @@ func (c CollectionView) Tiles() []ContentPage {
 			tiles = append(tiles, page)
 		}
 	}
+	sortTiles(tiles)
 	return tiles
+}
+
+// NeedsLook counts the tiles whose status is act, watch or error, and
+// reports whether any is act.
+func (c CollectionView) NeedsLook() (int, bool) {
+	n, act := 0, false
+	for _, page := range c.Pages {
+		if page.Tile && page.Live.NeedsLook() {
+			n++
+			act = act || page.Live.Status == tileAct
+		}
+	}
+	return n, act
 }
 
 // Others returns the pages without a tile, for the dated list below the
@@ -244,13 +261,12 @@ func readContentPage(dir *os.Root) (ContentPage, error) {
 		return ContentPage{}, fmt.Errorf("page index: %w", err)
 	}
 	index.Close()
-	if info, err := dir.Lstat("tile.js"); err == nil && info.Mode().IsRegular() {
-		page.Tile = true
-	}
 	return page, nil
 }
 
-func (s *Server) collection(root *os.Root, name string) (CollectionView, error) {
+// collection reads a collection's valid pages, with their tiles, sorted
+// pinned first, then newest first.
+func (d *Deck) collection(root *os.Root, name string) (CollectionView, error) {
 	view := CollectionView{Name: name, URL: "/" + name + "/"}
 	dir, err := openContentDirectory(root, name)
 	if err != nil {
@@ -267,16 +283,24 @@ func (s *Server) collection(root *os.Root, name string) (CollectionView, error) 
 		}
 		pageDir, err := openContentDirectory(dir, entry.Name())
 		if err != nil {
-			s.log.Warn("content page skipped", "collection", name, "page", entry.Name(), "err", err)
+			d.log.Warn("content page skipped", "collection", name, "page", entry.Name(), "err", err)
 			continue
 		}
 		page, err := readContentPage(pageDir)
-		pageDir.Close()
 		if err != nil {
-			s.log.Warn("content page skipped", "collection", name, "page", entry.Name(), "err", err)
+			pageDir.Close()
+			d.log.Warn("content page skipped", "collection", name, "page", entry.Name(), "err", err)
 			continue
 		}
 		page.URL = view.URL + entry.Name() + "/"
+		if page.Tile {
+			var tileErr error
+			page.Live, tileErr = readTile(pageDir, d.now())
+			if tileErr != nil {
+				d.warnTile(page.URL, tileErr)
+			}
+		}
+		pageDir.Close()
 		view.Pages = append(view.Pages, page)
 	}
 	sort.Slice(view.Pages, func(i, j int) bool {
@@ -289,6 +313,47 @@ func (s *Server) collection(root *os.Root, name string) (CollectionView, error) 
 		return view.Pages[i].URL < view.Pages[j].URL
 	})
 	return view, nil
+}
+
+// collections reads every collection that holds a valid page, as the root
+// index lists them (ADR-0013), sorted by name; none when the collections
+// are off.
+func (d *Deck) collections() []CollectionView {
+	if !*d.cfg.Collections {
+		return nil
+	}
+	root, err := os.OpenRoot(d.cfg.ContentDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			d.log.Warn("content library unavailable", "err", err)
+		}
+		return nil
+	}
+	defer root.Close()
+	entries, err := osReadContentDir(root)
+	if err != nil {
+		d.log.Warn("content library listing failed", "err", err)
+	}
+	var collections []CollectionView
+	for _, entry := range entries {
+		if !entry.IsDir() || !d.contentCollectionAvailable(entry.Name()) {
+			continue
+		}
+		collection, err := d.collection(root, entry.Name())
+		if err != nil {
+			d.log.Warn("content collection skipped", "collection", entry.Name(), "err", err)
+			continue
+		}
+		// Only valid bundles appear in the indexes (ADR-0013), so a
+		// directory without one, such as a checkout's docs/, is no
+		// collection on the root index.
+		if len(collection.Pages) == 0 {
+			continue
+		}
+		collections = append(collections, collection)
+	}
+	sort.Slice(collections, func(i, j int) bool { return collections[i].Name < collections[j].Name })
+	return collections
 }
 
 func osReadContentDir(root *os.Root) ([]os.DirEntry, error) {
@@ -304,18 +369,19 @@ func osReadContentDir(root *os.Root) ([]os.DirEntry, error) {
 // tools' paths, the shared asset path and the health endpoint out of the
 // library even when
 // matching directories exist.
-func (s *Server) contentCollectionAvailable(name string) bool {
-	base := s.deck.cfg.BasePath
+func (d *Deck) contentCollectionAvailable(name string) bool {
+	cfg := d.cfg
+	base := cfg.BasePath
 	if !contentSlugRE.MatchString(name) || name == "healthz" || name == "static" {
 		return false
 	}
-	if s.deck.cfg.Backlog != nil && strings.HasPrefix(s.deck.cfg.Backlog.BasePath, "/"+name+"/") {
+	if cfg.Backlog != nil && strings.HasPrefix(cfg.Backlog.BasePath, "/"+name+"/") {
 		return false
 	}
-	if s.deck.cfg.Consent != nil && "/"+name+"/" == consentBase {
+	if cfg.Consent != nil && "/"+name+"/" == consentBase {
 		return false
 	}
-	for _, tool := range s.deck.cfg.Tools {
+	for _, tool := range cfg.Tools {
 		if strings.HasPrefix(tool.Path, "/"+name+"/") {
 			return false
 		}
@@ -351,13 +417,6 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	root, err := os.OpenRoot(s.deck.cfg.ContentDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		s.log.Warn("content library unavailable", "err", err)
-	}
-	if root != nil {
-		defer root.Close()
-	}
 	if r.URL.Path == "/" {
 		view := LibraryView{BasePath: s.deck.cfg.BasePath, Tools: s.deck.cfg.Tools}
 		if s.deck.cfg.Backlog != nil {
@@ -366,49 +425,34 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) {
 		if s.deck.cfg.Consent != nil {
 			view.ConsentPath = consentBase
 		}
-		if root != nil {
-			entries, err := osReadContentDir(root)
-			if err != nil {
-				s.log.Warn("content library listing failed", "err", err)
-			}
-			for _, entry := range entries {
-				if !entry.IsDir() || !s.contentCollectionAvailable(entry.Name()) {
-					continue
-				}
-				collection, err := s.collection(root, entry.Name())
-				if err != nil {
-					s.log.Warn("content collection skipped", "collection", entry.Name(), "err", err)
-					continue
-				}
-				// Only valid bundles appear in the indexes (ADR-0013), so a
-				// directory without one, such as a checkout's docs/, is no
-				// collection on the root index.
-				if len(collection.Pages) == 0 {
-					continue
-				}
-				view.Collections = append(view.Collections, collection)
-			}
-			sort.Slice(view.Collections, func(i, j int) bool { return view.Collections[i].Name < view.Collections[j].Name })
-			for _, collection := range view.Collections {
-				if tiles := collection.Tiles(); len(tiles) > 0 {
-					view.Tiles = append(view.Tiles, tiles...)
-					view.TileCollections = append(view.TileCollections, collection)
-				} else {
-					view.Library = append(view.Library, collection)
-				}
+		view.Collections = s.deck.collections()
+		for _, collection := range view.Collections {
+			if tiles := collection.Tiles(); len(tiles) > 0 {
+				view.Tiles = append(view.Tiles, tiles...)
+				view.TileCollections = append(view.TileCollections, collection)
+			} else {
+				view.Library = append(view.Library, collection)
 			}
 		}
-		view.Needs = s.needs()
+		sortTiles(view.Tiles)
+		view.Needs = s.needs(view.Collections)
 		s.renderLibrary(w, "library.html", view)
 		return
 	}
+	root, err := os.OpenRoot(s.deck.cfg.ContentDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.log.Warn("content library unavailable", "err", err)
+	}
+	if root != nil {
+		defer root.Close()
+	}
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if root == nil || len(parts) > 3 || !s.contentCollectionAvailable(parts[0]) {
+	if root == nil || len(parts) > 3 || !s.deck.contentCollectionAvailable(parts[0]) {
 		http.NotFound(w, r)
 		return
 	}
 	if len(parts) == 1 {
-		view, err := s.collection(root, parts[0])
+		view, err := s.deck.collection(root, parts[0])
 		if err != nil {
 			http.NotFound(w, r)
 			return

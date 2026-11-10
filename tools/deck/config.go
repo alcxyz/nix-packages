@@ -36,6 +36,18 @@ type Config struct {
 	// proxy, such as devstats, from the shell and the overview, and reserves
 	// their paths from the collections.
 	Tools []ToolConfig `toml:"tool"`
+	// Live alerts the owner when a live page turns to "needs action"
+	// (ADR-0013); nil sends no alerts.
+	Live *LiveConfig `toml:"live"`
+}
+
+// LiveConfig names the command deck runs when a live page needs action, and
+// the file where it records each page's last status.
+type LiveConfig struct {
+	// Notify is the command's argv, run without a shell; an argument that
+	// is exactly {text} or {link} is replaced.
+	Notify    []string `toml:"notify"`
+	StateFile string   `toml:"stateFile"`
 }
 
 // ToolConfig is one operator tool: its label in the shell, its path on
@@ -320,6 +332,12 @@ func (c *Config) normalize() error {
 		return err
 	}
 
+	if c.Live != nil {
+		if err := c.Live.normalize(c); err != nil {
+			return err
+		}
+	}
+
 	seen := map[string]bool{}
 	for i := range c.Threads.Instances {
 		in := &c.Threads.Instances[i]
@@ -341,6 +359,37 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("threads.instance %q: webURL %q must be an http or https URL", in.Name, in.WebURL)
 		}
 		in.WebURL = strings.TrimRight(in.WebURL, "/")
+	}
+	return nil
+}
+
+// normalize checks the alert command and fills the state file's default.
+// Only a process that serves the collections reads the tiles, so only it
+// sends alerts.
+func (l *LiveConfig) normalize(c *Config) error {
+	if len(l.Notify) == 0 || l.Notify[0] == "" {
+		return errors.New("live.notify must name a command, such as [\"/path/to/notify\", \"{text}\", \"{link}\"]")
+	}
+	// The link is publicOrigin and the page's path.
+	if c.PublicOrigin == "" {
+		return errors.New("live.notify needs publicOrigin, for the link to the page")
+	}
+	if !*c.Collections {
+		return errors.New("live.notify needs the collections: only the process that serves them sends alerts")
+	}
+	if l.StateFile == "" {
+		dir := os.Getenv("XDG_STATE_HOME")
+		if !filepath.IsAbs(dir) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("live.stateFile default: %w", err)
+			}
+			dir = filepath.Join(home, ".local", "state")
+		}
+		l.StateFile = filepath.Join(dir, "deck", "live.json")
+	}
+	if !filepath.IsAbs(l.StateFile) {
+		return errors.New("live.stateFile must be an absolute path")
 	}
 	return nil
 }

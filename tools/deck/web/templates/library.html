@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="/static/library.css">
 <script src="/static/theme.js"></script>
 <script src="/static/shell.js" defer></script>
-<script src="/static/tiles.js" defer></script>
+{{if .Tiles}}<script src="/static/live.js" defer></script>{{end}}
 </head>
 <body class="lib" data-deck="live">
 {{template "shell" (nav "/")}}
@@ -22,7 +22,7 @@
 {{with .Needs}}
 <section class="ov-section" aria-labelledby="ov-needs">
   <h2 class="ov-label" id="ov-needs">Needs you</h2>
-  <ul class="ov-needs">{{range .}}
+  <ul class="ov-needs" data-deck-live="needs">{{range .}}
     <li><a class="ov-need{{if and .Known .Count}} {{.Tone}}{{else}} quiet{{end}}" href="{{.URL}}"><b>{{if .Known}}{{.Count}}{{else}}…{{end}}</b><span>{{.Label}}</span></a></li>{{end}}
   </ul>
 </section>
@@ -38,7 +38,7 @@
 {{with .Tiles}}
 <section class="ov-section" aria-labelledby="ov-live">
   <div class="ov-section-head"><h2 class="ov-label" id="ov-live">Live</h2>{{range $.TileCollections}}<a href="{{.URL}}">All {{len .Pages}} {{.Title | lower}} pages</a>{{end}}</div>
-  <ul class="deck-tiles">{{range .}}
+  <ul class="deck-tiles" data-deck-live="tiles">{{range .}}
     {{template "tile" .}}{{end}}
   </ul>
 </section>

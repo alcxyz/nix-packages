@@ -1,7 +1,7 @@
 # ADR-0015: One design for deck's views and page bundles, chosen by purpose
 
 **Status:** Accepted
-**Date:** 2026-10-25, updated 2026-11-07 (the shell, live tiles and the canvas, per [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)), 2026-11-10 (tool links and the Pages menu in the shell, per [#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691))
+**Date:** 2026-10-25, updated 2026-11-07 (the shell, live tiles and the canvas, per [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)), 2026-11-10 (tool links and the Pages menu in the shell, per [#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691)), 2026-11-10 (server-rendered tiles and the danger count, per [#816](https://git.alc.xyz/alcxyz/nix-packages/issues/816))
 **History:** [replaced text](archive/0015-deck-design-system-history.md)
 **Applies to:** `tools/deck/web/`, page bundles served by deck
 
@@ -81,7 +81,12 @@ The pages serve five purposes, which differ in density and output:
   a sparkline. On tiles, `act` takes the danger colour and `watch` the
   attention colour; a tile or count that needs a look carries a bar along one
   edge in that colour, like the new-row marker, and stale data shows its age
-  in the attention colour.
+  in the attention colour. Deck renders the tile component on the server
+  from the page's `tile.json` ([ADR-0013](0013-deck-page-collections.md)),
+  so it shows without script; an unavailable tile keeps a grey dot and a
+  muted answer. A collection's count of live pages in the shell takes the
+  danger colour when one of them needs action, and the attention colour
+  otherwise.
 - **Views and bundles keep their own layout CSS.** `deck.css` and
   `library.css` lay out the views on the shared tokens and components. Bundles
   do the same for what is particular to them: slide frames, charts, worksheet

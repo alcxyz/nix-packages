@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-22
-**Amended:** 2026-10-24 (content from Git, pages-only mode), 2026-10-25 (shared colour scheme assets), 2026-10-25 (shared design stylesheet), 2026-10-26 (JSON data assets), 2026-11-04 (pinned pages), 2026-11-07 (overview, live tiles and the shell, [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)), 2026-11-10 (tool links and the Pages menu, [#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691))
+**Amended:** 2026-10-24 (content from Git, pages-only mode), 2026-10-25 (shared colour scheme assets), 2026-10-25 (shared design stylesheet), 2026-10-26 (JSON data assets), 2026-11-04 (pinned pages), 2026-11-07 (overview, live tiles and the shell, [#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)), 2026-11-10 (tool links and the Pages menu, [#691](https://git.alc.xyz/alcxyz/nix-packages/issues/691)), 2026-11-10 (live status read on the server, counts and alerts, [#816](https://git.alc.xyz/alcxyz/nix-packages/issues/816))
 **History:** [replaced text](archive/0013-deck-page-collections-history.md)
 **Applies to:** `tools/deck/`
 
@@ -31,7 +31,10 @@ A bundle can be a live report: its script loads a data file that a process
 outside Deck rewrites on a schedule, such as a timer that fetches activity
 from another service's read-only API. With several of them, seeing whether
 any shows a problem meant opening each one, and every page had its own top
-bar ([#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)).
+bar ([#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)). While each
+tile was worked out in the browser, Deck could not know a page's status, so
+it could neither count the pages that need a look nor tell the owner when one
+needs action ([#816](https://git.alc.xyz/alcxyz/nix-packages/issues/816)).
 
 ## Decision
 
@@ -40,7 +43,8 @@ bar ([#786](https://git.alc.xyz/alcxyz/nix-packages/issues/786)).
 Deck serves read-only collections of operator-authored static page bundles.
 The root index is Deck's overview: it links to the thread dashboard, the
 configured tools (below) and the available collections, counts what waits on the owner in the views the
-process runs, and shows a live tile for each page that ships one (below).
+process runs and in the live pages, and shows a live tile for each page that
+declares one (below).
 Each collection has an index and pages at `/<collection>/<slug>/`; dated slugs
 can preserve individual proposals or assessments without replacing older ones.
 
@@ -109,21 +113,51 @@ revision needs no restart and a partly written checkout is never served.
 
 ### Live tiles
 
-- **A bundle that ships a top-level `tile.js` gets a live tile** on the
-  overview and on its collection index. Deck only notes that the file exists,
-  a regular file like any other asset, and never reads the bundle's data.
-- **The browser computes the tile.** `/static/tiles.js` imports `tile.js` as
-  an ES module and calls its default export with a context that fetches the
-  bundle's own files (`json(name)`, which reports a missing file as status
-  404, and `url(name)`). The module returns a status (`ok`, `watch` or `act`),
-  a one-line answer, up to three short figures, an optional series for a
-  sparkline, when its data was made and after how many minutes it counts as
-  stale. The runtime marks stale data at least `watch`, puts the tiles that
-  need a look first and refreshes them every five minutes while the page is
-  visible. Without script a tile shows the page's title and summary.
-- **A tile runs as the page it sits on.** Its module runs on the overview with
-  the same origin as every bundle script, inside the same trust boundary
-  (above), so it adds no new trust.
+- **A bundle declares a live tile** with `"tile": true` in its metadata, and
+  gets it on the overview and on its collection index.
+- **The refresher writes the tile.** The process that rewrites the page's
+  data also writes `tile.json` beside it, every time, after the data and
+  atomically (a temporary file renamed over it): a status (`ok`, `watch` or
+  `act`), a one-sentence answer, up to three short figures, an optional
+  series for a sparkline, when its data was made and after how many minutes
+  it counts as stale. The README holds the field rules; Deck ignores unknown
+  fields.
+- **Deck reads it on the server** on each request, like any asset: a regular
+  file in the bundle, never a symlink, at most 64 KiB, validated against the
+  field rules. A missing file shows as `watch` ("No data yet."); an invalid
+  one shows as unavailable (status `error`), and Deck logs why. Stale data
+  is at least `watch` and says how old it is. Deck reads `tile.json` and the
+  metadata, never the page's own data, and runs no bundle code.
+- **Deck renders the tile** on the overview and the collection index, so it
+  needs no script, and puts the tiles that need a look first: `act`,
+  `watch`, `error`, then `ok`, each in index order. `/static/live.js`, which
+  only those pages load, fetches the page again every five minutes while it
+  is visible, and on returning to it after more than a minute, and swaps in
+  the elements marked `data-deck-live` (the tiles, the "Needs you" row and
+  the shell's links). A failed fetch or a redirect keeps the page as it is.
+- **Counts.** A collection's item in the shell and in `/nav.json` counts its
+  tiles whose status is `act`, `watch` or `error`, in the danger tone when
+  one is `act` and the attention tone otherwise. The overview's "Needs you"
+  row ends with the same count for each collection with tiles, in both
+  modes.
+- **Alerts.** With `[live] notify` set, the process that serves the
+  collections works out every tile page's status once a minute, as the pages
+  do, and runs the command once per turn to `act`, at most once an hour per
+  page. It runs the command without a shell, with
+  "<Title> needs action: <headline>" (at most 500 characters) and the page's
+  link at `publicOrigin` in place of the `{text}` and `{link}` arguments,
+  for at most 30 seconds. A failed command is retried at most every ten
+  minutes, and Deck logs its exit status, never its output. `notify` requires
+  `publicOrigin` and the collections.
+- **What the alerts record.** Deck keeps each page's last status, last send
+  and when it last saw the page in a state file, so a restart does not alert
+  again; without the file it records the statuses and sends nothing. Only a
+  current tile (valid, with data, not stale) changes a page's status; a
+  missing, unreadable or stale tile leaves the record as it was and sends
+  nothing, not even a pending retry, so a blip is never a turn. A page
+  absent from a check keeps its record for 24 hours, so a check that cannot
+  read the content or a bundle for a while changes nothing. Stopping Deck
+  saves what the check had done, so no sent alert goes out twice.
 
 ### The shell
 
@@ -131,10 +165,11 @@ revision needs no restart and a partly written checkout is never served.
   Deck's views, the overview and the collection indexes render the overview,
   the views, the configured tools and the collections that have a page (in
   a Pages menu), with the current one marked and counts on Threads (waiting
-  on the owner) and Approvals (pending).
+  on the owner), Approvals (pending) and collections with tiles (pages that
+  need a look).
 - **`/nav.json` serves the same links to bundles**, with the counts, behind
-  the same token check, in both modes; the pages-only mode has no counts. It
-  is no collection slug, so no collection can claim it.
+  the same token check, in both modes; the pages-only mode counts only the
+  live pages. It is no collection slug, so no collection can claim it.
 - **A bundle opts in** by marking its own top bar with `data-deck-shell` and
   loading `/static/shell.js` with `defer` after `theme.js`. The script
   replaces the marked bar with the shell and keeps the bar's colour scheme
@@ -219,11 +254,14 @@ revision needs no restart and a partly written checkout is never served.
   it mislabels data as script and hides the bundle's real contract.
 - **A Deck API that proxies the other service.** Rejected: Deck would hold
   that service's credentials, against its filesystem-only design.
-- **Tiles from a summary file that each refresher writes and Deck renders.**
-  Every refresher and Deck would share a schema, a change to a tile would
-  need a refresher deploy, and Deck would read operator data it otherwise
-  only serves. A `tile.js` beside the page keeps the tile with the code that
-  already understands that page's data.
+- **Keep `tile.js` in the browser**, a module beside each page that the
+  overview imported to work out its tile. Deck could not know a page's
+  status, so there could be no counts in the shell and no alerts.
+- **Run `tile.js` on the server.** Deck would need a JavaScript runtime and
+  would run bundle code with the server's access.
+- **Each refresher notifies by itself.** Each would need its own record of
+  the last status and its own alert routing; Deck does it in one place for
+  every page.
 - **Deck computing tiles from each page's `data.json`.** Deck would have to
   know every report's schema.
 - **A frame per tile.** Heavier, and the `frame-ancestors 'none'` policy
@@ -253,9 +291,13 @@ revision needs no restart and a partly written checkout is never served.
   release is deployed.
 - Standalone exports and PDF builds of a bundle ship their own copy of
   `base.css`, since `/static/` exists only on Deck.
-- A tile or a change to one is a bundle change, with no Deck release. The
-  overview fetches each tiled page's data every five minutes while it is
-  open.
+- The tile logic lives with the refresher, which may be in another
+  repository than the page, so the refresher owns both the data and the
+  tile, and a change to a tile is a refresher change. How tiles look, sort
+  and count is a Deck release. The overview and indexes with tiles fetch
+  themselves again every five minutes while open.
+- Alerts need `[live]` on the process that serves the collections, and a
+  state file it can write; the pages-only mode otherwise writes nothing.
 - A collection with tiles is linked beside the overview's tiles rather than
   listed in its library.
 - A bundle that loads `shell.js` keeps its own top bar on a Deck release
@@ -263,11 +305,12 @@ revision needs no restart and a partly written checkout is never served.
 - Each process's shell lists what that process knows. With the pages and the
   dashboard run apart, the dashboard's bar lacks the collections when its
   collections are off, and the pages process's bar and `/nav.json` have no
-  Approvals link and no counts; one process serving both shows the full bar.
+  Approvals link and count only the live pages; one process serving both
+  shows the full bar.
 - Bundle authors must not leave private JSON in a bundle they would not serve,
   as with any other asset.
-- A data file written on one host is served only by the Deck process that
-  reads that host's content directory. A Git-synced checkout does not support
+- A data file, `tile.json` included, written on one host is served and read
+  only by the Deck process that reads that host's content directory. A Git-synced checkout does not support
   writer-refreshed files yet: each sync swaps in a fresh revision without
   them. Such a setup needs its own decision, for example a data directory
   outside the checkout.

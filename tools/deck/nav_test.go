@@ -10,11 +10,20 @@ import (
 	"time"
 )
 
-// writeTilePage writes a page bundle that ships tile.js.
+// writeTilePage writes a page bundle that declares a tile, with an ok
+// tile.json.
 func writeTilePage(t *testing.T, root, name, title, date string) {
 	t.Helper()
 	writeContentPage(t, root, name, title, date, "Summary of "+title)
-	writeContentFile(t, root, name+"/tile.js", `export default async () => ({status: "ok", headline: "Fine", metrics: [], updated: null, staleAfter: 15});`)
+	writeContentFile(t, root, name+"/metadata.json", `{"title": "`+title+`", "date": "`+date+`", "summary": "Summary of `+title+`", "tile": true}`)
+	writeTileStatus(t, root, name, "ok")
+}
+
+// writeTileStatus writes the page's tile.json with the status and a
+// headline naming it.
+func writeTileStatus(t *testing.T, root, name, status string) {
+	t.Helper()
+	writeContentFile(t, root, name+"/tile.json", `{"status": "`+status+`", "headline": "Status `+status+`", "updated": null, "staleAfter": 15}`)
 }
 
 func TestNavJSON(t *testing.T) {
@@ -109,24 +118,25 @@ func TestOverviewNeedsAndTiles(t *testing.T) {
 	writeContentPage(t, d.cfg.ContentDir, "notes/a", "Plain page", "2026-10-01", "")
 	writeTilePage(t, d.cfg.ContentDir, "live/runners", "Runners", "2026-10-02")
 	writeContentPage(t, d.cfg.ContentDir, "live/extra", "Extra live page", "2026-10-03", "")
-	// A symlinked tile.js is no tile: bundles take no links (ADR-0013).
-	writeContentPage(t, d.cfg.ContentDir, "live/linked", "Linked", "2026-10-04", "")
-	if err := os.Symlink(filepath.Join(d.cfg.ContentDir, "live/runners/tile.js"), filepath.Join(d.cfg.ContentDir, "live/linked/tile.js")); err != nil {
-		t.Fatal(err)
-	}
+	// A tile.js no longer makes a tile: metadata declares it.
+	writeContentPage(t, d.cfg.ContentDir, "live/script", "Script", "2026-10-04", "")
+	writeContentFile(t, d.cfg.ContentDir, "live/script/tile.js", `export default async () => ({});`)
 	h := contentTestHandler(t, d, nil)
 
 	body := get(t, h, "/").Body.String()
 	for _, want := range []string{
 		"Needs you", `href="/threads/#card=you"`, `href="/threads/#card=stalled"`, `href="/backlog/#card=ready"`,
-		`data-tile="/live/runners/tile.js"`, `src="/static/tiles.js"`, "Summary of Runners", `href="/live/">All 3 live pages`,
+		`<a class="deck-tile" href="/live/runners/" data-status="ok">`, "Status ok", `src="/static/live.js"`,
+		`href="/live/">All 3 live pages`, `data-deck-live="tiles"`, `data-deck-live="needs"`, `data-deck-live="nav"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("overview lacks %s", want)
 		}
 	}
-	if strings.Contains(body, `data-tile="/live/linked/tile.js"`) {
-		t.Error("a symlinked tile.js made a tile")
+	for _, unwanted := range []string{"data-tile", "tiles.js", `href="/live/script/" data-status`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("overview has %s", unwanted)
+		}
 	}
 	// The library leaves the collection with tiles to its link.
 	library := body[strings.Index(body, `id="ov-library"`):]
@@ -135,18 +145,24 @@ func TestOverviewNeedsAndTiles(t *testing.T) {
 	}
 
 	collection := get(t, h, "/live/").Body.String()
-	tile := strings.Index(collection, `data-tile="/live/runners/tile.js"`)
+	tile := strings.Index(collection, `<a class="deck-tile" href="/live/runners/"`)
 	extra := strings.Index(collection, `href="/live/extra/"`)
-	if tile < 0 || extra < 0 || tile > extra || !strings.Contains(collection, `src="/static/tiles.js"`) {
+	if tile < 0 || extra < 0 || tile > extra || !strings.Contains(collection, `src="/static/live.js"`) {
 		t.Errorf("collection index should show the tile, then the other pages: %s", collection)
 	}
-	if strings.Contains(get(t, h, "/notes/").Body.String(), "tiles.js") {
-		t.Error("a collection without tiles loads tiles.js")
+	if strings.Contains(get(t, h, "/notes/").Body.String(), "live.js") {
+		t.Error("a collection without tiles loads live.js")
 	}
-	for _, p := range []string{"/static/tiles.js", "/static/shell.js", "/live/runners/tile.js"} {
+	if strings.Contains(get(t, h, "/threads/").Body.String(), "live.js") {
+		t.Error("the thread dashboard loads live.js")
+	}
+	for _, p := range []string{"/static/live.js", "/static/shell.js"} {
 		if rec := get(t, h, p); rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "javascript") {
 			t.Errorf("%s: %d %s", p, rec.Code, rec.Header().Get("Content-Type"))
 		}
+	}
+	if rec := get(t, h, "/static/tiles.js"); rec.Code != http.StatusNotFound {
+		t.Errorf("tiles.js is gone: %d", rec.Code)
 	}
 }
 

@@ -5,17 +5,17 @@ closes the menu on Escape or a click outside it. The links scroll sideways in
 their own box, so the menu after them is never clipped. */}}
 {{define "shell"}}<header class="deck-shell deck-noprint">
   <a class="deck-shell-brand" href="/">Deck</a>
-  <nav class="deck-shell-nav" aria-label="Deck"><div class="deck-shell-links">{{range .Links}}{{template "shell-link" .}}{{end}}</div>{{with .Pages}}<details class="deck-shell-menu"><summary{{if $.PagesCurrent}} aria-current="true"{{end}}>Pages</summary><div class="deck-shell-menu-list">{{range .}}{{template "shell-link" .}}{{end}}</div></details>{{end}}</nav>
+  <nav class="deck-shell-nav" aria-label="Deck" data-deck-live="nav"><div class="deck-shell-links">{{range .Links}}{{template "shell-link" .}}{{end}}</div>{{with .Pages}}<details class="deck-shell-menu"><summary{{if $.PagesCurrent}} aria-current="true"{{end}}>Pages</summary><div class="deck-shell-menu-list">{{range .}}{{template "shell-link" .}}{{end}}</div></details>{{end}}</nav>
   <span class="deck-shell-theme" data-deck-theme></span>
 </header>{{end}}
 
 {{define "shell-link"}}<a href="{{.URL}}"{{if .Tool}} class="tool"{{end}}{{if .Current}} aria-current="page"{{end}}>{{.Label}}{{if .Count}}<span class="deck-shell-count {{.Tone}}" aria-label="{{.Count}} waiting">{{.Count}}</span>{{end}}</a>{{end}}
 
-{{/* A live tile: /static/tiles.js imports the page's tile.js and fills it in.
-Without script it shows the page's title and summary. */}}
-{{define "tile"}}<li><a class="deck-tile" href="{{.URL}}" data-tile="{{.URL}}tile.js" data-status="pending">
-  <span class="deck-tile-head"><span class="deck-dot" aria-hidden="true"></span><span class="deck-tile-title">{{.Title}}</span><span class="deck-tile-state deck-sr"></span><span class="deck-tile-fresh"></span></span>
-  <span class="deck-tile-headline">{{.Summary}}</span>
-  <span class="deck-tile-metrics"></span>
-  <span class="deck-tile-spark" aria-hidden="true"></span>
-</a></li>{{end}}
+{{/* A live tile, filled from the page's tile.json (ADR-0013); .Live is the
+tile as read for this request. /static/live.js swaps in fresh tiles. */}}
+{{define "tile"}}{{with .Live}}<li><a class="deck-tile" href="{{$.URL}}" data-status="{{.Status}}">
+  <span class="deck-tile-head"><span class="deck-dot" aria-hidden="true"></span><span class="deck-tile-title">{{$.Title}}</span><span class="deck-tile-state deck-sr">{{.StateText}}</span><span class="deck-tile-fresh{{if .Stale}} stale{{end}}"{{with .UpdatedText}} title="{{.}}"{{end}}>{{.Fresh}}</span></span>
+  <span class="deck-tile-headline">{{.Headline}}</span>
+  <span class="deck-tile-metrics">{{range .Metrics}}<span class="deck-metric{{with .Tone}} {{.}}{{end}}"><b title="{{.Value}}">{{.Value}}</b><span>{{.Label}}</span></span>{{end}}</span>
+  <span class="deck-tile-spark" aria-hidden="true">{{with .Spark}}<svg class="deck-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polygon class="deck-spark-area" points="{{.Area}}"></polygon><polyline class="deck-spark-line" points="{{.Line}}"></polyline></svg><small>{{.Label}}</small>{{end}}</span>
+</a></li>{{end}}{{end}}

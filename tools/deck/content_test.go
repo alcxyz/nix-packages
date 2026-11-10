@@ -196,7 +196,9 @@ func TestContentMalformedPages(t *testing.T) {
 	writeContentFile(t, d.cfg.ContentDir, "notes/missing-index/metadata.json", `{"title":"Invalid","date":"2026-10-01"}`)
 	writeContentPage(t, d.cfg.ContentDir, "notes/Invalid", "Invalid identifier", "2026-10-01", "")
 	var logs bytes.Buffer
-	h, err := newHandler(d, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+	// The deck reads the collections; the server refuses the requests.
+	d.log = slog.New(slog.NewTextHandler(&logs, nil))
+	h, err := newHandler(d, nil, d.log)
 	if err != nil {
 		t.Fatal(err)
 	}

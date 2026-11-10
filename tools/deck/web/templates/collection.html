@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="/static/library.css">
 <script src="/static/theme.js"></script>
 <script src="/static/shell.js" defer></script>
-{{if .Tiles}}<script src="/static/tiles.js" defer></script>{{end}}
+{{if .HasTiles}}<script src="/static/live.js" defer></script>{{end}}
 </head>
 <body class="lib" data-deck="index">
 {{template "shell" (nav .URL)}}
@@ -20,7 +20,7 @@
   <p>{{len .Pages}} {{if eq (len .Pages) 1}}page{{else}}pages{{end}}{{if .Tiles}}, live ones first{{else if .HasPinned}}, pinned first, then newest first{{else}}, newest first{{end}}.</p>
 </header>
 {{with .Tiles}}
-<ul class="deck-tiles">{{range .}}
+<ul class="deck-tiles" data-deck-live="tiles">{{range .}}
   {{template "tile" .}}{{end}}
 </ul>
 {{end}}

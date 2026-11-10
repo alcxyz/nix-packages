@@ -115,6 +115,10 @@ type Deck struct {
 
 	// backlog is the backlog view, nil unless configured.
 	backlog *Backlog
+
+	// tileWarned rate-limits the warnings about unreadable tile.json files.
+	tileMu     sync.Mutex
+	tileWarned map[string]tileWarning
 }
 
 func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, roleErr error, log *slog.Logger) *Deck {
@@ -152,11 +156,22 @@ func newDeck(cfg Config, cache *SummaryCache, models map[string][]ModelConfig, r
 	return d
 }
 
-// run starts the facts loop of every instance and the summary dispatcher.
-// Cancelling ctx stops them, their commands and any action still running;
-// wait then waits for them. The pages-only mode starts nothing.
+// run starts the facts loop of every instance, the summary dispatcher and,
+// with [live] configured, the live alerts. Cancelling ctx stops them, their
+// commands and any action still running; wait then waits for them. The
+// pages-only mode starts only the live alerts.
 func (d *Deck) run(ctx context.Context) {
 	d.base = ctx
+	// The process that serves the collections reads the tiles, so it sends
+	// the live alerts, in either mode (ADR-0013).
+	if d.cfg.Live != nil {
+		alerts := newLiveAlerts(d)
+		d.work.Add(1)
+		go func() {
+			defer d.work.Done()
+			alerts.loop(ctx)
+		}()
+	}
 	if d.cfg.pagesOnly() {
 		return
 	}

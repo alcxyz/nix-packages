@@ -363,6 +363,7 @@ body[data-deck="tool"] { --deck-width: 54rem; }
   text-align: center;
 }
 .deck-shell-count.attn { background: var(--deck-attn-soft); color: var(--deck-attn); }
+.deck-shell-count.danger { background: var(--deck-danger-soft); color: var(--deck-danger); }
 .deck-shell-theme { flex: none; margin-left: auto; }
 @media (max-width: 720px) {
   .deck-shell { flex-wrap: wrap; padding: var(--deck-space-2) var(--deck-space-4) 0; }
@@ -372,7 +373,7 @@ body[data-deck="tool"] { --deck-width: 54rem; }
   .deck-shell-links { -webkit-mask-image: linear-gradient(to right, #000 85%, transparent); mask-image: linear-gradient(to right, #000 85%, transparent); }
 }
 
-/* Status dot: ok, watch (attention) or act (danger); grey while unknown. */
+/* Status dot: ok, watch (attention) or act (danger); grey when unavailable. */
 .deck-dot {
   display: inline-block;
   flex: none;
@@ -385,7 +386,7 @@ body[data-deck="tool"] { --deck-width: 54rem; }
 [data-status="watch"] .deck-dot { background: var(--deck-attn); }
 [data-status="act"] .deck-dot { background: var(--deck-danger); }
 
-/* Live tiles (ADR-0013): tiles.js fills them from each page's tile.js. A
+/* Live tiles (ADR-0013): deck renders them from each page's tile.json. A
    tile that needs a look carries a status bar along its top edge. */
 .deck-tiles {
   list-style: none;
@@ -426,7 +427,7 @@ body[data-deck="tool"] { --deck-width: 54rem; }
   -webkit-line-clamp: 3;
   overflow: hidden;
 }
-[data-status="pending"] .deck-tile-headline { color: var(--deck-muted); }
+[data-status="error"] .deck-tile-headline { color: var(--deck-muted); }
 .deck-tile-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--deck-space-3); }
 .deck-tile-metrics:empty, .deck-tile-spark:empty { display: none; }
 .deck-metric { display: flex; flex-direction: column; min-width: 0; }

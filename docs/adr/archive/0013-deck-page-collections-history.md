@@ -1,4 +1,4 @@
-**History of** [ADR-0013](../0013-deck-page-collections.md): text replaced on 2026-10-28 and 2026-11-07.
+**History of** [ADR-0013](../0013-deck-page-collections.md): text replaced on 2026-10-28, 2026-11-07 and 2026-11-10.
 
 # ADR-0013: Operator-authored page collections in Deck
 
@@ -262,3 +262,73 @@ The shared assets bullet, before `shell.js` joined the shared assets
   assets a bundle takes from outside its own directory; everything else stays
   local. The content security policy is unchanged, since the assets come from
   the same origin and contain no inline code.
+
+## Text replaced on 2026-11-10
+
+Deck read each live page's status on the server from `tile.json` instead of
+the page's `tile.js` running in the browser, counted the pages that need a
+look and alerted on a turn to `act`
+([#816](https://git.alc.xyz/alcxyz/nix-packages/issues/816)).
+
+The decision's opening paragraph, its second sentence:
+
+configured tools (below) and the available collections, counts what waits on the owner in the views the
+process runs, and shows a live tile for each page that ships one (below).
+
+The live tiles section of the decision:
+
+### Live tiles
+
+- **A bundle that ships a top-level `tile.js` gets a live tile** on the
+  overview and on its collection index. Deck only notes that the file exists,
+  a regular file like any other asset, and never reads the bundle's data.
+- **The browser computes the tile.** `/static/tiles.js` imports `tile.js` as
+  an ES module and calls its default export with a context that fetches the
+  bundle's own files (`json(name)`, which reports a missing file as status
+  404, and `url(name)`). The module returns a status (`ok`, `watch` or `act`),
+  a one-line answer, up to three short figures, an optional series for a
+  sparkline, when its data was made and after how many minutes it counts as
+  stale. The runtime marks stale data at least `watch`, puts the tiles that
+  need a look first and refreshes them every five minutes while the page is
+  visible. Without script a tile shows the page's title and summary.
+- **A tile runs as the page it sits on.** Its module runs on the overview with
+  the same origin as every bundle script, inside the same trust boundary
+  (above), so it adds no new trust.
+
+The shell's first bullet, its counts:
+
+  a Pages menu), with the current one marked and counts on Threads (waiting
+  on the owner) and Approvals (pending).
+
+The shell's `/nav.json` bullet:
+
+- **`/nav.json` serves the same links to bundles**, with the counts, behind
+  the same token check, in both modes; the pages-only mode has no counts. It
+  is no collection slug, so no collection can claim it.
+
+Alternatives considered, the first two tile alternatives (the second is kept):
+
+- **Tiles from a summary file that each refresher writes and Deck renders.**
+  Every refresher and Deck would share a schema, a change to a tile would
+  need a refresher deploy, and Deck would read operator data it otherwise
+  only serves. A `tile.js` beside the page keeps the tile with the code that
+  already understands that page's data.
+- **Deck computing tiles from each page's `data.json`.** Deck would have to
+  know every report's schema.
+
+Consequences, the tile bullet:
+
+- A tile or a change to one is a bundle change, with no Deck release. The
+  overview fetches each tiled page's data every five minutes while it is
+  open.
+
+Consequences, the shell bullet's last sentence:
+
+  dashboard run apart, the dashboard's bar lacks the collections when its
+  collections are off, and the pages process's bar and `/nav.json` have no
+  Approvals link and no counts; one process serving both shows the full bar.
+
+Consequences, the data file bullet's first sentence:
+
+- A data file written on one host is served only by the Deck process that
+  reads that host's content directory.

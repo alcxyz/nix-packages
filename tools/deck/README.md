@@ -2,8 +2,9 @@
 
 Deck also serves operator-authored interactive briefings in read-only page
 collections, and optionally a live backlog view (below). The root index is
-an overview: what waits on you in the threads, approvals and backlog, a live
-tile for each page that ships one, and the other collections. Every page
+an overview: what waits on you in the threads, approvals, backlog and live
+pages, a live tile for each page that declares one, and the other
+collections. Every page
 shares one top bar linking the overview, the views and each collection. A second deck process without thread instances can serve the
 collections alone, from a Git checkout, on a host that stays up (see
 [Dashboard and pages-only modes](#dashboard-and-pages-only-modes)).
@@ -141,6 +142,10 @@ webURL = "https://t3.example.com"
 label = "Stats"
 path = "/devstats/"
 description = "Development activity" # optional, one line
+
+[live]                   # optional; see Live tiles and alerts
+notify = ["/path/to/notify", "--class", "live", "{text}", "--link", "{link}"]
+stateFile = "/home/user/.local/state/deck/live.json" # optional; default described below
 ```
 
 `summaryRole` is also included in `summaryRoles` when absent. The offered
@@ -154,7 +159,8 @@ Thread links are `{webURL}/{environmentId}/{threadId}`.
 Every deck page shares one top bar: the brand, Overview, Threads (with the
 count waiting on you), Backlog and Approvals when configured, the tool links,
 then a **Pages** menu holding the collections at the right end, and the
-colour scheme toggle.
+colour scheme toggle. A collection with live tiles counts its pages that
+need a look (see [Live tiles and alerts](#live-tiles-and-alerts)).
 The menu is a `<details>` disclosure, so it opens without script;
 `/static/shell.js`, which deck's pages and opted-in bundles load, closes it on
 Escape, on a click outside it and after a link in it is followed. With no
@@ -295,7 +301,9 @@ The metadata is deliberately small:
 The page appears at `/briefings/2026-01-15-example/`, with an index at
 `/briefings/`. Indexes escape metadata and list newer dates first. A page that
 stays current, such as a live report, can add `"pinned": true` to its metadata
-to stay ahead of the dated pages, under its own heading. Collection
+to stay ahead of the dated pages, under its own heading, and
+`"tile": true` for a live tile (see
+[Live tiles and alerts](#live-tiles-and-alerts)). Collection
 and page names use lowercase slug segments. The metadata and dotfiles are not
 download routes, and there are no directory listings. Assets sit beside
 `index.html`, not in subdirectories. Their names are lowercase letters and
@@ -332,36 +340,6 @@ needs `defer`, since it looks for the bar once, when it runs. The
 script replaces the marked bar with Deck's shell, built from `/nav.json`, and
 keeps the bar's `data-deck-theme` toggle; without it, or on an older Deck,
 the bundle's own bar stays.
-
-A page that answers a question at a glance, such as a live report, can ship a
-`tile.js`: an ES module whose default export takes a context and returns its
-tile. Deck then shows the tile on the overview and on the collection index,
-and refreshes it every five minutes:
-
-```js
-// ctx.json(name) fetches a file in this bundle; a missing file rejects with
-// err.status === 404. ctx.url(name) resolves a path against the bundle.
-export default async function tile(ctx) {
-  const data = await ctx.json("data.json");
-  return {
-    status: "ok",              // or "watch" (worth a look) or "act" (needs action)
-    headline: "No queue: jobs waited 2 s at p90 in 24 h.",
-    metrics: [{ label: "Wait p90 (24h)", value: "2 s" }],  // up to 3, values of 7 characters or fewer
-    series: { label: "Queue wait p90 per day", values: [10, 14, 1] },  // optional, oldest first
-    updated: data.generated_at, // when the data was made, ISO 8601, or null
-    staleAfter: 15,             // minutes; older data shows as stale and at least "watch"
-  };
-}
-```
-
-Without script, or before the module answers, the tile shows the page's
-title and summary. A tile that does not answer in 30 seconds shows as
-unavailable. Deck imports each `tile.js` once per page load and calls it on
-every refresh (a module that failed to load is imported again under a new
-URL), so a changed module shows after a reload. Keep `tile.js` in one file:
-the browser caches a module it imports under that module's own address, so
-one that failed to load stays failed until a reload; a `null` in `values`
-is a missing point and stays out of the line. Keep the status in line with what the page itself flags.
 
 The script draws a light, dark and system toggle in the bottom right corner,
 or inside an element marked `data-deck-theme` if the page has one; give it a
@@ -403,9 +381,9 @@ the system. It sets `data-theme="light"` or `"dark"` on `<html>`.
   - `deck-kpi` with `deck-kpi-value`;
   - `deck-table` (`num` cells);
   - `deck-kicker`, `deck-muted`, `deck-num` and `deck-wrap`;
-  - `deck-shell` (from `shell.js`), `deck-tiles` with `deck-tile` (from
-    `tiles.js`), `deck-dot` and `deck-spark`, coloured by a `data-status`
-    of `ok`, `watch` or `act` on an ancestor;
+  - `deck-shell` (from `shell.js`), `deck-tiles` with `deck-tile` (which
+    deck renders on its overview and indexes), `deck-dot` and `deck-spark`,
+    coloured by a `data-status` of `ok`, `watch` or `act` on an ancestor;
   - `deck-seg`, a segmented control such as a time window, with
     `aria-pressed` on the chosen button;
   - `deck-sr` hides text visually but keeps it for screen readers;
@@ -443,6 +421,98 @@ briefings outside public repositories, images and example fixtures. An upstream
 proxy that routes only `/threads/` also needs explicit routes for the root index
 and the collections it should expose. Its existing audience remains unchanged.
 
+## Live tiles and alerts
+
+A page that answers a question at a glance, such as a live report whose data
+a refresher rewrites on a timer, can have a live tile on the overview and on
+its collection index
+([ADR-0013](../../docs/adr/0013-deck-page-collections.md#live-tiles)). The
+bundle declares it in its metadata with `"tile": true`, and the refresher
+that writes the page's data also writes `tile.json` beside it, every time,
+after the data, atomically (a temporary file in the same directory, renamed
+over `tile.json`):
+
+```json
+{
+  "status": "watch",
+  "headline": "Wait 24 s at p90 in 24 h, but 116 job starts were not counted.",
+  "metrics": [
+    {"label": "Jobs (24h)", "value": "289"},
+    {"label": "Wait p90 (24h)", "value": "24 s"},
+    {"label": "Failed (24h)", "value": "11", "tone": "watch"}
+  ],
+  "series": {"label": "Queue wait p90 per day, seconds", "values": [3, 0, null, 12.5]},
+  "updated": "2026-11-09T22:51:02Z",
+  "staleAfter": 15
+}
+```
+
+| Field | Rule |
+| --- | --- |
+| `status` | `ok` (nothing to do), `watch` (worth a look) or `act` (the owner should do something now). |
+| `headline` | One sentence that answers the page's question, 1 to 200 characters. |
+| `metrics` | At most 3, each a `label` of at most 40 characters, a `value` of at most 12, already formatted (`24 s`, `42%`, `1,234`; 7 or fewer fit the tile, longer ones are cut with an ellipsis), and an optional `tone` of `ok`, `watch` or `act`. |
+| `series` | Optional: a `label` and 2 to 60 `values`, oldest first, each a number or `null` for a missing point. |
+| `updated` | When the page's data was made, RFC 3339 (`...Z`), or `null`. |
+| `staleAfter` | Minutes after `updated` when the data counts as stale, above 0. |
+
+Deck ignores unknown fields. A refresher that cannot read its source still
+writes `tile.json`, with the status and headline its page gives for that
+case. The tile logic lives with the refresher, which may sit in another
+repository than the page: it owns both the data and the tile.
+
+Deck reads `tile.json` on each request and renders the tile on the server,
+so the tile needs no script:
+
+- **Missing:** status `watch`, "No data yet."
+- **Invalid** (not a regular file, such as a symlink; over 64 KiB; not JSON;
+  or breaking a rule above): "Unavailable", with the reason in deck's log,
+  once an hour per page.
+- **Stale** (`updated` plus `staleAfter` in the past): at least `watch`, and
+  the age reads "stale, 2 h ago".
+
+Tiles sort `act`, `watch`, unavailable, then `ok`, and otherwise keep the
+index order. A collection's entry in the top bar and `/nav.json` counts its
+tiles that are `act`, `watch` or unavailable, in red when one is `act`, and
+the overview's "Needs you" row ends with the same count per collection with
+tiles, such as "2 live pages need a look". The pages-only mode shows those
+counts too.
+
+The overview and a collection index with tiles load `/static/live.js`, which
+fetches the page again every five minutes while the tab is visible, and on
+coming back to it after more than a minute, and swaps in the fresh tiles,
+counts and top bar. A failed fetch or a redirect, such as an expired
+sign-in, leaves the page as it is.
+
+With a `[live]` table, the process that serves the collections checks every
+tile page once a minute and runs `notify` once per turn to `act`, at most once
+an hour per page. Deck runs the command directly, without a shell, replacing
+an argument that is exactly `{text}` with "<Title> needs action: <headline>"
+(at most 500 characters) and one that is exactly `{link}` with
+`publicOrigin` and the page's path, and gives it 30 seconds. A failed command
+is retried on a later check, at most every ten minutes; deck logs its exit
+status, never its output. `notify` needs `publicOrigin` and the collections
+served by this process.
+
+Deck records each page's last status in `stateFile` (default
+`$XDG_STATE_HOME/deck/live.json`, falling back to
+`~/.local/state/deck/live.json`), written atomically and readable by its
+user only, so a restart does not alert again on a page that already needed
+action. On a first start without the file it records the statuses and sends
+nothing. The record follows these rules:
+
+- **Only a current tile counts.** A tile that is valid, has data and is not
+  stale sets the page's status (`ok`, `watch` or `act`). A missing, unreadable
+  or stale tile leaves the record as it was and sends nothing, a pending
+  retry included: the retry waits until the tile is current and still `act`.
+  A blip in between is therefore never a turn.
+- **A turn** is a current `act` on a page whose recorded status is not `act`.
+- **Absent pages keep their record** for 24 hours, so a check that cannot
+  read the content directory, a collection or a bundle for a while changes
+  nothing; after 24 hours absent the record is dropped.
+- **Stopping deck** saves what the check had done, so a sent alert is never
+  sent again after a restart.
+
 ## Dashboard and pages-only modes
 
 Deck runs in one of two modes, chosen by its configuration
@@ -455,7 +525,8 @@ Deck runs in one of two modes, chosen by its configuration
 - **Pages-only mode**, with no `[[threads.instance]]`, runs on a host that
   stays up and serves only the root index, the collections, `/static/` and
   `/healthz`. It runs no adapter commands, summaries or backlog, and writes no
-  state, cache or model configuration. `basePath` and `[backlog] basePath`
+  state, cache or model configuration, except the live alerts' state file
+  when `[live]` is set. `basePath` and `[backlog] basePath`
   then name the dashboard views' paths in the dashboard process: the root
   index links to them and they stay reserved (not found here, the bare path
   redirected to its slash form), so no collection can claim a path the proxy
@@ -470,8 +541,9 @@ in front of both, on one origin, routes the dashboard views' paths (such as
 the pages process; the dashboard process can then set `collections = false`.
 Each process's top bar lists only what that process knows: in this split the
 dashboard's bar lacks the collections, and the pages process's bar, its
-overview and `/nav.json` have no Approvals link and no counts, since the
-pages-only mode relays no approvals. One process serving both shows the full
+overview and `/nav.json` have no Approvals link and count only the live
+pages, since the pages-only mode relays no approvals. The pages process
+reads the tiles, so it is the one that sends the live alerts. One process serving both shows the full
 bar.
 
 A pages-only configuration:
