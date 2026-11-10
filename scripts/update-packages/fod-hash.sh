@@ -6,13 +6,21 @@
 # a fetch: every derivation the build would run must be fixed-output. Anything
 # that would compile (a package, or a fetcher whose inputs need a local build)
 # is refused before Nix builds it.
+#
+# Nix realises import-from-derivation inputs while it evaluates, before any
+# build plan exists, so a plan check alone cannot see them. Every Nix call here
+# therefore evaluates with import from derivation disabled: an installable that
+# needs it fails instead of building during evaluation. None of the fetch
+# targets needs it; T3 Code itself does, and CI evaluates it separately with
+# local builds disabled (ADR-0003).
+fod_no_ifd=(--option allow-import-from-derivation false)
 
 # require_fetch_only INSTALLABLE: fail unless every derivation Nix would build
 # for INSTALLABLE is fixed-output. Substituted paths are fetches and allowed.
 require_fetch_only() {
   local installable=$1 plan compiled
   local -a drvs
-  if ! plan=$(nix build --dry-run --no-link "$installable" 2>&1); then
+  if ! plan=$(nix build --dry-run --no-link "$installable" "${fod_no_ifd[@]}" 2>&1); then
     printf '%s\n' "$plan" >&2
     echo "Unable to plan ${installable}." >&2
     return 1
@@ -54,7 +62,7 @@ prepare_fetch_build() {
 realise_fetch_only() {
   local installable=$1 expected=${2:-} pinned
   if [[ -n "$expected" ]]; then
-    pinned=$(nix eval --raw "${installable}.outputHash") || return 1
+    pinned=$(nix eval --raw "${installable}.outputHash" "${fod_no_ifd[@]}") || return 1
     if [[ "$pinned" != "$expected" ]]; then
       echo "${installable} pins ${pinned}, expected ${expected}." >&2
       return 1
@@ -62,7 +70,7 @@ realise_fetch_only() {
   fi
   require_fetch_only "$installable" || return 1
   prepare_fetch_build || return 1
-  nix build --no-link "$installable"
+  nix build --no-link "$installable" "${fod_no_ifd[@]}"
 }
 
 # collect_fod_hash INSTALLABLE LABEL: build the fixed-output INSTALLABLE, whose
@@ -72,7 +80,7 @@ collect_fod_hash() {
   require_fetch_only "$installable" || return 1
   prepare_fetch_build || return 1
   log=$(mktemp)
-  if nix build -L --no-link "$installable" 2>"$log"; then
+  if nix build -L --no-link "$installable" "${fod_no_ifd[@]}" 2>"$log"; then
     cat "$log" >&2
     rm -f "$log"
     echo "Expected the ${label} fetch to fail with the placeholder hash" >&2

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Evaluation-only T3 Code provider contract, cheap enough for the shared CI
-# runners (ADR-0003): T3 Code must embed the packaged Claude Code and Codex CLI
-# versions, and every provider derivation must evaluate. The native build,
-# runtime version and closure checks are in verify-t3code-providers.sh, which
-# runs locally.
+# Evaluation-only T3 Code provider check, cheap enough for the shared CI
+# runners (ADR-0003): every provider derivation must evaluate, and T3 Code's
+# embeddedProviderVersions metadata must name the packaged Claude Code and
+# Codex CLI versions. The flake passes the exported provider packages to T3
+# Code and the metadata reads their versions back, so the comparison only
+# catches a change to that wiring; it does not prove what the built application
+# embeds. Only a native build shows that: the local provider verification
+# script builds T3 Code and checks the runtime versions and closure.
 set -euo pipefail
 
 claude_version=$(nix eval --raw .#claude-code.version)

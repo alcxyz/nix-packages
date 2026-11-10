@@ -27,7 +27,7 @@ elif name == 'nix':
     if args[:2] == ['hash', 'convert']: print(os.environ['TEST_SRI'])
     elif args[0] == 'eval':
         if os.environ.get('FAIL_STEP') == 'eval': sys.exit(12)
-        attr = args[-1]
+        attr = next(arg for arg in args if arg.startswith('.#'))
         if attr.endswith('.outputHash'):
             data = json.loads(pathlib.Path('pkgs/stash/version.json').read_text())
             field = 'srcHash' if '.src.' in attr else 'pnpmHashV3' if 'V3' in attr else 'pnpmHash'
@@ -36,7 +36,7 @@ elif name == 'nix':
     elif args[0] == 'build':
         if '--dry-run' in args: sys.exit(0)
         if '-L' in args:
-            if os.environ.get('FAIL_STEP') == 'v3' and 'frontendDepsV3' in args[-1]: sys.exit(13)
+            if os.environ.get('FAIL_STEP') == 'v3' and any('frontendDepsV3' in arg for arg in args): sys.exit(13)
             print('got: ' + os.environ['TEST_SRI'], file=sys.stderr)
             sys.exit(1)
     else: sys.exit(99)

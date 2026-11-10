@@ -15,9 +15,12 @@ nix eval --raw .#t3code.version
 
 The updater selects only published, non-draft nightly releases, resolves the
 release tag to its commit, fetches the Cargo and pnpm dependencies to compute
-their hashes, then evaluates T3 Code and its provider derivations. It does not
-build T3 Code, so whether the built application embeds the packaged providers
-is checked by the local build and the package promoter. A failure restores the previous
+their hashes, then evaluates T3 Code and its provider derivations. The
+evaluated provider check (`scripts/ci/check-t3code-provider-versions.sh`) only
+confirms that T3 Code is wired to the packaged providers, since its metadata
+reads their versions from the same packages. It does not build T3 Code, so
+whether the built application embeds the packaged providers is checked only by
+the local build and the package promoter. A failure restores the previous
 pin. Review the generated pin before publication, and build it locally with
 `T3CODE_VERIFY_ALWAYS=true GITHUB_BASE_REF=dev scripts/ci/verify-t3code-providers.sh`
 before pushing a manual update, so the build runs even before the pin is

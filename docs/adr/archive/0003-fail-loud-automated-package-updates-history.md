@@ -530,3 +530,25 @@ longer has a default package.
 - Auto-merge can spend extra time waiting after a rebase because pull-request checks rerun on the refreshed head.
 - Failed rebases or failed required checks leave the PR open for manual inspection instead of merging a stale or unverified update.
 - Manual `dev` to `main` promotion cannot rely on the repository's default branch cleanup; only disposable `update/*` branches are deleted by automation.
+
+## Text replaced on 2026-11-10: fetch rule, import from derivation and provider contract
+
+The Decision's CI rules read, in place of the current text:
+
+- fetch only through `scripts/update-packages/fod-hash.sh`, which refuses,
+  before building, any installable whose plan needs a derivation that is not
+  fixed-output: `collect_fod_hash` collects a fixed-output dependency hash
+  (such as a Cargo, pnpm or Go module hash) by building the fetch with a
+  placeholder hash, and `realise_fetch_only` fetches a pinned source so a
+  wrong or stale source hash fails before the update is committed, as the
+  Claude Code and Codex updaters do
+
+- evaluate the T3 Code provider contract
+  (`scripts/ci/check-t3code-provider-versions.sh`): T3 Code's metadata names
+  the packaged provider versions and every provider derivation evaluates.
+  Whether the built application really embeds those providers is checked only
+  by a build, locally or by the promoter
+
+  `scripts/ci/check-no-ci-builds.sh` scans the workflows and every non-test
+  script under `scripts/`, including helpers reached only through `source`;
+

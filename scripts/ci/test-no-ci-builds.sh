@@ -51,6 +51,27 @@ printf 'scripts/ci/verify-t3code-providers.sh\n' >"$fixture/scripts/update-packa
 expect_rejected 'a local-only build script in an updater'
 
 new_fixture
+# shellcheck disable=SC2016 # literal shell text for the fixture
+printf '"$script_dir/build-changed-packages.sh"\n' >>"$fixture/scripts/ci/check.sh"
+expect_rejected 'a local-only build script called through a variable'
+
+new_fixture
+printf '  - run: nix flake check --no-build && nix build .#hello\n' \
+  >>"$fixture/.forgejo/workflows/ci.yml"
+expect_rejected 'a build on the same line as a no-build check'
+
+new_fixture
+# shellcheck disable=SC2016 # literal shell text for the fixture
+printf '  - run: nix flake check --override-input x "$(nix build --print-out-paths "$target")" --no-build\n' \
+  >>"$fixture/.forgejo/workflows/ci.yml"
+expect_rejected 'a build inside a no-build check'
+
+new_fixture
+printf '  - run: scripts/ci/test-build-changed-packages.sh\n' \
+  >>"$fixture/.forgejo/workflows/ci.yml"
+"$check" "$fixture" >/dev/null
+
+new_fixture
 mkdir -p "$fixture/scripts/lib"
 printf 'nix build .#pkg --no-link\n' >"$fixture/scripts/lib/helper.sh"
 # shellcheck disable=SC2016 # literal shell text for the fixture

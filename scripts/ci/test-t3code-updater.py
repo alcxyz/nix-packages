@@ -204,7 +204,7 @@ if args[:2] == ["store", "prefetch-file"]:
 elif args[:2] == ["build", "--dry-run"]:
     # Mirror the real structure: cargoDeps is an ordinary derivation that
     # links its fixed-output vendorStaging dependency.
-    target = args[-1]
+    target = next(arg for arg in args if arg.startswith(".#"))
     if target.endswith(".cargoDeps"):
         drvs = ["mock-vendor-staging.drv", "mock-vendor.drv"]
     elif target.endswith(".vendorStaging"):
@@ -281,7 +281,7 @@ touch verified
             calls = (root / "nix-calls").read_text()
             self.assertIn("pingdotgg/t3code/archive/" + candidate["revision"], calls)
             self.assertNotIn("alcxyz", calls)
-            self.assertNotIn("build -L --no-link .#t3code\n", calls)
+            self.assertNotRegex(calls, r"(?m)^build -L --no-link \.#t3code( |$)")
             self.assertLess(calls.index(".#t3code.resourceMonitor"), calls.index(".#t3code.pnpmDeps"))
             self.assertEqual(output.read_text().splitlines(),
                              ["updated=true", "version=" + candidate["version"]])

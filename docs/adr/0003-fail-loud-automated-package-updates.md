@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-05, updated 2026-11-04 (`credential-approval` exported on all four systems, per ADR-0018); updated 2026-11-06 (`hyprscratch` exported on both Linux systems, per [nix-config #1004](https://git.alc.xyz/alcxyz/nix-config/issues/1004))
-**Amended:** 2026-09-30; 2026-10-28 (the September 2026 follow-through folded into the decision; the platform table updated to the flake's current exports); 2026-11-03 (CI runs cheap checks only; native builds and provider verification run locally)
+**Amended:** 2026-09-30; 2026-10-28 (the September 2026 follow-through folded into the decision; the platform table updated to the flake's current exports); 2026-11-03 (CI runs cheap checks only; native builds and provider verification run locally); 2026-11-10 (the fetch rule names what it covers, the fetch-only helper disables import from derivation, the provider contract states its limit)
 **History:** [replaced text](archive/0003-fail-loud-automated-package-updates-history.md)
 **Applies to:** `.forgejo/workflows/`, `scripts/update-packages/`, `scripts/forgejo/`, `scripts/ci/`
 
@@ -49,13 +49,18 @@ Updater scripts must:
 - leave the changed derivation evaluable: every update PR's CI evaluates all
   exports on every platform, and the T3 Code, Stash and AI provider updaters
   also evaluate their package themselves; they never build a package natively
-- fetch only through `scripts/update-packages/fod-hash.sh`, which refuses,
-  before building, any installable whose plan needs a derivation that is not
-  fixed-output: `collect_fod_hash` collects a fixed-output dependency hash
-  (such as a Cargo, pnpm or Go module hash) by building the fetch with a
-  placeholder hash, and `realise_fetch_only` fetches a pinned source so a
-  wrong or stale source hash fails before the update is committed, as the
-  Claude Code and Codex updaters do
+- realise flake installables only through `scripts/update-packages/fod-hash.sh`,
+  which refuses, before building, any installable whose plan needs a
+  derivation that is not fixed-output: `collect_fod_hash` collects a
+  fixed-output dependency hash (such as a Cargo, pnpm or Go module hash) by
+  building the fetch with a placeholder hash, and `realise_fetch_only` fetches
+  a pinned source so a wrong or stale source hash fails before the update is
+  committed, as the Claude Code and Codex updaters do. The helper evaluates
+  with import from derivation disabled, because Nix realises such inputs
+  during evaluation, before the plan it checks exists; none of the fetch
+  targets needs it. Updaters may still hash upstream files directly with
+  `nix store prefetch-file` or `nix-prefetch-url`, and run a hashing tool with
+  `nix shell --option max-jobs 0`, which substitutes it and never builds
 - avoid committing or refreshing a PR when validation fails
 - use `lib.fakeHash` only as an explicit package-maintainer choice for an optional missing upstream asset, not as a fallback for failed required hashes
 
@@ -72,10 +77,12 @@ CI runs cheap checks only, on the shared runners. CI must:
 - evaluate the flake's outputs without building (`nix flake check --no-build
   --all-systems`)
 - evaluate the T3 Code provider contract
-  (`scripts/ci/check-t3code-provider-versions.sh`): T3 Code's metadata names
-  the packaged provider versions and every provider derivation evaluates.
-  Whether the built application really embeds those providers is checked only
-  by a build, locally or by the promoter
+  (`scripts/ci/check-t3code-provider-versions.sh`): every provider derivation
+  evaluates, and T3 Code's metadata names the packaged provider versions.
+  The metadata reads those versions from the packages the flake passes in, so
+  the comparison only catches a change to that wiring. Whether the built
+  application really embeds those providers is checked only by a build,
+  locally or by the promoter
 - regression-test package selection, failure classification, the updaters and
   the merge queue with mocked Nix commands
 - never run `nix build`, `nix-build`, a building `nix flake check` or a NixOS
@@ -85,7 +92,9 @@ CI runs cheap checks only, on the shared runners. CI must:
   evaluates with local builds disabled (`max-jobs = 0`): an evaluation that
   would build anything through import from derivation fails instead.
   `scripts/ci/check-no-ci-builds.sh` scans the workflows and every non-test
-  script under `scripts/`, including helpers reached only through `source`;
+  script under `scripts/`, including helpers reached only through `source`,
+  and rejects any mention of a local-only build script by file name, so a
+  call through a variable counts too;
   the `tools/` contracts the workflows run are tests that put mocked Nix
   commands first on `PATH` and are not scanned
 - preserve the required package-validation context through an aggregate job
