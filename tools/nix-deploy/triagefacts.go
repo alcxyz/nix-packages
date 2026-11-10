@@ -22,6 +22,26 @@ var unitFailurePattern = regexp.MustCompile(`Failed to start |the following unit
 // context lists.
 const maxFindingLines = 20
 
+// generatePattern matches go generate's report of a directive that failed,
+// such as `cmd/stash/main.go:1: running "go": exit status 1`. It prints only
+// the exit status; the generator's own message, if it printed one, is
+// elsewhere in the log, and some generators (gqlgen, for one) print the cause
+// only with a verbose flag.
+var generatePattern = regexp.MustCompile(`^\S+\.go:[0-9]+: running "[^"]+": exit status [0-9]+$`)
+
+// generateFailures returns the distinct go generate failure lines of a log,
+// in order, at most maxFindingLines.
+func generateFailures(text string) []string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if generatePattern.MatchString(line) && !contains(lines, line) && len(lines) < maxFindingLines {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // unitFailures returns the distinct lines of a log that name a failed
 // unit, in order, at most maxFindingLines, and whether there were more.
 func unitFailures(text string) ([]string, bool) {
@@ -162,6 +182,7 @@ type drvFacts struct {
 	present bool
 	fixed   bool
 	system  string
+	pname   string
 	paths   []string
 }
 
@@ -170,7 +191,11 @@ var (
 	// a fixed-output derivation has a hash.
 	drvFirstOutput = regexp.MustCompile(`^Derive\(\[\("[^"]*","[^"]*","[^"]*","([^"]*)"\)`)
 	drvSystem      = regexp.MustCompile(`\("system","([^"]*)"\)`)
-	storePathRef   = regexp.MustCompile(`/nix/store/[0-9a-z]{32}-[^"/\\\s]+`)
+	// pname as an environment entry, or inside the escaped JSON of
+	// structured attributes.
+	drvPname           = regexp.MustCompile(`\("pname","([^"\\]*)"\)`)
+	drvStructuredPname = regexp.MustCompile(`\\"pname\\":\\"([^"\\]*)\\"`)
+	storePathRef       = regexp.MustCompile(`/nix/store/[0-9a-z]{32}-[^"/\\\s]+`)
 )
 
 // drvPlatform returns the platform field of a derivation in ATerm form,
@@ -234,6 +259,11 @@ func readDrv(path string) drvFacts {
 		f.fixed = true
 	}
 	f.system = drvPlatform(text)
+	if m := drvPname.FindStringSubmatch(text); m != nil {
+		f.pname = m[1]
+	} else if m := drvStructuredPname.FindStringSubmatch(text); m != nil {
+		f.pname = m[1]
+	}
 	if f.system == "" {
 		if m := drvSystem.FindStringSubmatch(text); m != nil {
 			f.system = m[1]
@@ -333,6 +363,84 @@ func drvInputs(f drvFacts, byPath map[string][]string) []string {
 	return names
 }
 
+// definitionRoot is a source tree searched for package definitions: an own
+// input's store path or the flake directory, with how the context names it.
+type definitionRoot struct {
+	label string
+	dir   string
+}
+
+// Bounds of the definition search, so a huge tree cannot stall triage.
+const (
+	maxDefinitionFiles    = 20000
+	maxDefinitionFileSize = 1 << 20
+	maxDefinitionsShown   = 5
+)
+
+// definitionSearch is what findDefinitions found: for each pname, the files
+// that set it, as "<label> <relative path>"; how many roots it walked; and
+// the labels of roots whose walk stopped at maxDefinitionFiles.
+type definitionSearch struct {
+	found     map[string][]string
+	searched  int
+	truncated []string
+}
+
+// findDefinitions finds, for each pname, the .nix files under the roots that
+// set `pname = "<pname>"`. It reads each file once for all pnames and skips
+// .git and node_modules; a root that cannot be read is not counted.
+func findDefinitions(pnames []string, roots []definitionRoot) definitionSearch {
+	search := definitionSearch{found: map[string][]string{}}
+	found := search.found
+	if len(pnames) == 0 {
+		return search
+	}
+	patterns := map[string]*regexp.Regexp{}
+	for _, pname := range pnames {
+		patterns[pname] = regexp.MustCompile(`\bpname\s*=\s*"` + regexp.QuoteMeta(pname) + `"`)
+	}
+	for _, root := range roots {
+		if info, err := os.Stat(root.dir); err != nil || !info.IsDir() {
+			continue
+		}
+		search.searched++
+		files := 0
+		_ = filepath.WalkDir(root.dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if entry.IsDir() {
+				if name := entry.Name(); path != root.dir && (name == ".git" || name == "node_modules") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !entry.Type().IsRegular() || !strings.HasSuffix(path, ".nix") {
+				return nil
+			}
+			if files++; files > maxDefinitionFiles {
+				search.truncated = append(search.truncated, root.label)
+				return filepath.SkipAll
+			}
+			if info, err := entry.Info(); err != nil || info.Size() > maxDefinitionFileSize {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			rel, _ := filepath.Rel(root.dir, path)
+			for _, pname := range pnames {
+				if patterns[pname].Match(data) {
+					found[pname] = append(found[pname], root.label+" "+rel)
+				}
+			}
+			return nil
+		})
+	}
+	return search
+}
+
 // maxInputCommits caps the commits listed between two locked revisions.
 const maxInputCommits = 30
 
@@ -372,7 +480,7 @@ func short(rev string) string {
 // marked fixed-output where it is, with the system it builds for and the
 // locked inputs whose sources it names, and for an input that changed
 // since the baseline, the change and its commits.
-func writeAttempted(out *strings.Builder, attempted []attemptedDerivation, total int, facts []drvFacts, inputs map[string]lockedInput, own map[string]bool, nodeCheckouts map[string]string, baseline *baselineGroup) {
+func writeAttempted(out *strings.Builder, attempted []attemptedDerivation, total int, facts []drvFacts, inputs map[string]lockedInput, own map[string]bool, nodeCheckouts map[string]string, baseline *baselineGroup, roots []definitionRoot) {
 	out.WriteString("\n### Attempted derivations\n\nThe derivations the build attempted (none of their inputs was left to build). The inputs are the locked inputs whose store paths the derivation file names; a source that was filtered or copied into its own store path hides which input it came from.\n")
 	if baseline != nil && baseline.old != nil {
 		var names []string
@@ -382,6 +490,16 @@ func writeAttempted(out *strings.Builder, attempted []attemptedDerivation, total
 		fmt.Fprintf(out, "Changes are since the baseline of %s.\n", strings.Join(names, ", "))
 	}
 	byPath := inputsByStorePath(inputs)
+	// A derivation whose sources name no locked input (a fetchFromGitHub
+	// source, for example) is matched to own definitions by its pname.
+	var pnames []string
+	for _, f := range facts {
+		if f.present && f.pname != "" && len(drvInputs(f, byPath)) == 0 && !contains(pnames, f.pname) {
+			pnames = append(pnames, f.pname)
+		}
+	}
+	search := findDefinitions(pnames, roots)
+	definitions := search.found
 	out.WriteString("\n")
 	for i, a := range attempted {
 		f := facts[i]
@@ -406,6 +524,29 @@ func writeAttempted(out *strings.Builder, attempted []attemptedDerivation, total
 		names := drvInputs(f, byPath)
 		if len(names) == 0 {
 			out.WriteString("  - Inputs: no locked input's store path appears in it.\n")
+			defs := definitions[f.pname]
+			switch {
+			case f.pname == "" || search.searched == 0:
+			case len(defs) > 0:
+				shown := defs
+				if len(shown) > maxDefinitionsShown {
+					shown = shown[:maxDefinitionsShown]
+				}
+				fmt.Fprintf(out, "  - Own definitions of pname `%s`, so this may be the operator's package rather than upstream's: %s", f.pname, strings.Join(shown, ", "))
+				if len(defs) > len(shown) {
+					fmt.Fprintf(out, ", and %d more", len(defs)-len(shown))
+				}
+				out.WriteString("\n")
+			default:
+				trees := "source trees"
+				if search.searched == 1 {
+					trees = "source tree"
+				}
+				fmt.Fprintf(out, "  - No file in the %d %s searched (the own inputs in this store and the flake directory, where present) sets pname `%s`. It is upstream's package, or an override of it: an overlay's `overrideAttrs` keeps upstream's pname, so search the flake and own inputs for `%s` before calling it upstream.\n", search.searched, trees, f.pname, f.pname)
+				if len(search.truncated) > 0 {
+					fmt.Fprintf(out, "  - The search stopped at %d files in %s, so it is incomplete there.\n", maxDefinitionFiles, strings.Join(search.truncated, ", "))
+				}
+			}
 			continue
 		}
 		for _, name := range names {

@@ -587,8 +587,9 @@ func writeTriageContext(dir string, checkouts map[string]string, configFile stri
 			out.WriteString("Nix reports some failures itself rather than through the builder, such as a fixed-output hash mismatch or a missing output, and the run records Nix's own output only for the fixed-output rebuild above. When no log explains the failure, reproduce it with `deploy --build-only` and read the terminal.\n")
 		}
 		if len(attempted) > 0 {
-			writeAttempted(&out, attempted, attemptedTotal, facts, inputs, own, nodeCheckouts, buildBaseline)
+			writeAttempted(&out, attempted, attemptedTotal, facts, inputs, own, nodeCheckouts, buildBaseline, definitionRoots(inputs, own, info.FlakeDir))
 		}
+		writeToolchainChanges(&out, buildBaseline, inputs)
 	}
 	writeEarlierRuns(&out, dir, info)
 
@@ -638,6 +639,35 @@ func writeTriageContext(dir string, checkouts map[string]string, configFile stri
 		return "", err
 	}
 	return path, nil
+}
+
+// definitionRoots returns the trees searched for an own definition of a
+// failed package: the store path of each own input that this store has
+// (inputs sharing a path share a root), then the flake directory.
+func definitionRoots(inputs map[string]lockedInput, own map[string]bool, flakeDir string) []definitionRoot {
+	var roots []definitionRoot
+	index := map[string]int{}
+	for _, name := range sortedNames(inputs) {
+		if !own[name] {
+			continue
+		}
+		path := lockedStorePath(inputs[name].NarHash, inputs[name].storeName())
+		if path == "" || !pathExists(path) {
+			continue
+		}
+		if i, ok := index[path]; ok {
+			roots[i].label += ", `" + name + "`"
+			continue
+		}
+		index[path] = len(roots)
+		roots = append(roots, definitionRoot{label: "`" + name + "`", dir: path})
+	}
+	// A flake directory that is gone (a removed worktree) is not searched,
+	// so the context does not claim it was.
+	if info, err := os.Stat(flakeDir); flakeDir != "" && err == nil && info.IsDir() {
+		roots = append(roots, definitionRoot{label: "the flake", dir: flakeDir})
+	}
+	return roots
 }
 
 func containsFailed(targets []failedTarget, t failedTarget) bool {
@@ -703,10 +733,22 @@ func writeRunSummary(out *strings.Builder, dir string, info runInfo) {
 		out.WriteString("- Git revision: none (not a Git checkout)\n")
 	case info.GitDirty == nil:
 		fmt.Fprintf(out, "- Git revision: %s (whether tracked files differed is unknown)\n", info.GitRev)
+	case *info.GitDirty && len(info.GitDirtyFiles) == 0:
+		fmt.Fprintf(out, "- Git revision: %s, tracked files differed from it (this record does not say which)\n", info.GitRev)
 	case *info.GitDirty:
-		fmt.Fprintf(out, "- Git revision: %s, tracked files differed from it\n", info.GitRev)
+		fmt.Fprintf(out, "- Git revision: %s, tracked files differed from it (paths from the repository root): %s", info.GitRev, strings.Join(info.GitDirtyFiles, ", "))
+		if len(info.GitDirtyFiles) == maxDirtyFiles {
+			out.WriteString(", and maybe more")
+		}
+		out.WriteString("\n")
 	default:
 		fmt.Fprintf(out, "- Git revision: %s, clean\n", info.GitRev)
+	}
+	switch {
+	case info.GitLockDirty != nil && *info.GitLockDirty:
+		out.WriteString("  - The run's flake.lock was not committed: it is an update in the working tree, so a repair has to carry it and commit it with the fix.\n")
+	case info.StartLockSHA256 != "":
+		out.WriteString("  - Nix rewrote the flake.lock during evaluation (see Start lock below), so the lock this run deployed is not the committed one; a repair has to commit it with the fix.\n")
 	}
 	var modes []string
 	if info.DryRun {
@@ -738,10 +780,11 @@ func writeRunSummary(out *strings.Builder, dir string, info runInfo) {
 const tailLines = 10
 
 // writeLogError writes what a log says about its failure: its first error
-// and the files it names, the units it says failed, and its Go test
-// failures grouped by message. Without any of those it says so plainly and
-// shows the log's last non-empty lines, since a command that failed to
-// start leaves only deploy's own message; it then returns false.
+// and the files it names, the units it says failed, its Go test failures
+// grouped by message, and the go generate directives that failed. Without
+// any of those it says so plainly and shows the log's last non-empty lines,
+// since a command that failed to start leaves only deploy's own message; it
+// then returns false.
 func writeLogError(out *strings.Builder, log string) bool {
 	data, _ := os.ReadFile(log)
 	// Nix's raw log format marks each line with a syslog severity, such as
@@ -773,7 +816,13 @@ func writeLogError(out *strings.Builder, log string) bool {
 		found = true
 		writeTestFailures(out, tests)
 	}
-	if found {
+	generate := generateFailures(text)
+	if len(generate) > 0 {
+		fmt.Fprintf(out, "\nA go generate directive failed:\n\n````text\n%s\n````\n\ngo generate reports only the directive's exit status; the generator's own message, if it printed one, comes before that line. Some generators (gqlgen, for one) print the cause only with a verbose flag, so when the log does not explain it, run the directive's command by hand in a debug build of the derivation, with its verbose option.\n", strings.Join(generate, "\n"))
+	}
+	// A generator's own message matches none of the shapes above, so the end
+	// of the log stays in view whenever a directive failed.
+	if found && len(generate) == 0 {
 		return true
 	}
 	var tail []string
@@ -787,7 +836,11 @@ func writeLogError(out *strings.Builder, log string) bool {
 	}
 	if len(tail) == 0 {
 		out.WriteString("\nThe log is empty.\n")
-		return false
+		return found
+	}
+	if len(generate) > 0 {
+		fmt.Fprintf(out, "\nThe last %d non-empty lines of the log, where a message from the generator would be:\n\n````text\n%s\n````\n", len(tail), strings.Join(tail, "\n"))
+		return true
 	}
 	fmt.Fprintf(out, "\nNo error found: no line starts with \"error:\", and none reports a failed unit or a failed Go test. The last %d non-empty lines follow only as the end of the log; they need not explain the failure.\n\n````text\n%s\n````\n", len(tail), strings.Join(tail, "\n"))
 	return false

@@ -9,6 +9,36 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.36.0 (2026-11-10)
+
+`nixfleet triage` applies the findings of its fourth real session
+(nix-packages#810).
+
+- A run records which tracked files differed from the flake's revision, at
+  most 50 (`gitDirtyFiles` in `run.json`), and whether the flake's own
+  `flake.lock` was among them (`gitLockDirty`), also for a flake in a
+  subdirectory of its repository. The triage context names the files and
+  says when the deployed lock was not the committed one.
+- After a nixpkgs update, a failed build's context has a "Toolchain changes"
+  section: the default toolchains the old and new nixpkgs choose in
+  `pkgs/top-level/all-packages.nix` (such as `go = go_1_26` -> `go_1_27`)
+  and the files changed under `pkgs/build-support`. Both are read from the
+  files; triage evaluates nothing, since evaluating an input's code cannot be
+  confined.
+- An attempted derivation that names no locked input is matched by its
+  `pname` to the own inputs and the flake: the context names the files that
+  define it, or says it is upstream's package or an override of it.
+- A failed `go generate` directive counts as an error, with a note that
+  `go generate` prints only its exit status and how to see the cause, and
+  the log's last lines stay in view.
+- Baselines whose lock diffs are identical share one diff.
+- The playbook adds: checking an upstream fix against the branch the input
+  follows, evaluating targets that `--all` does not build, placing overrides
+  by the platforms the cause affects, starting the package promoter by hand,
+  handing a local switch's sudo prompt to the operator, never cloning or
+  fetching upstream repositories into a checkout, and preferring the last
+  working version over a build-only port for hardware-qualified behaviour.
+
 ## 0.35.1 (2026-11-09)
 
 A reboot that may be queued but was not seen keeps the runner units stopped

@@ -382,15 +382,27 @@ func writeLockContext(out *strings.Builder, dir string, inputs map[string]locked
 		out.WriteString(" Nix rewrote the lock during evaluation; flake.start.lock is the one the run started with.")
 	}
 	out.WriteString(" Inputs that changed together to the same locked source are listed once.\n")
+	// Two baselines with different locks can still differ from the run's
+	// lock in the same way; that diff is written once.
+	shown := map[string]string{}
 	for _, b := range baselines {
 		var names []string
 		for _, t := range b.targets {
 			names = append(names, t.host+" "+t.label)
 		}
-		fmt.Fprintf(out, "\n### Since the baseline of %s\n\n%s\n", strings.Join(names, ", "), b.label)
-		if b.old != nil {
-			writeLockDiff(out, b.old, inputs)
+		heading := strings.Join(names, ", ")
+		fmt.Fprintf(out, "\n### Since the baseline of %s\n\n%s\n", heading, b.label)
+		if b.old == nil {
+			continue
 		}
+		var diff strings.Builder
+		writeLockDiff(&diff, b.old, inputs)
+		if first, ok := shown[diff.String()]; ok {
+			fmt.Fprintf(out, "\nThe same changes as since the baseline of %s, above.\n", first)
+			continue
+		}
+		shown[diff.String()] = heading
+		out.WriteString(diff.String())
 	}
 }
 

@@ -305,3 +305,26 @@ func TestGitBaselineMergeResolution(t *testing.T) {
 		t.Fatalf("gitBaseline = %q, want the merge %q", got, merge)
 	}
 }
+
+func TestLockContextSharesIdenticalDiffs(t *testing.T) {
+	inputs := func(rev string) map[string]lockedInput {
+		in, err := lockInputs(lockData(t, map[string]lockedInput{"nixpkgs": {Type: "github", Owner: "NixOS", Repo: "nixpkgs", Rev: rev, NarHash: "sha256-" + rev}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	baselines := []baselineGroup{
+		{targets: []failedTarget{{host: "xyz", label: "system"}}, label: "Baseline: one.", old: inputs("aaa")},
+		{targets: []failedTarget{{host: "nex", label: "home-manager"}}, label: "Baseline: two.", old: inputs("aaa")},
+	}
+	var out strings.Builder
+	writeLockContext(&out, t.TempDir(), inputs("bbb"), baselines)
+	text := out.String()
+	if n := strings.Count(text, "- Changed `nixpkgs`"); n != 1 {
+		t.Errorf("the identical diff is written %d times:\n%s", n, text)
+	}
+	if !strings.Contains(text, "The same changes as since the baseline of xyz system, above.") {
+		t.Errorf("the second baseline does not point to the first:\n%s", text)
+	}
+}

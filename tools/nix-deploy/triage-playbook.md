@@ -22,8 +22,11 @@ triage keeps the full table in `context.md`.
   good lock, earlier runs of the same lock, and notes such as when the
   failing package is nixfleet itself. A failed activation adds the closure
   diff from the generation the host ran and the host's live state. A
-  failed build adds the attempted derivations with the inputs behind them,
-  and Nix's own output from building the fixed-output ones again.
+  failed build adds the attempted derivations with the inputs behind them
+  (or, when none appears, whether an own input defines a package with that
+  name), Nix's own output from building the fixed-output ones again, and,
+  after a nixpkgs update, the default toolchains and builder files that
+  changed.
   `context.md` lists only the inputs that matter here; `inputs.md` beside
   it lists every locked input. Follow "A failed run".
 - For warning triage it holds each distinct warning with the targets that
@@ -121,9 +124,21 @@ it to this one, the triage host. Read the "Hand-off from" section of
    the changed inputs to compare their source and release notes. For a
    failed build, "Attempted derivations" names the inputs whose sources a
    failed derivation uses and the commits between their two locked
-   revisions. Removed and renamed options leave messages from
-   `mkRemovedOptionModule` and `mkRenamedOptionModule` in the new source;
-   search it for the option or argument the error names.
+   revisions. When it names none (a source fetched from GitHub, for
+   example), it says whether an own input or the flake defines a package
+   with that `pname`: one that does may be the operator's package, not
+   upstream's. After a nixpkgs update, "Toolchain changes" lists the default
+   toolchains nixpkgs chooses differently (such as `go = go_1_27;`) and the
+   files under `pkgs/build-support` that changed; a new Go or Rust release,
+   or a changed builder hook, explains many build failures that the
+   package's own source does not. Removed and renamed
+   options leave messages from `mkRemovedOptionModule` and
+   `mkRenamedOptionModule` in the new source; search it for the option or
+   argument the error names.
+   A failed `go generate` directive reports only its exit status. Run the
+   directive's command by hand in a debug build of the derivation (an
+   `overrideAttrs` that runs it with its verbose option), since the
+   generator may print its cause nowhere else.
 2. When the failing package is nixfleet itself, the tool, playbook and tests
    of this session are not the code that failed. A native build on a system
    other than x86_64-linux may be that package's first one (see the notes in
@@ -134,13 +149,24 @@ it to this one, the triage host. Read the "Hand-off from" section of
    listed under "Own inputs".
 4. For an upstream cause, check the upstream tracker before you write a fix:
    an existing issue or pull request may already give the cause, the fix or
-   the right hash. Then pick an outcome, as for warnings: update the input
-   when a newer revision fixes it; otherwise propose a local override, or
-   report it and wait. An upstream issue needs the operator's approval.
+   the right hash. A fix merged upstream helps only once it reaches the
+   branch the input follows, such as a nixpkgs channel: check its commit
+   against that branch through the forge's API (for GitHub,
+   `gh api repos/<owner>/<repo>/compare/<branch>...<commit>` answers
+   `behind` or `identical` once it has). Then pick an outcome, as for
+   warnings: update the input when a revision it follows fixes it; otherwise
+   propose a local override, or report it and wait. An upstream issue needs
+   the operator's approval.
 5. Guard any override so it stops applying once upstream changes: apply it
    only while upstream still has the broken value or version (for example,
    compare the package's version or the hash upstream sets), so the next
    update removes it by itself instead of breaking again.
+6. When a failing patch or override touches behaviour that was qualified on
+   real hardware or a live service, such as a driver or a client patch,
+   prefer restoring the last working version (an existing pin or the
+   previous input) and propose the port as follow-up work. A port that
+   builds proves nothing about that behaviour, so do not offer it as the
+   fix.
 
 ### Verify
 
@@ -148,6 +174,14 @@ it to this one, the triage host. Read the "Hand-off from" section of
    After a flake update that is the whole fleet: `deploy --build-only --all`.
    Evaluation alone is not enough. One failure can hide the next, so repeat
    until everything builds.
+   `--all` leaves out hosts the inventory excludes from it, and this host
+   cannot build every system. For each target the fix can affect that you
+   cannot build, evaluate it and check that the fix applies there, for
+   example by reading the overridden package's attributes from that host's
+   package set (`nix eval .#homeConfigurations.<name>.pkgs.<package>.buildInputs`).
+   An override placed inside a platform-conditional block, such as an
+   `isLinux` part of an overlay, silently skips the other platforms; place
+   it by the platforms the cause affects. Report what you only evaluated.
 2. A fix that lives in an own input's worktree is not in the flake's lock.
    To build it, make a worktree of the flake and run
    `nix flake lock --override-input <input> path:<input worktree>` there,
@@ -176,11 +210,20 @@ operator's approval; ask for each.
    push). For nix-packages in nix-config, the lock follows the `promoted`
    branch (nix-config ADR-0080): push to nix-packages `dev`, wait for the
    promoter to move `promoted` past the fix, run `just lock-packages` in a
-   nix-config worktree, commit and push the lock, then deploy.
+   nix-config worktree, commit and push the lock, then deploy. The promoter
+   runs on a timer; `systemctl --user start nix-package-promotion.service`
+   on the host that runs it starts the same validation at once, and its
+   journal says when `promoted` moved.
 3. `deploy` runs from the operator's checkout, which you must not edit. Once
    the fix is merged, either ask the operator to fast-forward that checkout
    (approval) or deploy from a clean worktree at the merged commit, and say
-   which you used.
+   which you used. The fast-forward fails while the checkout still holds the
+   failed run's uncommitted lock; once the merged lock replaces it, ask
+   before discarding it.
+4. A run that switches the local host asks for its sudo password first, on
+   a terminal (`deploy --all` from the triage host does). When you cannot
+   answer that prompt, give the operator the exact command to run, and the
+   checks to run after it, instead of working around the prompt.
 
 ### Activation failures
 
@@ -219,6 +262,10 @@ down or a node about to fence itself. Before you look for a repair:
 2. Before you propose rewriting a pushed commit, run
    `git branch -r --contains <commit>`: another branch may already build on
    it, and a rewrite would not remove it from there.
+3. Never clone or fetch an upstream repository into the flake's or an own
+   input's checkout, or its worktrees: a nixpkgs fetch alone writes
+   gigabytes into that repository. Both locked revisions of an input are
+   usually in the store already; for history, use the forge's API.
 
 ### When the forge is down
 

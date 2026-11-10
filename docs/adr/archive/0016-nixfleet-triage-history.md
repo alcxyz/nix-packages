@@ -1,4 +1,4 @@
-**History of** [ADR-0016](../0016-nixfleet-triage.md): text replaced on 2026-10-31 and 2026-11-07.
+**History of** [ADR-0016](../0016-nixfleet-triage.md): text replaced on 2026-10-31, 2026-11-07 and 2026-11-10.
 
 # ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
@@ -585,3 +585,20 @@ for a failed run, `inputs.md` beside it, it writes nothing and runs no Nix
 command; Git is read only, without optional locks or lazy fetches, with a
 10-second timeout per call. For a failed activation it reads the hosts' live
 state, as below.
+
+## Text replaced on 2026-11-10 (release 0.36.0, nix-packages#810)
+
+The passages session 4's findings replaced, each as it stood. Additions that replaced no text are not repeated.
+
+### Date line
+
+> **Date:** 2026-10-27, updated 2026-11-07 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673; the first sessions' findings in 0.33.0, per nix-packages#783; the hand-off to the triage host in 0.34.0, per nix-packages#787)
+
+### Failed runs: hints
+
+> Failure context carries no hints about what an error means (a removed
+> option, an unknown argument): none were built. It extracts only the stable
+> shapes above (error blocks, failed units, Go test failures). The playbook
+> tells the agent which messages removed and renamed options leave in the new
+> source. Such hints may still be added to `context.md` where a pattern
+> proves stable.

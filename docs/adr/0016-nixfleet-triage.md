@@ -1,7 +1,7 @@
 # ADR-0016: nixfleet triage: run records and an agent playbook for failed deploys and warnings
 
 **Status:** Accepted
-**Date:** 2026-10-27, updated 2026-11-07 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673; the first sessions' findings in 0.33.0, per nix-packages#783; the hand-off to the triage host in 0.34.0, per nix-packages#787)
+**Date:** 2026-10-27, updated 2026-11-10 (phases 2 and 3 built in releases 0.21.0 to 0.26.0, per nix-packages#673; the first sessions' findings in 0.33.0, per nix-packages#783; the hand-off to the triage host in 0.34.0, per nix-packages#787; session 4's findings in 0.36.0, per nix-packages#810)
 **Applies to:** `tools/nix-deploy/`
 **History:** [replaced text](archive/0016-nixfleet-triage-history.md)
 
@@ -49,8 +49,11 @@ Every `deploy` run that gets past argument parsing, single-host, `--all`,
   - `run.json`: id, version, start and end time, the deploy arguments
     (after `nixfleet deploy` or `deploy`), the flake directory (the one Nix
     resolves `.` to: the nearest directory with a `flake.nix` from the
-    working directory up, not past the Git root), its Git commit and
-    whether tracked files differ from it (absent outside a Git checkout), the
+    working directory up, not past the Git root), its Git commit,
+    whether tracked files differ from it, which (at most 50, paths from the
+    repository root, `gitDirtyFiles`) and whether the flake's own
+    `flake.lock` is among them, decided before the cap (`gitLockDirty`; both
+    since 0.36.0, all absent outside a Git checkout), the
     SHA-256 of the flake.lock the run deployed (`lockSha256`), the dry-run,
     build-only and force modes, and whether the run failed. End and result
     stay absent while the run goes on, after an interrupt and after a crash.
@@ -143,7 +146,9 @@ The context came in 0.22.0 and its lock diff and store paths in 0.23.0.
 Without `--warnings`, triage takes the newest run whose `run.json` says it
 failed, or the one named (an ID or a path). Its `context.md` has the run's
 facts, including the flake's recorded Git revision and whether tracked files
-differed from it; each failed target with the step that failed (evaluate, build,
+differed from it, naming them where the record has them and saying when the
+lock the run deployed was not the committed one: its `flake.lock` was
+uncommitted, or Nix rewrote it during evaluation (0.36.0); each failed target with the step that failed (evaluate, build,
 activate, an activation or its setup without a log, the serial ready gate,
 or unknown), all its logs, and what its most relevant log says (a build
 failure points to the build errors section instead); the first errors of
@@ -154,8 +159,13 @@ the locked inputs; and the own inputs.
 What a log says (0.33.0) is its first `error:` block, cut at 40 lines, with
 the files it names; the distinct lines that report a failed unit
 (`Failed to start`, `the following units failed`, `Job for ... failed`), at
-most 20; and its Go test failures: the `--- FAIL:` lines, with their
-messages grouped by the last `: `-separated part, the most shared first.
+most 20; its Go test failures: the `--- FAIL:` lines, with their
+messages grouped by the last `: `-separated part, the most shared first;
+and the `go generate` directives that failed (`<file>:<line>: running
+"<cmd>": exit status N`, 0.36.0), with a note that `go generate` prints
+only the exit status and how to see the generator's own cause, and the
+log's last 10 non-empty lines, where a generator's message in no known
+shape would be.
 When none of these is found the context says so plainly and shows the
 log's last 10 non-empty lines only as its end, not as the cause.
 
@@ -165,7 +175,33 @@ mark, the system it builds for, and the locked inputs whose store paths the
 file names, with each input's change since the first build-failed target's
 baseline and the commits between its two revisions (from the own input's
 checkout, or a GitHub compare link). A source filtered or copied into its
-own store path hides its input, and the context says so. It also adds
+own store path hides its input, and the context says so. When a derivation
+names no locked input, its `pname` (an environment entry, or inside
+structured attributes) is looked up in the `.nix` files of the own inputs
+this store has and of the flake directory, skipping `.git` and
+`node_modules`, at most 20,000 files of up to 1 MiB per tree, and a flake
+directory that no longer exists is not searched; the context names the files
+that set `pname = "<pname>"`, at most five. Otherwise it gives the number of
+trees searched, says the package is upstream's or an override of it (an
+overlay's `overrideAttrs` keeps upstream's `pname`), and names any tree whose
+search stopped at the file limit (0.36.0).
+
+When a nixpkgs tree (one with `pkgs/top-level/all-packages.nix`) changed
+since the build-failed targets' baseline and the store has both revisions,
+a "Toolchain changes" section gives the default toolchains each revision
+chooses, read as the first top-level declaration (two spaces of indentation)
+of `go`, `buildGoModule`, `rustPackages`, `default-gcc-version`,
+`llvmPackages`, `python3`, `nodejs`, `jdk`, `ruby`, `php`, `perl` and `zig` in
+that file, such as `go = go_1_27;`, and the files added, removed or changed
+under `pkgs/build-support`, at most 30 (0.36.0). Inputs that follow the same
+nixpkgs share one entry; a nixpkgs input (one whose remaining revision is a
+nixpkgs tree, or whose repository is named `nixpkgs`) whose old or new
+revision the store lacks is named instead. Both are read from the files,
+not evaluated: the tree is the input's own code at whatever revision the
+lock moved to, and Nix cannot confine evaluating it. In pure and restricted
+mode a locked `builtins.getFlake` still fetches, copying a readable local
+path into the store or reaching a Git URL, as a test on Nix 2.35.3 showed. A
+default chosen through an expression or outside that file is not seen. It also adds
 `nix-rebuild.log`, Nix's own output from the fixed-output rebuild, and a
 note to reproduce with `deploy --build-only` when no log explains the
 failure.
@@ -196,7 +232,9 @@ the plain history of `flake.lock` (merges that resolved it included), whose
 lock differs from the run's. It is labelled an approximation, not a known
 good deploy, and the search ends without a baseline at an object a partial
 clone lacks. Targets with the same baseline share one diff of added, removed
-and changed inputs, with their revisions, dates, sources and store paths.
+and changed inputs, with their revisions, dates, sources and store paths,
+and a baseline whose diff is identical to an earlier one's points to it
+instead of repeating it (0.36.0).
 
 Every locked input is listed in `inputs.md` with its store path, computed
 offline from its `narHash` and its locked store name (`source` unless the
@@ -209,12 +247,14 @@ same store path and source share a row, and inputs whose locked objects changed 
 same way share an entry in the lock diff. The warnings context keeps the
 full table, with shared rows.
 
-Failure context carries no hints about what an error means (a removed
-option, an unknown argument): none were built. It extracts only the stable
-shapes above (error blocks, failed units, Go test failures). The playbook
+Failure context carries one hint about what an error means: the note on a
+failed `go generate` directive, whose message is stable and never explains
+itself. It carries none for other errors (a removed option, an unknown
+argument) and otherwise extracts only the stable shapes above (error blocks,
+failed units, Go test failures, `go generate` directives). The playbook
 tells the agent which messages removed and renamed options leave in the new
-source. Such hints may still be added to `context.md` where a pattern
-proves stable.
+source. Further hints may be added to `context.md` where a pattern proves
+stable.
 
 #### Runtime configuration and launch (release 0.24.0)
 

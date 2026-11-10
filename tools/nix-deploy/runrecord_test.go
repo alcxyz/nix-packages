@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -481,4 +483,85 @@ func TestAttemptedDerivationsByOutput(t *testing.T) {
 	if got := strings.Join(attemptedDrvs(pending, fetches, facts), " "); got != "/nix/store/aaaa-tool.drv" {
 		t.Fatalf("attempted %s", got)
 	}
+}
+
+func TestPorcelainPaths(t *testing.T) {
+	// -z output: no quoting, and a rename is followed by its source path.
+	got := porcelainPaths(" M flake.lock\x00M  hosts/old -> new.nix\x00R  new.nix\x00old.nix\x00")
+	want := []string{"flake.lock", "hosts/old -> new.nix", "new.nix"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("paths %q, want %q", got, want)
+	}
+}
+
+// gitRepo makes a repository with one commit holding the given files.
+func gitRepo(t *testing.T, files ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	for _, name := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("add", "-A")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	return dir
+}
+
+func TestGitStateLockDirty(t *testing.T) {
+	change := func(t *testing.T, path string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(`{"changed":true}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("root flake", func(t *testing.T) {
+		dir := gitRepo(t, "flake.lock")
+		change(t, filepath.Join(dir, "flake.lock"))
+		state := gitState(dir)
+		if state.rev == "" || state.dirty == nil || !*state.dirty || state.lockDirty == nil || !*state.lockDirty || strings.Join(state.files, ",") != "flake.lock" {
+			t.Fatalf("gitState = %+v", state)
+		}
+	})
+	t.Run("nested flake", func(t *testing.T) {
+		dir := gitRepo(t, "flake.lock", "config/flake.lock")
+		change(t, filepath.Join(dir, "config", "flake.lock"))
+		state := gitState(filepath.Join(dir, "config"))
+		if state.lockDirty == nil || !*state.lockDirty || strings.Join(state.files, ",") != "config/flake.lock" {
+			t.Fatalf("nested flake's dirty lock missed: %+v", state)
+		}
+	})
+	t.Run("root lock of another flake", func(t *testing.T) {
+		dir := gitRepo(t, "flake.lock", "config/flake.lock")
+		change(t, filepath.Join(dir, "flake.lock"))
+		state := gitState(filepath.Join(dir, "config"))
+		if state.dirty == nil || !*state.dirty || state.lockDirty == nil || *state.lockDirty {
+			t.Fatalf("the root lock counted for the nested flake: %+v", state)
+		}
+	})
+	t.Run("lock past the cap", func(t *testing.T) {
+		var names []string
+		for i := 0; i < maxDirtyFiles+5; i++ {
+			names = append(names, fmt.Sprintf("a%03d.nix", i))
+		}
+		dir := gitRepo(t, append(names, "flake.lock")...)
+		for _, name := range append(names, "flake.lock") {
+			change(t, filepath.Join(dir, name))
+		}
+		state := gitState(dir)
+		if len(state.files) != maxDirtyFiles || state.lockDirty == nil || !*state.lockDirty {
+			t.Fatalf("files %d, lockDirty %v", len(state.files), state.lockDirty)
+		}
+	})
 }

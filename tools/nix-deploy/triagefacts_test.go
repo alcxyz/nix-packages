@@ -442,8 +442,113 @@ func TestWriteAttemptedCapsList(t *testing.T) {
 		attempted = append(attempted, attemptedDerivation{drv: fmt.Sprintf("/nix/store/%032d-src-%d.drv", i, i), fixed: true})
 	}
 	var out strings.Builder
-	writeAttempted(&out, attempted, 250, make([]drvFacts, len(attempted)), nil, nil, nil, nil)
+	writeAttempted(&out, attempted, 250, make([]drvFacts, len(attempted)), nil, nil, nil, nil, nil)
 	if !strings.Contains(out.String(), "- and 247 more; build.log lists them all.") {
 		t.Errorf("no cap line:\n%s", out.String())
+	}
+}
+
+func TestGenerateFailures(t *testing.T) {
+	text := "Running phase: buildPhase\nexit status 1\ncmd/stash/main.go:1: running \"go\": exit status 1\ncmd/stash/main.go:1: running \"go\": exit status 1\n"
+	got := generateFailures(text)
+	if len(got) != 1 || got[0] != `cmd/stash/main.go:1: running "go": exit status 1` {
+		t.Fatalf("generate failures %q", got)
+	}
+	log := filepath.Join(t.TempDir(), "build.log")
+	if err := os.WriteFile(log, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if !writeLogError(&out, log) {
+		t.Fatalf("a go generate failure should count as found:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "A go generate directive failed") || strings.Contains(out.String(), "No error found") {
+		t.Errorf("unexpected log summary:\n%s", out.String())
+	}
+
+	// A generator message in no known shape stays in view.
+	text = "unable to load schema: unknown type Widget\ncmd/x/main.go:3: running \"gqlgen\": exit status 1\n"
+	if err := os.WriteFile(log, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	writeLogError(&out, log)
+	if !strings.Contains(out.String(), "unable to load schema: unknown type Widget") || strings.Contains(out.String(), "printed no message") {
+		t.Errorf("the generator's own message is hidden:\n%s", out.String())
+	}
+
+	// Also next to an error block the extractor recognises.
+	text = "error: generation failed\nunable to load schema: unknown type Widget\ncmd/x/main.go:3: running \"gqlgen\": exit status 1\n"
+	if err := os.WriteFile(log, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	writeLogError(&out, log)
+	if !strings.Contains(out.String(), "The last 3 non-empty lines of the log") {
+		t.Errorf("a recognised error hid the generator's tail:\n%s", out.String())
+	}
+}
+
+// writeDrv writes a derivation file in ATerm form with the given
+// environment entries.
+func writeDrv(t *testing.T, name string, env map[string]string) string {
+	t.Helper()
+	var entries []string
+	for key, value := range env {
+		entries = append(entries, fmt.Sprintf("(%q,%q)", key, value))
+	}
+	path := filepath.Join(t.TempDir(), strings.Repeat("a", 32)+"-"+name+".drv")
+	text := `Derive([("out","/nix/store/` + strings.Repeat("b", 32) + `-` + name + `","","")],[],[],"x86_64-linux","/bin/sh",[],[` + strings.Join(entries, ",") + `])`
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAttemptedOwnDefinitions(t *testing.T) {
+	own := t.TempDir()
+	for name, content := range map[string]string{
+		"pkgs/stash/default.nix":        "let\n  pname = \"stash\";\nin { inherit pname; }\n",
+		"node_modules/x/default.nix":    "{ pname = \"ncspot\"; }\n",
+		"pkgs/codex-cli/default.nix":    "{ pname = \"codex-cli\"; }\n",
+		".git/objects/whatever/def.nix": "{ pname = \"ncspot\"; }\n",
+	} {
+		path := filepath.Join(own, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stash := writeDrv(t, "stash-0.31.1", map[string]string{"pname": "stash"})
+	ncspot := writeDrv(t, "ncspot-1.5.0", map[string]string{"pname": "ncspot"})
+	attempted := []attemptedDerivation{{drv: stash}, {drv: ncspot}}
+	facts := []drvFacts{readDrv(stash), readDrv(ncspot)}
+	if facts[0].pname != "stash" {
+		t.Fatalf("pname %q", facts[0].pname)
+	}
+	roots := []definitionRoot{{label: "`nix-packages`", dir: own}, {label: "the flake", dir: filepath.Join(own, "missing")}}
+	var out strings.Builder
+	writeAttempted(&out, attempted, len(attempted), facts, nil, nil, nil, nil, roots)
+	text := out.String()
+	for _, want := range []string{
+		"Own definitions of pname `stash`, so this may be the operator's package rather than upstream's: `nix-packages` " + filepath.Join("pkgs", "stash", "default.nix"),
+		"No file in the 1 source tree searched (the own inputs in this store and the flake directory, where present) sets pname `ncspot`. It is upstream's package, or an override of it",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("attempted derivations lack %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestStructuredPname(t *testing.T) {
+	path := filepath.Join(t.TempDir(), strings.Repeat("c", 32)+"-codex-0.167.0.drv")
+	text := `Derive([("out","/nix/store/` + strings.Repeat("d", 32) + `-codex-0.167.0","","")],[],[],"x86_64-linux","/bin/sh",[],[("__json","{\"pname\":\"codex\",\"version\":\"0.167.0\"}")])`
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDrv(path).pname; got != "codex" {
+		t.Fatalf("structured pname %q", got)
 	}
 }

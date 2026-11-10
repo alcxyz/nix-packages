@@ -247,3 +247,36 @@ func TestTriageUnknownStepListsLogsAndTail(t *testing.T) {
 		}
 	}
 }
+
+func TestRunSummaryNamesDirtyFiles(t *testing.T) {
+	dirty, lock := true, true
+	info := runInfo{ID: "x", Started: time.Now(), FlakeDir: "/flake", GitRev: "abc", GitDirty: &dirty, GitDirtyFiles: []string{"flake.lock", "hosts/a.nix"}, GitLockDirty: &lock}
+	var out strings.Builder
+	writeRunSummary(&out, "/runs/x", info)
+	for _, want := range []string{
+		"- Git revision: abc, tracked files differed from it (paths from the repository root): flake.lock, hosts/a.nix\n",
+		"The run's flake.lock was not committed",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("run summary lacks %q:\n%s", want, out.String())
+		}
+	}
+	lock = false
+	out.Reset()
+	writeRunSummary(&out, "/runs/x", info)
+	if strings.Contains(out.String(), "was not committed") {
+		t.Errorf("a clean lock got the note:\n%s", out.String())
+	}
+	info.StartLockSHA256 = "old"
+	out.Reset()
+	writeRunSummary(&out, "/runs/x", info)
+	if !strings.Contains(out.String(), "Nix rewrote the flake.lock during evaluation") {
+		t.Errorf("a lock rewritten during evaluation got no note:\n%s", out.String())
+	}
+	info.GitDirtyFiles, info.GitLockDirty, info.StartLockSHA256 = nil, nil, ""
+	out.Reset()
+	writeRunSummary(&out, "/runs/x", info)
+	if !strings.Contains(out.String(), "tracked files differed from it (this record does not say which)") {
+		t.Errorf("an older record should say the files are unknown:\n%s", out.String())
+	}
+}

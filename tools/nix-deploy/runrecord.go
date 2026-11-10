@@ -59,6 +59,8 @@ type runInfo struct {
 	FlakeDir        string     `json:"flakeDir"`
 	GitRev          string     `json:"gitRevision,omitempty"`
 	GitDirty        *bool      `json:"gitDirty,omitempty"`
+	GitDirtyFiles   []string   `json:"gitDirtyFiles,omitempty"`
+	GitLockDirty    *bool      `json:"gitLockDirty,omitempty"`
 	LockSHA256      string     `json:"lockSha256,omitempty"`
 	StartLockSHA256 string     `json:"startLockSha256,omitempty"`
 	DryRun          bool       `json:"dryRun"`
@@ -113,7 +115,8 @@ func startRunRecord(args []string, flakeDir string, dryRun, buildOnly, force boo
 	if err == nil {
 		rec.info.LockSHA256 = lockSum(lock)
 	}
-	rec.info.GitRev, rec.info.GitDirty = gitState(flakeDir)
+	git := gitState(flakeDir)
+	rec.info.GitRev, rec.info.GitDirty, rec.info.GitDirtyFiles, rec.info.GitLockDirty = git.rev, git.dirty, git.files, git.lockDirty
 
 	runs := filepath.Join(rec.state, "runs")
 	if err := os.MkdirAll(runs, 0o700); err != nil {
@@ -219,10 +222,27 @@ func findFlakeDir(dir string) string {
 	}
 }
 
-// gitState returns the flake checkout's commit and whether tracked files
-// differ from it, or nothing when it is not a Git checkout. Untracked files
-// are not part of a Git flake, so they do not count.
-func gitState(dir string) (string, *bool) {
+// maxDirtyFiles caps the tracked files a run records as differing.
+const maxDirtyFiles = 50
+
+// gitStatus is the flake checkout's Git state at the start of a run.
+type gitStatus struct {
+	rev string
+	// dirty tells whether tracked files differ from rev; nil when unknown.
+	dirty *bool
+	// files are the differing tracked files, relative to the repository
+	// root, at most maxDirtyFiles.
+	files []string
+	// lockDirty tells whether the flake's own flake.lock differs from rev,
+	// decided before the cap; nil when unknown.
+	lockDirty *bool
+}
+
+// gitState returns the flake checkout's commit, whether tracked files
+// differ from it and which, and whether the flake's flake.lock is among
+// them, or nothing when it is not a Git checkout. Untracked files are not
+// part of a Git flake, so they do not count.
+func gitState(dir string) gitStatus {
 	git := func(args ...string) (string, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -230,18 +250,52 @@ func gitState(dir string) (string, *bool) {
 		// Reading the state must not take the index lock from the operator.
 		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 		output, err := cmd.Output()
-		return strings.TrimSpace(string(output)), err == nil
+		return string(output), err == nil
 	}
 	rev, ok := git("rev-parse", "HEAD")
 	if !ok {
-		return "", nil
+		return gitStatus{}
 	}
-	changes, ok := git("status", "--porcelain", "--untracked-files=no")
+	state := gitStatus{rev: strings.TrimSpace(rev)}
+	// Porcelain paths are relative to the repository root, and the flake may
+	// sit in a subdirectory of it.
+	prefix, ok := git("rev-parse", "--show-prefix")
 	if !ok {
-		return rev, nil
+		return state
 	}
-	dirty := changes != ""
-	return rev, &dirty
+	changes, ok := git("status", "--porcelain", "-z", "--untracked-files=no")
+	if !ok {
+		return state
+	}
+	paths := porcelainPaths(changes)
+	dirty := len(paths) > 0
+	lockDirty := contains(paths, strings.TrimSpace(prefix)+"flake.lock")
+	state.dirty, state.lockDirty = &dirty, &lockDirty
+	state.files = paths
+	if len(state.files) > maxDirtyFiles {
+		state.files = state.files[:maxDirtyFiles]
+	}
+	return state
+}
+
+// porcelainPaths returns the paths of `git status --porcelain -z` output,
+// the new path of a rename or copy. Each entry is "XY <path>" ended by a
+// NUL, and a rename or copy is followed by an entry with its source path;
+// -z leaves paths unquoted.
+func porcelainPaths(changes string) []string {
+	var paths []string
+	entries := strings.Split(changes, "\x00")
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if len(entry) < 4 {
+			continue
+		}
+		paths = append(paths, entry[3:])
+		if x, y := entry[0], entry[1]; x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+			i++
+		}
+	}
+	return paths
 }
 
 // warn reports the first failure to keep the record; later ones would only
