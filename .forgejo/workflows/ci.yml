@@ -36,28 +36,91 @@ jobs:
           fetch-depth: 1
           github-server-url: https://git.alc.xyz
 
+      - name: Decide whether the tests apply
+        # A pull request that changes nothing these tests read (the Go
+        # modules, the nix-deploy contract test and this workflow) skips the
+        # later steps; the job still succeeds under its name, which update
+        # auto-merge requires. The diff compares the base and head commits
+        # themselves, so changes that reached the base since the branch point
+        # count too, and only add runs. Pushes, and any diff that cannot be
+        # computed, run everything.
+        id: scope
+        env:
+          EVENT: ${{ forgejo.event_name }}
+          BASE_SHA: ${{ forgejo.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ forgejo.event.pull_request.head.sha }}
+        run: |
+          run=true
+          if [ "$EVENT" = pull_request ]; then
+            if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ] &&
+              git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"; then
+              # Pathspecs instead of matching printed names: Git quotes
+              # unusual file names, and --no-renames lists both sides of a
+              # move, so a file moved out of tools/ or lib/ still counts.
+              # Exit status 0 means no change there, 1 a change, anything
+              # else an error, which runs the tests.
+              status=0
+              git diff --no-renames --quiet "$BASE_SHA" "$HEAD_SHA" -- \
+                tools lib .forgejo/workflows/ci.yml || status=$?
+              case "$status" in
+                0) run=false ;;
+                1) ;;
+                *) echo "::warning::Cannot diff the pull request's base and head; running the tests." ;;
+              esac
+              echo "Changed between ${BASE_SHA} and ${HEAD_SHA}:"
+              git -c core.quotePath=false diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA" || true
+            else
+              echo "::warning::Cannot fetch the pull request's base and head; running the tests."
+            fi
+          fi
+          echo "Go tool tests run: $run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
       - uses: https://github.com/actions/setup-go@v5
+        if: steps.scope.outputs.run == 'true'
         with:
           go-version-file: tools/devlog/go.mod
+          # The runners serve no actions cache that job containers reach
+          # (restore and save fail with ECONNREFUSED), so do not try.
+          cache: false
 
       - name: Install workspace contract prerequisites
+        if: steps.scope.outputs.run == 'true'
         run: |
           apt-get update
           apt-get install -y jq git ripgrep
 
       - name: Test Go tools
+        if: steps.scope.outputs.run == 'true'
         run: |
-          while IFS= read -r mod; do
-            dir="$(dirname "$mod")"
-            echo "::group::go test ${dir}"
-            (cd "$dir" && go test -v ./...)
+          # Up to four modules test at once: most of their time is spent in
+          # tests that wait, not in compiling. nix-deploy, the longest, starts
+          # first and tests only under the race detector, since its switch
+          # capture is shared by concurrent stream copies.
+          logs="$(mktemp -d)"
+          { echo tools/nix-deploy; find tools lib -maxdepth 2 -name go.mod -printf '%h\n' | grep -vx tools/nix-deploy | sort; } > "$logs/modules"
+          xargs -P 4 -n 1 bash -c '
+            log="$0/${1//\//_}"
+            flags=()
+            if [ "$1" = tools/nix-deploy ]; then flags=(-race); fi
+            if go -C "$1" test -v "${flags[@]}" ./... > "$log.out" 2>&1; then echo ok > "$log.status"; else echo failed > "$log.status"; fi
+          ' "$logs" < "$logs/modules"
+          failed=()
+          while IFS= read -r dir; do
+            log="$logs/${dir//\//_}"
+            echo "::group::go test $dir"
+            cat "$log.out"
             echo "::endgroup::"
-          done < <(find tools lib -maxdepth 2 -name go.mod | sort)
+            if [ "$(cat "$log.status")" != ok ]; then failed+=("$dir"); fi
+          done < "$logs/modules"
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::go test failed in ${failed[*]}"
+            exit 1
+          fi
 
       - name: Test the nix-deploy contract
+        if: steps.scope.outputs.run == 'true'
         run: |
-          # The switch capture is shared by concurrent stream copies.
-          go -C tools/nix-deploy test -race ./...
           binary="$(mktemp -d)/deploy"
           go -C tools/nix-deploy build -o "$binary" .
           python3 tools/nix-deploy/test-deploy.py "$binary"
