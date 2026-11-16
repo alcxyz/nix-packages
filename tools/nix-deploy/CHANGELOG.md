@@ -9,6 +9,17 @@ with every change to the tool and add an entry here:
 - minor: a new option or a change in what a run does;
 - patch: a fix that keeps the intended behaviour.
 
+## 0.37.0 (2026-11-16)
+
+The heavy build profile runs fewer builds with more cores each: max-jobs 4
+and cores 16 (`DEPLOY_HEAVY_MAX_JOBS`, `DEPLOY_HEAVY_CORES`), instead of 6
+and 8. A fleet run after a flake update spent long stretches on one large
+build, a cross-compiled kernel, using 8 cores while the rest of the CPU sat
+idle. The worst case rises from 48 to 64 compiler processes, and with it the
+memory C and C++ builds can use; a host short of memory lowers
+`DEPLOY_HEAVY_CORES`. Each value is still capped at the machine's own setting,
+and both variables still override it.
+
 ## 0.36.0 (2026-11-10)
 
 `nixfleet triage` applies the findings of its fourth real session

@@ -511,10 +511,10 @@ func loadSettings() (settings, error) {
 	if values.heavyBuilds, err = positiveSetting("DEPLOY_HEAVY_BUILDS", "50"); err != nil {
 		return values, err
 	}
-	if values.heavyMaxJobs, err = positiveSetting("DEPLOY_HEAVY_MAX_JOBS", "6"); err != nil {
+	if values.heavyMaxJobs, err = positiveSetting("DEPLOY_HEAVY_MAX_JOBS", "4"); err != nil {
 		return values, err
 	}
-	if values.heavyCores, err = positiveSetting("DEPLOY_HEAVY_CORES", "8"); err != nil {
+	if values.heavyCores, err = positiveSetting("DEPLOY_HEAVY_CORES", "16"); err != nil {
 		return values, err
 	}
 	if values.runKeep, err = positiveSetting("DEPLOY_RUN_KEEP", "30"); err != nil {
@@ -681,8 +681,8 @@ agent, so a deploy the agent runs does not ask again.
 Before the build, the run counts the derivations it would build (nix build
 --dry-run; downloads do not count) and picks a build profile. Light keeps this
 machine's Nix settings. Heavy, from DEPLOY_HEAVY_BUILDS (default 50)
-derivations, passes max-jobs DEPLOY_HEAVY_MAX_JOBS (default 6) and cores
-DEPLOY_HEAVY_CORES (default 8), each capped at this machine's own setting (one
+derivations, passes max-jobs DEPLOY_HEAVY_MAX_JOBS (default 4) and cores
+DEPLOY_HEAVY_CORES (default 16), each capped at this machine's own setting (one
 that cannot be read is left to the host), so
 many large builds, typically after a flake update, cannot overlap until the
 machine runs out of memory. A count that fails picks heavy. --heavy or

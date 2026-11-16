@@ -225,3 +225,18 @@ and this sentence of the decision:
 
 > A single-host deploy builds all its changed targets before activating any,
 > so a build failure leaves the host untouched.
+
+## Text replaced on 2026-11-16: heavy profile values
+
+The heavy profile's defaults changed from 6 builds of 8 cores to 4 builds of
+16 cores (nixfleet 0.37.0). The date line read
+
+**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots), 2026-11-08 (activation after failed builds, [nix-packages #796](https://git.alc.xyz/alcxyz/nix-packages/issues/796))
+
+and the build profile sentence read:
+
+> Heavy passes `--option max-jobs 6 --option cores 8` (`DEPLOY_HEAVY_MAX_JOBS`,
+> `DEPLOY_HEAVY_CORES`), each capped at the machine's own setting so heavy never
+> loads a smaller host more than its defaults (a setting that cannot be read is
+> left to the host rather than raised), to the shared build and to the
+> roots built after it.

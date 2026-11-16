@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-12, updated 2026-11-05 (shared reservations, per [issue #592](https://git.alc.xyz/alcxyz/nix-packages/issues/592#issuecomment-50015))
-**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots), 2026-11-08 (activation after failed builds, [nix-packages #796](https://git.alc.xyz/alcxyz/nix-packages/issues/796))
+**Amended:** 2026-10-13 (plan before build), 2026-10-15 (build profiles), 2026-10-31 (deployed roots), 2026-11-08 (activation after failed builds, [nix-packages #796](https://git.alc.xyz/alcxyz/nix-packages/issues/796)), 2026-11-16 (heavy profile values)
 **History:** [replaced text](archive/0008-nix-deploy-in-go-history.md)
 **Applies to:** `tools/nix-deploy/`
 
@@ -133,11 +133,20 @@ Before the build, the run counts the derivations it would build (`nix
 build --dry-run` over the changed targets; downloads do not count, while
 work a remote builder would take does) and picks a profile. Light, below `DEPLOY_HEAVY_BUILDS` (default 50),
 leaves the settings alone, so a single large build keeps every core. Heavy
-passes `--option max-jobs 6 --option cores 8` (`DEPLOY_HEAVY_MAX_JOBS`,
+passes `--option max-jobs 4 --option cores 16` (`DEPLOY_HEAVY_MAX_JOBS`,
 `DEPLOY_HEAVY_CORES`), each capped at the machine's own setting so heavy never
 loads a smaller host more than its defaults (a setting that cannot be read is
 left to the host rather than raised), to the shared build and to the
-roots built after it.
+roots built after it. Fewer builds with more cores each suit how a fleet run
+spends its time: long stretches go to one large build, such as a
+cross-compiled kernel, which `make` spreads over every core it is given. The
+first values, 6 builds of 8 cores, left that build on 8 cores with the rest of
+the CPU idle. The trade is a higher worst case: Nix gives each build `cores`
+parallel jobs, so the bound on compiler processes rises from 48 to 64, and for
+C and C++ builds memory follows that number, not the number of builds. The
+operator accepted it on 2026-11-16 to use the idle CPU, to be checked against
+the memory of the next fleet runs; a host short of memory lowers
+`DEPLOY_HEAVY_CORES`.
 Nix sends both settings to the daemon with the connection, so they bound this
 run's builds only. A count that fails, or lists paths under a heading it does not
 know, picks heavy, the safe side of a wrong guess. `--heavy` / `--light` or `DEPLOY_BUILD_PROFILE` skip the count, and

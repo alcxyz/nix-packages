@@ -1024,11 +1024,11 @@ def contract(deploy, shard):
                 """The options of the shared build and of each root, in call order."""
                 return [[a for a in c[c.index("--out-link") + 2:] if not a.endswith(".drv^out")]
                         for c in calls if c[:2] == ["nix", "build"] and "--dry-run" not in c]
-            heavy = ["--option", "max-jobs", "6", "--option", "cores", "8"]
+            heavy = ["--option", "max-jobs", "4", "--option", "cores", "16"]
             calls, result = run("--all", "--no-preflight", "--json", str(report), MOCK_CURRENT="node", MOCK_LOCAL_BUILDS="50")
             assert sorted(counted(calls)) == ["fixture-solo-system", "fixture-xyz-home", "fixture-xyz-system"]
             assert calls.index(next(c for c in calls if c[:3] == ["nix", "build", "--dry-run"])) < calls.index(next(c for c in calls if "--keep-going" in c))
-            assert "deploy: 50 derivations to build (heavy from 50); heavy build profile: max-jobs 6, cores 8" in result.stdout
+            assert "deploy: 50 derivations to build (heavy from 50); heavy build profile: max-jobs 4, cores 16" in result.stdout
             options = build_options(calls)
             assert len(options) == 4 and all(o == heavy for o in options), options
             data = json.loads(report.read_text())
@@ -1060,7 +1060,7 @@ def contract(deploy, shard):
             # An explicit profile skips the count; the option outranks the environment.
             calls, result = run("--no-preflight", "node", "--heavy", MOCK_LOCAL_BUILDS="1")
             assert not counted(calls) and all(o == heavy for o in build_options(calls))
-            assert "deploy: heavy build profile (--heavy): max-jobs 6, cores 8" in result.stdout
+            assert "deploy: heavy build profile (--heavy): max-jobs 4, cores 16" in result.stdout
             calls, result = run("--no-preflight", "node", "--light", MOCK_LOCAL_BUILDS="99", DEPLOY_BUILD_PROFILE="heavy")
             assert not counted(calls) and all(o == [] for o in build_options(calls))
             assert "deploy: light build profile (--light): host defaults" in result.stdout
