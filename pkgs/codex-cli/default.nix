@@ -5,14 +5,14 @@
 }:
 buildNpmPackage (finalAttrs: {
   pname = "codex-cli";
-  version = "0.169.0";
+  version = "0.169.1";
 
   src = fetchzip {
     url = "https://registry.npmjs.org/@openai/codex/-/codex-${finalAttrs.version}.tgz";
-    hash = "sha256-qn/6nlDvzw6k2+8S3+KlXKW59j35eNBoBGMPBQXt11M=";
+    hash = "sha256-VgQks+/etkvE2O3qNX6PnHngJk6QGvrPt4tovAzjTUI=";
   };
 
-  npmDepsHash = "sha256-J/XMl4UvmLfTrkdkSNCzbCwQATszMgEmPWwPsavKiUQ=";
+  npmDepsHash = "sha256-XpKMvhJjizQDJYuzmMQb7KU3cL02gzbHFIJX98i1Mbg=";
 
   strictDeps = true;
 
