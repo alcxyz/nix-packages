@@ -8,19 +8,19 @@ let
   sources = {
     x86_64-linux = {
       artifact = "workmux-linux-amd64";
-      hash = "sha256-9g1c1nI/LhVmV0YFR1vsbhMsp54P6u/zXCQJ1T5FVHc=";
+      hash = "sha256-cRB/na0YG6K//2Nny9OWKVWZ768p7OcEs+o0eIomA8k=";
     };
     aarch64-linux = {
       artifact = "workmux-linux-arm64";
-      hash = "sha256-SPK2AdLpe+7nSINgVZHgQQ4d6xsomnid/KcQK8fqUmM=";
+      hash = "sha256-Jyiw3uofAZrqu0lpNSEMgkGLdgvext+dPbiTTWQMCCI=";
     };
     x86_64-darwin = {
       artifact = "workmux-darwin-amd64";
-      hash = "sha256-SNcqG0hPdhGOljN2gvgCdSv8xSear5Gnl60eWvWzlkc=";
+      hash = "sha256-J6ts2wYSZXDGHulvApGy17fx2CBvT3as9974z8oKhVo=";
     };
     aarch64-darwin = {
       artifact = "workmux-darwin-arm64";
-      hash = "sha256-jVxEUirUsqt/cNyVO+JeN8kYiBku2p5nZmW+MTY0yZ8=";
+      hash = "sha256-iBLo8oPTYjH2rPCJIDXoAHTC+ywgGHjGQFA7tp2ZdYc=";
     };
   };
 
@@ -30,7 +30,7 @@ let
 in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "workmux";
-  version = "0.1.283";
+  version = "0.1.284";
 
   src = fetchurl {
     url = "https://github.com/raine/workmux/releases/download/v${finalAttrs.version}/${source.artifact}.tar.gz";
